@@ -29,11 +29,15 @@ class SimpleKubernetesProcessor:
             'get pods': 'kubectl get pods',
             'show me all pods': 'kubectl get pods',
             'what pods are running': 'kubectl get pods',
+            'display pods': 'kubectl get pods',
+            'pod list': 'kubectl get pods',
             
             # Service operations
             'show services': 'kubectl get services',
             'list services': 'kubectl get services',
             'get services': 'kubectl get services',
+            'display services': 'kubectl get services',
+            'service list': 'kubectl get services',
             
             # Event operations
             'show events': 'kubectl get events',
@@ -41,11 +45,34 @@ class SimpleKubernetesProcessor:
             'what is wrong': 'kubectl get events',
             'check errors': 'kubectl get events',
             'cluster problems': 'kubectl get events',
+            'health check': 'kubectl get events',
+            'cluster health': 'kubectl get events',
+            'how is the health': 'kubectl get events',
+            'health of the cluster': 'kubectl get events',
+            'cluster issues': 'kubectl get events',
+            'any problems': 'kubectl get events',
+            'check cluster': 'kubectl get events',
+            'diagnose cluster': 'kubectl get events',
             
             # Cluster info
             'cluster info': 'kubectl cluster-info',
             'cluster status': 'kubectl cluster-info',
             'show cluster': 'kubectl cluster-info',
+            'cluster details': 'kubectl cluster-info',
+            'cluster overview': 'kubectl cluster-info',
+            
+            # Node operations
+            'show nodes': 'kubectl get nodes',
+            'list nodes': 'kubectl get nodes',
+            'get nodes': 'kubectl get nodes',
+            'node status': 'kubectl get nodes',
+            'display nodes': 'kubectl get nodes',
+            
+            # Deployment operations
+            'show deployments': 'kubectl get deployments',
+            'list deployments': 'kubectl get deployments',
+            'get deployments': 'kubectl get deployments',
+            'deployment status': 'kubectl get deployments',
         }
     
     def process_query(self, query: str) -> dict:
@@ -69,19 +96,44 @@ class SimpleKubernetesProcessor:
             }
         
         # Pattern matching for other operations
-        if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower):
+        if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
             return {
                 'command': 'kubectl get pods',
                 'explanation': f"I'll show you all pods: kubectl get pods"
             }
         
-        if 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower):
+        if 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
             return {
                 'command': 'kubectl get services',
                 'explanation': f"I'll show you all services: kubectl get services"
             }
         
-        if 'events' in query_lower or 'wrong' in query_lower or 'error' in query_lower:
+        if 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
+            return {
+                'command': 'kubectl get deployments',
+                'explanation': f"I'll show you all deployments: kubectl get deployments"
+            }
+        
+        if 'nodes' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
+            return {
+                'command': 'kubectl get nodes',
+                'explanation': f"I'll show you all nodes: kubectl get nodes"
+            }
+        
+        # Health and diagnostic queries
+        if any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']):
+            if 'cluster' in query_lower or 'how' in query_lower:
+                return {
+                    'command': 'kubectl get events',
+                    'explanation': f"I'll check the cluster health by looking at events: kubectl get events"
+                }
+            else:
+                return {
+                    'command': 'kubectl get events',
+                    'explanation': f"I'll check for any issues: kubectl get events"
+                }
+        
+        if 'events' in query_lower:
             return {
                 'command': 'kubectl get events',
                 'explanation': f"I'll check the events: kubectl get events"
@@ -114,6 +166,16 @@ class SimpleKubernetesProcessor:
                 name_words = []
                 for j in range(i + 1, len(words)):
                     if words[j].lower() in ["with", "using", "from", "image"]:
+                        break
+                    name_words.append(words[j])
+                if name_words:
+                    pod_name = "-".join(name_words).lower()
+                break
+            elif word.lower() == "name" and i + 1 < len(words):
+                # Direct "name toto" pattern
+                name_words = []
+                for j in range(i + 1, len(words)):
+                    if words[j].lower() in ["with", "using", "from", "image", "pod"]:
                         break
                     name_words.append(words[j])
                 if name_words:
