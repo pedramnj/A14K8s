@@ -389,6 +389,45 @@ data:
             
             return sum(cs.restart_count for cs in pod.status.container_statuses)
         
+        def get_events(self, namespace: str = "default") -> Dict[str, Any]:
+            """Get Kubernetes events"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                events = self.k8s_client.list_namespaced_event(namespace=namespace)
+                event_list = []
+                
+                for event in events.items:
+                    event_info = {
+                        "name": event.metadata.name,
+                        "namespace": event.metadata.namespace,
+                        "type": event.type,
+                        "reason": event.reason,
+                        "message": event.message,
+                        "source": f"{event.source.component}" if event.source and event.source.component else "Unknown",
+                        "count": event.count,
+                        "first_timestamp": event.first_timestamp.isoformat() if event.first_timestamp else None,
+                        "last_timestamp": event.last_timestamp.isoformat() if event.last_timestamp else None,
+                        "involved_object": {
+                            "kind": event.involved_object.kind,
+                            "name": event.involved_object.name,
+                            "namespace": event.involved_object.namespace
+                        } if event.involved_object else None
+                    }
+                    event_list.append(event_info)
+                
+                # Sort events by last timestamp (most recent first)
+                event_list.sort(key=lambda x: x["last_timestamp"] or "", reverse=True)
+                
+                return {
+                    "events": event_list,
+                    "total": len(event_list),
+                    "namespace": namespace
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
         def _get_pod_age(self, pod) -> str:
             """Get pod age"""
             try:
@@ -460,6 +499,16 @@ data:
                     result = k8s_bridge.run_container_in_pod(image, pod_name, "default")
                 else:
                     result = {"error": "Invalid run command format"}
+            elif message.startswith('kubectl get events'):
+                # Parse events command: kubectl get events [-n namespace]
+                namespace = "default"
+                if '-n' in message:
+                    parts = message.split()
+                    if '-n' in parts:
+                        ns_idx = parts.index('-n')
+                        if ns_idx + 1 < len(parts):
+                            namespace = parts[ns_idx + 1]
+                result = k8s_bridge.get_events(namespace)
             else:
                 result = {"error": "Command not supported"}
             

@@ -66,3 +66,4 @@ kubeconfig
 *.temp
 temp/
 tmp/
+OVERLEAF_REPORT.tex
