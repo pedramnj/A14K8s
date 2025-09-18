@@ -159,6 +159,26 @@ class MCPKubernetesProcessor:
                 'mcp_result': result
             }
         
+        elif ('delete' in query_lower or 'stop' in query_lower or 'remove' in query_lower) and 'pod' in query_lower:
+            # Use MCP pods_delete tool
+            pod_name = self._extract_pod_name_from_delete(query)
+            if pod_name:
+                result = self._call_mcp_tool('pods_delete', {
+                    'name': pod_name,
+                    'namespace': 'default'
+                })
+                return {
+                    'command': f'MCP: pods_delete ({pod_name})',
+                    'explanation': f"I'll delete the pod named '{pod_name}' using MCP tools",
+                    'mcp_result': result
+                }
+            else:
+                return {
+                    'command': None,
+                    'explanation': f"I understand you want to delete a pod, but I couldn't extract the pod name from: '{query}'. Please try 'delete pod <name>' or 'stop pod <name>'.",
+                    'mcp_result': None
+                }
+        
         elif any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']) and ('cluster' in query_lower or 'how' in query_lower):
             # Use MCP events_list tool for cluster health
             result = self._call_mcp_tool('events_list', {})
@@ -220,6 +240,32 @@ class MCPKubernetesProcessor:
                 if name_words:
                     pod_name = "-".join(name_words).lower()
                 break
+        
+        return pod_name
+    
+    def _extract_pod_name_from_delete(self, query: str) -> str:
+        """Extract pod name from delete/stop pod query"""
+        words = query.split()
+        pod_name = None
+        
+        # Look for "the <name> pod" pattern
+        for i, word in enumerate(words):
+            if word.lower() == "the" and i + 1 < len(words):
+                # Check if next word is the pod name
+                potential_name = words[i + 1]
+                # Skip common words that might follow "the"
+                if potential_name.lower() not in ["pod", "pods", "container", "containers"]:
+                    pod_name = potential_name.lower()
+                    break
+        
+        # Look for "pod <name>" pattern
+        if not pod_name:
+            for i, word in enumerate(words):
+                if word.lower() == "pod" and i + 1 < len(words):
+                    potential_name = words[i + 1]
+                    if potential_name.lower() not in ["the", "a", "an"]:
+                        pod_name = potential_name.lower()
+                        break
         
         return pod_name
 
