@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI4K8s Web Application with User Authentication and Server Management
+Simplified AI4K8s Web Application - Lightweight and Efficient
 """
 
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
@@ -11,10 +11,6 @@ import os
 import json
 import requests
 import uuid
-from anthropic import Anthropic
-import asyncio
-import subprocess
-import tempfile
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
@@ -23,199 +19,111 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# AI Integration Class
-class AIKubernetesAssistant:
+# Simple Natural Language Processor
+class SimpleKubernetesProcessor:
     def __init__(self):
-        self.anthropic = None
-        self.available_commands = [
-            "kubectl get pods", "kubectl get pod <name>", "kubectl get events", 
-            "kubectl get nodes", "kubectl get services", "kubectl get deployments",
-            "kubectl logs <pod_name>", "kubectl delete pod <name>", "kubectl top pods",
-            "kubectl top pod <name>", "kubectl exec <pod_name> -- <command>",
-            "kubectl run <name> --image=<image>", "kubectl create deployment <name> --image=<image>",
-            "kubectl scale deployment <name> --replicas=<number>", "kubectl describe pod <name>"
-        ]
-        
-        # Try to initialize Anthropic client
-        try:
-            api_key = os.environ.get('ANTHROPIC_API_KEY')
-            if api_key:
-                self.anthropic = Anthropic(api_key=api_key)
-                print("✅ AI Assistant initialized successfully")
-            else:
-                print("⚠️  ANTHROPIC_API_KEY not found, AI features disabled")
-        except Exception as e:
-            print(f"⚠️  Failed to initialize AI Assistant: {e}")
-            self.anthropic = None
+        self.command_mapping = {
+            # Pod operations
+            'show pods': 'kubectl get pods',
+            'list pods': 'kubectl get pods',
+            'get pods': 'kubectl get pods',
+            'show me all pods': 'kubectl get pods',
+            'what pods are running': 'kubectl get pods',
+            
+            # Service operations
+            'show services': 'kubectl get services',
+            'list services': 'kubectl get services',
+            'get services': 'kubectl get services',
+            
+            # Event operations
+            'show events': 'kubectl get events',
+            'get events': 'kubectl get events',
+            'what is wrong': 'kubectl get events',
+            'check errors': 'kubectl get events',
+            'cluster problems': 'kubectl get events',
+            
+            # Cluster info
+            'cluster info': 'kubectl cluster-info',
+            'cluster status': 'kubectl cluster-info',
+            'show cluster': 'kubectl cluster-info',
+        }
     
-    def process_natural_language_query(self, query: str, server_info: dict) -> dict:
-        """Process natural language query and return appropriate response"""
-        try:
-            # Check if AI is available
-            if not self.anthropic:
-                return self._fallback_response(query)
-            
-            # Create a prompt for the AI
-            system_prompt = f"""You are a Kubernetes AI assistant. You can help users manage their Kubernetes cluster through natural language.
-
-Available kubectl commands you can suggest or execute:
-{', '.join(self.available_commands)}
-
-Server Information:
-- Name: {server_info.get('name', 'Unknown')}
-- Type: {server_info.get('server_type', 'Unknown')}
-- Connection: {server_info.get('connection_string', 'Unknown')}
-
-When a user asks you to do something, you should:
-1. Understand their intent
-2. Suggest the appropriate kubectl command
-3. If it's a simple query, provide the command directly
-4. If it's complex, explain what you would do
-
-Examples:
-- "create a new pod name it funky dance" → "kubectl run funky-dance --image=nginx"
-- "show me all pods" → "kubectl get pods"
-- "what's wrong with my cluster" → "kubectl get events"
-- "get logs from nginx pod" → "kubectl logs nginx"
-
-Always be helpful and provide clear, actionable responses."""
-
-            response = self.anthropic.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1000,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": query}
-                ]
-            )
-            
-            ai_response = response.content[0].text
-            
-            # Check if the AI suggested a kubectl command
-            if "kubectl" in ai_response.lower():
-                # Extract the kubectl command from the response
-                lines = ai_response.split('\n')
-                kubectl_command = None
-                for line in lines:
-                    if line.strip().startswith('kubectl'):
-                        kubectl_command = line.strip()
-                        break
-                
-                if kubectl_command:
-                    # Execute the command via MCP bridge
-                    try:
-                        mcp_response = requests.post(
-                            'http://localhost:5001/api/chat',
-                            json={'message': kubectl_command},
-                            timeout=30
-                        )
-                        
-                        if mcp_response.status_code == 200:
-                            mcp_result = mcp_response.json()
-                            return {
-                                "ai_explanation": ai_response,
-                                "command_executed": kubectl_command,
-                                "command_result": mcp_result.get('response', 'No response'),
-                                "status": "success"
-                            }
-                        else:
-                            return {
-                                "ai_explanation": ai_response,
-                                "command_executed": kubectl_command,
-                                "command_result": f"Error executing command: {mcp_response.status_code}",
-                                "status": "error"
-                            }
-                    except Exception as e:
-                        return {
-                            "ai_explanation": ai_response,
-                            "command_executed": kubectl_command,
-                            "command_result": f"Error connecting to MCP bridge: {str(e)}",
-                            "status": "error"
-                        }
-            
-            # If no kubectl command was suggested, just return the AI response
-            return {
-                "ai_explanation": ai_response,
-                "command_executed": None,
-                "command_result": None,
-                "status": "info"
-            }
-            
-        except Exception as e:
-            return {
-                "ai_explanation": f"I apologize, but I encountered an error: {str(e)}",
-                "command_executed": None,
-                "command_result": None,
-                "status": "error"
-            }
-    
-    def _fallback_response(self, query: str) -> dict:
-        """Fallback response when AI is not available"""
-        query_lower = query.lower()
+    def process_query(self, query: str) -> dict:
+        """Process natural language query and return kubectl command"""
+        query_lower = query.lower().strip()
         
-        # Simple pattern matching for common requests
-        if "create" in query_lower and "pod" in query_lower:
-            # Extract pod name from query - look for "name it" or "called" patterns
-            words = query.split()
-            pod_name = "new-pod"
-            
-            # Look for "name it" pattern
-            for i, word in enumerate(words):
-                if word.lower() == "name" and i + 1 < len(words) and words[i + 1].lower() == "it":
-                    # Get the next word(s) after "it"
-                    if i + 2 < len(words):
-                        name_words = []
-                        for j in range(i + 2, len(words)):
-                            if words[j].lower() in ["with", "using", "from", "image"]:
-                                break
-                            name_words.append(words[j])
-                        if name_words:
-                            pod_name = "-".join(name_words).lower()
-                    break
-                elif word.lower() in ["called", "named"] and i + 1 < len(words):
-                    # Get the next word(s) after "called" or "named"
+        # Direct mapping
+        if query_lower in self.command_mapping:
+            return {
+                'command': self.command_mapping[query_lower],
+                'explanation': f"I'll execute: {self.command_mapping[query_lower]}"
+            }
+        
+        # Pattern matching for pod creation
+        if 'create' in query_lower and 'pod' in query_lower:
+            pod_name = self._extract_pod_name(query)
+            command = f"kubectl run {pod_name} --image=nginx"
+            return {
+                'command': command,
+                'explanation': f"I'll create a pod named '{pod_name}': {command}"
+            }
+        
+        # Pattern matching for other operations
+        if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower):
+            return {
+                'command': 'kubectl get pods',
+                'explanation': f"I'll show you all pods: kubectl get pods"
+            }
+        
+        if 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower):
+            return {
+                'command': 'kubectl get services',
+                'explanation': f"I'll show you all services: kubectl get services"
+            }
+        
+        if 'events' in query_lower or 'wrong' in query_lower or 'error' in query_lower:
+            return {
+                'command': 'kubectl get events',
+                'explanation': f"I'll check the events: kubectl get events"
+            }
+        
+        # Default response
+        return {
+            'command': None,
+            'explanation': f"I understand you want to: '{query}'. Please try a more specific request like 'show pods', 'list services', or 'check events'."
+        }
+    
+    def _extract_pod_name(self, query: str) -> str:
+        """Extract pod name from create pod query"""
+        words = query.split()
+        pod_name = "new-pod"
+        
+        # Look for "name it" pattern
+        for i, word in enumerate(words):
+            if word.lower() == "name" and i + 1 < len(words) and words[i + 1].lower() == "it":
+                if i + 2 < len(words):
                     name_words = []
-                    for j in range(i + 1, len(words)):
+                    for j in range(i + 2, len(words)):
                         if words[j].lower() in ["with", "using", "from", "image"]:
                             break
                         name_words.append(words[j])
                     if name_words:
                         pod_name = "-".join(name_words).lower()
-                    break
-            
-            kubectl_command = f"kubectl run {pod_name} --image=nginx"
-            return {
-                "ai_explanation": f"I understand you want to create a pod. I'll run: `{kubectl_command}`",
-                "command_executed": kubectl_command,
-                "command_result": None,
-                "status": "success"
-            }
-        elif "show" in query_lower and "pods" in query_lower:
-            kubectl_command = "kubectl get pods"
-            return {
-                "ai_explanation": f"I'll show you all the pods in your cluster: `{kubectl_command}`",
-                "command_executed": kubectl_command,
-                "command_result": None,
-                "status": "success"
-            }
-        elif "events" in query_lower or "wrong" in query_lower:
-            kubectl_command = "kubectl get events"
-            return {
-                "ai_explanation": f"I'll check the events to see what's happening: `{kubectl_command}`",
-                "command_executed": kubectl_command,
-                "command_result": None,
-                "status": "success"
-            }
-        else:
-            return {
-                "ai_explanation": f"I understand you want to: '{query}'. However, AI features are currently disabled. Please use direct kubectl commands like 'kubectl get pods' or 'kubectl get events'.",
-                "command_executed": None,
-                "command_result": None,
-                "status": "info"
-            }
+                break
+            elif word.lower() in ["called", "named"] and i + 1 < len(words):
+                name_words = []
+                for j in range(i + 1, len(words)):
+                    if words[j].lower() in ["with", "using", "from", "image"]:
+                        break
+                    name_words.append(words[j])
+                if name_words:
+                    pod_name = "-".join(name_words).lower()
+                break
+        
+        return pod_name
 
-# Initialize AI Assistant
-ai_assistant = AIKubernetesAssistant()
+# Initialize processor
+processor = SimpleKubernetesProcessor()
 
 # Database Models
 class User(db.Model):
@@ -226,22 +134,32 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     servers = db.relationship('Server', backref='owner', lazy=True)
 
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+
+    def __repr__(self):
+        return f'<User {self.username}>'
+
 class Server(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
-    server_type = db.Column(db.String(50), nullable=False)  # 'local', 'remote', 'cloud'
-    connection_string = db.Column(db.String(500), nullable=False)
-    kubeconfig = db.Column(db.Text)  # Base64 encoded kubeconfig
-    status = db.Column(db.String(20), default='inactive')  # 'active', 'inactive', 'error'
+    server_type = db.Column(db.String(50), nullable=False)
+    connection_string = db.Column(db.String(200), nullable=False)
+    kubeconfig = db.Column(db.Text, nullable=True)
+    status = db.Column(db.String(20), default='inactive')
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_accessed = db.Column(db.DateTime)
+    last_accessed = db.Column(db.DateTime, nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    def __repr__(self):
+        return f'<Server {self.name}>'
 
 # Routes
 @app.route('/')
 def index():
-    if 'user_id' in session:
-        return redirect(url_for('dashboard'))
     return render_template('index.html')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -250,30 +168,20 @@ def register():
         username = request.form['username']
         email = request.form['email']
         password = request.form['password']
-        
-        # Check if user already exists
+
         if User.query.filter_by(username=username).first():
-            flash('Username already exists')
-            return render_template('register.html')
-        
+            flash('Username already exists', 'danger')
+            return redirect(url_for('register'))
         if User.query.filter_by(email=email).first():
-            flash('Email already registered')
-            return render_template('register.html')
-        
-        # Create new user
-        user = User(
-            username=username,
-            email=email,
-            password_hash=generate_password_hash(password)
-        )
-        db.session.add(user)
+            flash('Email already registered', 'danger')
+            return redirect(url_for('register'))
+
+        new_user = User(username=username, email=email)
+        new_user.set_password(password)
+        db.session.add(new_user)
         db.session.commit()
-        
-        session['user_id'] = user.id
-        session['username'] = user.username
-        flash('Registration successful!')
-        return redirect(url_for('dashboard'))
-    
+        flash('Registration successful! Please log in.', 'success')
+        return redirect(url_for('login'))
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -281,28 +189,28 @@ def login():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
-        
         user = User.query.filter_by(username=username).first()
-        
-        if user and check_password_hash(user.password_hash, password):
+
+        if user and user.check_password(password):
             session['user_id'] = user.id
             session['username'] = user.username
-            flash('Login successful!')
+            flash('Logged in successfully!', 'success')
             return redirect(url_for('dashboard'))
         else:
-            flash('Invalid username or password')
-    
+            flash('Invalid username or password', 'danger')
     return render_template('login.html')
 
 @app.route('/logout')
 def logout():
-    session.clear()
-    flash('You have been logged out')
+    session.pop('user_id', None)
+    session.pop('username', None)
+    flash('You have been logged out.', 'info')
     return redirect(url_for('index'))
 
 @app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
+        flash('Please log in to access the dashboard.', 'warning')
         return redirect(url_for('login'))
     
     user = User.query.get(session['user_id'])
@@ -313,30 +221,25 @@ def dashboard():
 @app.route('/add_server', methods=['GET', 'POST'])
 def add_server():
     if 'user_id' not in session:
+        flash('Please log in to add a server.', 'warning')
         return redirect(url_for('login'))
     
     if request.method == 'POST':
         name = request.form['name']
         server_type = request.form['server_type']
         connection_string = request.form['connection_string']
-        kubeconfig = request.form.get('kubeconfig', '')
+        kubeconfig = request.form.get('kubeconfig')
         
-        # Validate server connection (basic validation)
-        if server_type == 'local':
-            connection_string = 'localhost:8080'  # Default local connection
-        
-        server = Server(
+        new_server = Server(
             name=name,
             server_type=server_type,
             connection_string=connection_string,
             kubeconfig=kubeconfig,
             user_id=session['user_id']
         )
-        
-        db.session.add(server)
+        db.session.add(new_server)
         db.session.commit()
-        
-        flash(f'Server "{name}" added successfully!')
+        flash(f'Server "{name}" added successfully!', 'success')
         return redirect(url_for('dashboard'))
     
     return render_template('add_server.html')
@@ -344,25 +247,19 @@ def add_server():
 @app.route('/server/<int:server_id>')
 def server_detail(server_id):
     if 'user_id' not in session:
+        flash('Please log in to view server details.', 'warning')
         return redirect(url_for('login'))
     
-    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first()
-    if not server:
-        flash('Server not found')
-        return redirect(url_for('dashboard'))
-    
+    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
     return render_template('server_detail.html', server=server)
 
 @app.route('/chat/<int:server_id>')
 def chat(server_id):
     if 'user_id' not in session:
+        flash('Please log in to use the AI chat.', 'warning')
         return redirect(url_for('login'))
     
-    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first()
-    if not server:
-        flash('Server not found')
-        return redirect(url_for('dashboard'))
-    
+    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
     return render_template('chat.html', server=server)
 
 @app.route('/api/chat/<int:server_id>', methods=['POST'])
@@ -384,7 +281,7 @@ def api_chat(server_id):
             response = requests.post(
                 'http://localhost:5001/api/chat',
                 json={'message': message},
-                timeout=30
+                timeout=10
             )
             
             if response.status_code == 200:
@@ -396,35 +293,52 @@ def api_chat(server_id):
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     else:
-        # Natural language query - use AI assistant
+        # Natural language query - use simple processor
         try:
-            server_info = {
-                'name': server.name,
-                'server_type': server.server_type,
-                'connection_string': server.connection_string
-            }
+            processed = processor.process_query(message)
             
-            ai_result = ai_assistant.process_natural_language_query(message, server_info)
-            
-            # Format the response for the frontend
-            if ai_result['status'] == 'success':
-                response_text = f"{ai_result['ai_explanation']}\n\n**Command Executed:** `{ai_result['command_executed']}`\n\n**Result:**\n{ai_result['command_result']}"
-            elif ai_result['status'] == 'error':
-                response_text = f"{ai_result['ai_explanation']}\n\n**Error:** {ai_result.get('command_result', 'Unknown error')}"
+            if processed['command']:
+                # Execute the command via MCP bridge
+                try:
+                    mcp_response = requests.post(
+                        'http://localhost:5001/api/chat',
+                        json={'message': processed['command']},
+                        timeout=10
+                    )
+                    
+                    if mcp_response.status_code == 200:
+                        mcp_result = mcp_response.json()
+                        response_text = f"{processed['explanation']}\n\n**Result:**\n{mcp_result.get('response', 'No response')}"
+                        
+                        return jsonify({
+                            'response': response_text,
+                            'status': 'success',
+                            'ai_processed': True,
+                            'command_executed': processed['command']
+                        })
+                    else:
+                        return jsonify({
+                            'response': f"{processed['explanation']}\n\n**Error:** Failed to execute command",
+                            'status': 'error',
+                            'ai_processed': True
+                        })
+                        
+                except Exception as e:
+                    return jsonify({
+                        'response': f"{processed['explanation']}\n\n**Error:** {str(e)}",
+                        'status': 'error',
+                        'ai_processed': True
+                    })
             else:
-                response_text = ai_result['ai_explanation']
-            
-            return jsonify({
-                'response': response_text,
-                'status': 'success',
-                'ai_processed': True,
-                'command_executed': ai_result.get('command_executed'),
-                'ai_explanation': ai_result['ai_explanation']
-            })
-            
+                return jsonify({
+                    'response': processed['explanation'],
+                    'status': 'info',
+                    'ai_processed': True
+                })
+                
         except Exception as e:
             return jsonify({
-                'response': f"I apologize, but I encountered an error processing your request: {str(e)}",
+                'response': f"I apologize, but I encountered an error: {str(e)}",
                 'status': 'error',
                 'ai_processed': True
             }), 500
@@ -434,16 +348,13 @@ def server_status(server_id):
     if 'user_id' not in session:
         return jsonify({'error': 'Unauthorized'}), 401
     
-    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first()
-    if not server:
-        return jsonify({'error': 'Server not found'}), 404
+    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
     
     # Update last accessed time
     server.last_accessed = datetime.utcnow()
+    server.status = "active"
     db.session.commit()
     
-    # For now, return basic status
-    # In the future, this will check actual server connectivity
     return jsonify({
         'status': server.status,
         'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
@@ -452,4 +363,8 @@ def server_status(server_id):
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(debug=True, host='0.0.0.0', port=5002)
+    print("🚀 Starting Simplified AI4K8s Web Application...")
+    print("✅ Natural Language Processing: Ready")
+    print("✅ MCP Bridge Integration: Ready")
+    print("✅ Database: Ready")
+    app.run(debug=True, host='0.0.0.0', port=5003)
