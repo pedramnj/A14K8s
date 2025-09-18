@@ -36,6 +36,8 @@ class AIPoweredMCPKubernetesProcessor:
             import os
             
             if os.getenv('ANTHROPIC_API_KEY'):
+                # Set the API key in environment and initialize client
+                os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY')
                 self.anthropic = Anthropic()
                 self.use_ai = True
                 print("🤖 AI-powered processing enabled")
@@ -123,10 +125,19 @@ class AIPoweredMCPKubernetesProcessor:
         
         tools_for_ai = []
         for tool_name, tool_info in self.available_tools.items():
+            # Format for Anthropic API v0.68.0
+            tool_schema = tool_info.get('inputSchema', {})
+            if not tool_schema:
+                tool_schema = {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            
             tools_for_ai.append({
                 "name": tool_name,
-                "description": tool_info.get('description', ''),
-                "inputSchema": tool_info.get('inputSchema', {})
+                "description": tool_info.get('description', f'Execute {tool_name} operation'),
+                "input_schema": tool_schema
             })
         return tools_for_ai
     
