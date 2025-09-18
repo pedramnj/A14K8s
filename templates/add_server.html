@@ -35,11 +35,89 @@
                         <div class="form-text">Server address or connection endpoint</div>
                     </div>
                     
-                    <div class="mb-4">
-                        <label for="kubeconfig" class="form-label">Kubeconfig (Optional)</label>
-                        <textarea class="form-control" id="kubeconfig" name="kubeconfig" rows="6" 
-                                  placeholder="Paste your kubeconfig content here..."></textarea>
-                        <div class="form-text">For advanced users: paste your kubeconfig content</div>
+                    <!-- Authentication Section -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0"><i class="fas fa-key me-2"></i>Authentication</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="username" class="form-label">Username</label>
+                                    <input type="text" class="form-control" id="username" name="username" 
+                                           placeholder="e.g., admin, ubuntu, root">
+                                    <div class="form-text">SSH username for remote connections</div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="password" class="form-label">Password</label>
+                                    <input type="password" class="form-control" id="password" name="password" 
+                                           placeholder="SSH password">
+                                    <div class="form-text">Password for authentication (optional if using SSH key)</div>
+                                </div>
+                            </div>
+                            
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="ssh_port" class="form-label">SSH Port</label>
+                                    <input type="number" class="form-control" id="ssh_port" name="ssh_port" 
+                                           value="22" min="1" max="65535">
+                                    <div class="form-text">SSH port (default: 22)</div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="ssh_key_path" class="form-label">SSH Key Path</label>
+                                    <input type="text" class="form-control" id="ssh_key_path" name="ssh_key_path" 
+                                           placeholder="e.g., ~/.ssh/id_rsa">
+                                    <div class="form-text">Path to SSH private key file</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="ssh_key" class="form-label">SSH Private Key Content</label>
+                                <textarea class="form-control" id="ssh_key" name="ssh_key" rows="4" 
+                                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"></textarea>
+                                <div class="form-text">Paste your SSH private key content here (alternative to key path)</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Kubernetes Configuration -->
+                    <div class="card mb-4">
+                        <div class="card-header bg-light">
+                            <h6 class="mb-0"><i class="fab fa-docker me-2"></i>Kubernetes Configuration</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="namespace" class="form-label">Default Namespace</label>
+                                    <input type="text" class="form-control" id="namespace" name="namespace" 
+                                           value="default" placeholder="default">
+                                    <div class="form-text">Default Kubernetes namespace</div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="connection_timeout" class="form-label">Connection Timeout (seconds)</label>
+                                    <input type="number" class="form-control" id="connection_timeout" name="connection_timeout" 
+                                           value="30" min="5" max="300">
+                                    <div class="form-text">Connection timeout in seconds</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="verify_ssl" name="verify_ssl" checked>
+                                    <label class="form-check-label" for="verify_ssl">
+                                        Verify SSL certificates
+                                    </label>
+                                    <div class="form-text">Verify SSL certificates for HTTPS connections</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mb-3">
+                                <label for="kubeconfig" class="form-label">Kubeconfig Content</label>
+                                <textarea class="form-control" id="kubeconfig" name="kubeconfig" rows="8" 
+                                          placeholder="apiVersion: v1&#10;kind: Config&#10;clusters:&#10;..."></textarea>
+                                <div class="form-text">Paste your kubeconfig content here (for advanced users)</div>
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="d-grid gap-2 d-md-flex justify-content-md-end">
@@ -99,24 +177,38 @@
 <script>
 document.getElementById('server_type').addEventListener('change', function() {
     const connectionString = document.getElementById('connection_string');
+    const authSection = document.querySelector('.card.mb-4');
     const serverType = this.value;
     
+    // Update connection string placeholder
     switch(serverType) {
         case 'local':
             connectionString.value = 'localhost:8080';
             connectionString.placeholder = 'localhost:8080';
+            authSection.style.display = 'none';
             break;
         case 'remote':
             connectionString.value = '';
             connectionString.placeholder = '192.168.1.100:8080 or k8s.company.com';
+            authSection.style.display = 'block';
             break;
         case 'cloud':
             connectionString.value = '';
             connectionString.placeholder = 'your-cluster.region.provider.com';
+            authSection.style.display = 'block';
             break;
         default:
             connectionString.value = '';
             connectionString.placeholder = 'Enter connection string';
+            authSection.style.display = 'none';
+    }
+});
+
+// Hide authentication section initially for local servers
+document.addEventListener('DOMContentLoaded', function() {
+    const authSection = document.querySelector('.card.mb-4');
+    if (authSection) {
+        authSection.style.display = 'none';
     }
 });
 </script>

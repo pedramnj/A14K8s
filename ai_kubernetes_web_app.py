@@ -517,12 +517,61 @@ class Server(db.Model):
     name = db.Column(db.String(100), nullable=False)
     server_type = db.Column(db.String(50), nullable=False)
     connection_string = db.Column(db.String(200), nullable=False)
+    
+    # Authentication fields
+    username = db.Column(db.String(100), nullable=True)
+    password = db.Column(db.String(255), nullable=True)  # Will be encrypted
+    ssh_key = db.Column(db.Text, nullable=True)  # SSH private key content
+    ssh_key_path = db.Column(db.String(255), nullable=True)  # Path to SSH key file
+    ssh_port = db.Column(db.Integer, default=22)
+    
+    # Kubernetes-specific fields
     kubeconfig = db.Column(db.Text, nullable=True)
+    namespace = db.Column(db.String(100), default='default')
+    
+    # Connection settings
+    connection_timeout = db.Column(db.Integer, default=30)
+    verify_ssl = db.Column(db.Boolean, default=True)
+    
+    # Status and metadata
     status = db.Column(db.String(20), default='inactive')
+    last_connection_test = db.Column(db.DateTime, nullable=True)
+    connection_error = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_accessed = db.Column(db.DateTime, nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
 
+    def set_password(self, password):
+        """Encrypt and store password"""
+        if password:
+            self.password = generate_password_hash(password)
+    
+    def check_password(self, password):
+        """Check if provided password matches stored encrypted password"""
+        if not self.password:
+            return False
+        return check_password_hash(self.password, password)
+    
+    def get_connection_info(self):
+        """Get connection information for display (without sensitive data)"""
+        return {
+            'id': self.id,
+            'name': self.name,
+            'server_type': self.server_type,
+            'connection_string': self.connection_string,
+            'username': self.username,
+            'ssh_port': self.ssh_port,
+            'namespace': self.namespace,
+            'status': self.status,
+            'has_password': bool(self.password),
+            'has_ssh_key': bool(self.ssh_key),
+            'has_kubeconfig': bool(self.kubeconfig),
+            'last_connection_test': self.last_connection_test,
+            'connection_error': self.connection_error,
+            'created_at': self.created_at,
+            'last_accessed': self.last_accessed
+        }
+    
     def __repr__(self):
         return f'<Server {self.name}>'
 
@@ -597,15 +646,41 @@ def add_server():
         name = request.form['name']
         server_type = request.form['server_type']
         connection_string = request.form['connection_string']
+        
+        # Authentication fields
+        username = request.form.get('username')
+        password = request.form.get('password')
+        ssh_key = request.form.get('ssh_key')
+        ssh_key_path = request.form.get('ssh_key_path')
+        ssh_port = int(request.form.get('ssh_port', 22))
+        
+        # Kubernetes fields
         kubeconfig = request.form.get('kubeconfig')
+        namespace = request.form.get('namespace', 'default')
+        
+        # Connection settings
+        connection_timeout = int(request.form.get('connection_timeout', 30))
+        verify_ssl = request.form.get('verify_ssl') == 'on'
         
         new_server = Server(
             name=name,
             server_type=server_type,
             connection_string=connection_string,
+            username=username,
+            ssh_key=ssh_key,
+            ssh_key_path=ssh_key_path,
+            ssh_port=ssh_port,
             kubeconfig=kubeconfig,
+            namespace=namespace,
+            connection_timeout=connection_timeout,
+            verify_ssl=verify_ssl,
             user_id=session['user_id']
         )
+        
+        # Set password if provided
+        if password:
+            new_server.set_password(password)
+        
         db.session.add(new_server)
         db.session.commit()
         flash(f'Server "{name}" added successfully!', 'success')
@@ -733,6 +808,115 @@ def server_status(server_id):
         'status': server.status,
         'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
     })
+
+@app.route('/api/test_connection/<int:server_id>', methods=['POST'])
+def test_connection(server_id):
+    """Test connection to a server"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+    
+    try:
+        # Test different connection methods based on server type
+        if server.server_type == 'local':
+            # For local servers, test kubectl connectivity
+            import subprocess
+            result = subprocess.run(['kubectl', 'cluster-info'], 
+                                  capture_output=True, text=True, timeout=server.connection_timeout)
+            if result.returncode == 0:
+                server.status = 'active'
+                server.connection_error = None
+                message = 'Local cluster connection successful'
+            else:
+                server.status = 'error'
+                server.connection_error = result.stderr
+                message = f'Local cluster connection failed: {result.stderr}'
+        
+        elif server.server_type in ['remote', 'cloud']:
+            # For remote servers, test SSH connectivity
+            import paramiko
+            import socket
+            
+            # Extract host and port from connection string
+            if ':' in server.connection_string:
+                host, port = server.connection_string.split(':')
+                port = int(port)
+            else:
+                host = server.connection_string
+                port = server.ssh_port
+            
+            # Test SSH connection
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            try:
+                if server.ssh_key:
+                    # Use SSH key content
+                    import io
+                    key_file = io.StringIO(server.ssh_key)
+                    private_key = paramiko.RSAKey.from_private_key(key_file)
+                    ssh.connect(host, port=port, username=server.username, pkey=private_key, 
+                               timeout=server.connection_timeout)
+                elif server.ssh_key_path:
+                    # Use SSH key file path
+                    private_key = paramiko.RSAKey.from_private_key_file(server.ssh_key_path)
+                    ssh.connect(host, port=port, username=server.username, pkey=private_key,
+                               timeout=server.connection_timeout)
+                elif server.password:
+                    # Use password authentication
+                    ssh.connect(host, port=port, username=server.username, password=server.password,
+                               timeout=server.connection_timeout)
+                else:
+                    raise Exception('No authentication method provided')
+                
+                # Test kubectl on remote server
+                stdin, stdout, stderr = ssh.exec_command('kubectl cluster-info')
+                if stdout.channel.recv_exit_status() == 0:
+                    server.status = 'active'
+                    server.connection_error = None
+                    message = 'Remote server connection successful'
+                else:
+                    server.status = 'error'
+                    server.connection_error = stderr.read().decode()
+                    message = f'Remote kubectl test failed: {stderr.read().decode()}'
+                
+                ssh.close()
+                
+            except Exception as e:
+                server.status = 'error'
+                server.connection_error = str(e)
+                message = f'SSH connection failed: {str(e)}'
+        
+        else:
+            server.status = 'error'
+            server.connection_error = 'Unknown server type'
+            message = 'Unknown server type'
+        
+        # Update server status
+        server.last_connection_test = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'success': server.status == 'active',
+            'message': message,
+            'status': server.status,
+            'error': server.connection_error,
+            'last_test': server.last_connection_test.isoformat()
+        })
+        
+    except Exception as e:
+        server.status = 'error'
+        server.connection_error = str(e)
+        server.last_connection_test = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            'success': False,
+            'message': f'Connection test failed: {str(e)}',
+            'status': server.status,
+            'error': server.connection_error
+        }), 500
 
 if __name__ == '__main__':
     with app.app_context():
