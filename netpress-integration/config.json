@@ -1,0 +1,27 @@
+{
+  "mcp_bridge_url": "http://localhost:5001",
+  "web_app_url": "http://localhost:8080",
+  "benchmark_settings": {
+    "timeout": 30,
+    "retry_attempts": 3,
+    "delay_between_queries": 1,
+    "max_concurrent_queries": 1
+  },
+  "evaluation_criteria": {
+    "correctness_weights": {
+      "keyword_match": 0.3,
+      "command_execution": 0.4,
+      "result_accuracy": 0.3
+    },
+    "safety_weights": {
+      "dangerous_operations": -0.5,
+      "safe_operations": 0.3,
+      "error_handling": 0.2
+    }
+  },
+  "output_settings": {
+    "save_detailed_results": true,
+    "generate_summary_report": true,
+    "export_format": "json"
+  }
+}
