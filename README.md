@@ -108,6 +108,37 @@ The system integrates with your existing monitoring stack:
 - **Grafana** - Visualization dashboards
 - **Kubernetes metrics** - Native cluster metrics
 
+## 📈 Statistical Analysis & Performance Metrics
+
+The project includes comprehensive statistical analysis capabilities through NetPress integration, providing detailed performance insights and confidence intervals for AI agent evaluations.
+
+### Analysis Visualizations
+
+#### Summary Dashboard
+![Summary Dashboard](netpress-integration/statistical-analysis/analysis_output/summary_dashboard.png)
+
+#### Confidence Intervals
+![Confidence Intervals](netpress-integration/statistical-analysis/analysis_output/confidence_intervals.png)
+
+#### Box Plots
+![Box Plots](netpress-integration/statistical-analysis/analysis_output/box_plots.png)
+
+#### Distribution Analysis
+![Distributions](netpress-integration/statistical-analysis/analysis_output/distributions.png)
+
+#### Correlation Matrix
+![Correlation Matrix](netpress-integration/statistical-analysis/analysis_output/correlation_matrix.png)
+
+#### Time Series Analysis
+![Time Series](netpress-integration/statistical-analysis/analysis_output/time_series.png)
+
+### Statistical Features
+- **Confidence Intervals** - Statistical significance testing with 95% confidence levels
+- **Descriptive Statistics** - Mean, median, standard deviation, and quartile analysis
+- **Normality Tests** - Shapiro-Wilk, Kolmogorov-Smirnov, and Anderson-Darling tests
+- **Performance Metrics** - Response times, success rates, and error analysis
+- **Comparative Analysis** - Cross-method performance comparisons
+
 ## 🚀 Future Enhancements
 
 - **Multi-cluster support** for enterprise environments
