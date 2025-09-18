@@ -19,130 +19,169 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Simple Natural Language Processor
-class SimpleKubernetesProcessor:
+# Intelligent MCP-based Natural Language Processor
+class MCPKubernetesProcessor:
     def __init__(self):
-        self.command_mapping = {
-            # Pod operations
-            'show pods': 'kubectl get pods',
-            'list pods': 'kubectl get pods',
-            'get pods': 'kubectl get pods',
-            'show me all pods': 'kubectl get pods',
-            'what pods are running': 'kubectl get pods',
-            'display pods': 'kubectl get pods',
-            'pod list': 'kubectl get pods',
-            
-            # Service operations
-            'show services': 'kubectl get services',
-            'list services': 'kubectl get services',
-            'get services': 'kubectl get services',
-            'display services': 'kubectl get services',
-            'service list': 'kubectl get services',
-            
-            # Event operations
-            'show events': 'kubectl get events',
-            'get events': 'kubectl get events',
-            'what is wrong': 'kubectl get events',
-            'check errors': 'kubectl get events',
-            'cluster problems': 'kubectl get events',
-            'health check': 'kubectl get events',
-            'cluster health': 'kubectl get events',
-            'how is the health': 'kubectl get events',
-            'health of the cluster': 'kubectl get events',
-            'cluster issues': 'kubectl get events',
-            'any problems': 'kubectl get events',
-            'check cluster': 'kubectl get events',
-            'diagnose cluster': 'kubectl get events',
-            
-            # Cluster info
-            'cluster info': 'kubectl cluster-info',
-            'cluster status': 'kubectl cluster-info',
-            'show cluster': 'kubectl cluster-info',
-            'cluster details': 'kubectl cluster-info',
-            'cluster overview': 'kubectl cluster-info',
-            
-            # Node operations
-            'show nodes': 'kubectl get nodes',
-            'list nodes': 'kubectl get nodes',
-            'get nodes': 'kubectl get nodes',
-            'node status': 'kubectl get nodes',
-            'display nodes': 'kubectl get nodes',
-            
-            # Deployment operations
-            'show deployments': 'kubectl get deployments',
-            'list deployments': 'kubectl get deployments',
-            'get deployments': 'kubectl get deployments',
-            'deployment status': 'kubectl get deployments',
-        }
+        self.mcp_server_url = "http://localhost:5002/mcp"
+        self.available_tools = None
+        self._load_tools()
     
-    def process_query(self, query: str) -> dict:
-        """Process natural language query and return kubectl command"""
-        query_lower = query.lower().strip()
-        
-        # Direct mapping
-        if query_lower in self.command_mapping:
-            return {
-                'command': self.command_mapping[query_lower],
-                'explanation': f"I'll execute: {self.command_mapping[query_lower]}"
-            }
-        
-        # Pattern matching for pod creation
-        if 'create' in query_lower and 'pod' in query_lower:
-            pod_name = self._extract_pod_name(query)
-            command = f"kubectl run {pod_name} --image=nginx"
-            return {
-                'command': command,
-                'explanation': f"I'll create a pod named '{pod_name}': {command}"
-            }
-        
-        # Pattern matching for other operations
-        if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
-            return {
-                'command': 'kubectl get pods',
-                'explanation': f"I'll show you all pods: kubectl get pods"
-            }
-        
-        if 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
-            return {
-                'command': 'kubectl get services',
-                'explanation': f"I'll show you all services: kubectl get services"
-            }
-        
-        if 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
-            return {
-                'command': 'kubectl get deployments',
-                'explanation': f"I'll show you all deployments: kubectl get deployments"
-            }
-        
-        if 'nodes' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower):
-            return {
-                'command': 'kubectl get nodes',
-                'explanation': f"I'll show you all nodes: kubectl get nodes"
-            }
-        
-        # Health and diagnostic queries
-        if any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']):
-            if 'cluster' in query_lower or 'how' in query_lower:
-                return {
-                    'command': 'kubectl get events',
-                    'explanation': f"I'll check the cluster health by looking at events: kubectl get events"
+    def _load_tools(self):
+        """Load available MCP tools from the server"""
+        try:
+            response = requests.post(
+                self.mcp_server_url,
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                timeout=5
+            )
+            if response.status_code == 200:
+                result = response.json()
+                self.available_tools = {tool['name']: tool for tool in result['result']['tools']}
+                print(f"✅ Loaded {len(self.available_tools)} MCP tools")
+            else:
+                print(f"⚠️  Failed to load MCP tools: {response.status_code}")
+                self.available_tools = {}
+        except Exception as e:
+            print(f"⚠️  Error loading MCP tools: {e}")
+            self.available_tools = {}
+    
+    def _call_mcp_tool(self, tool_name: str, arguments: dict = None) -> dict:
+        """Call an MCP tool with the given arguments"""
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": tool_name,
+                    "arguments": arguments or {}
                 }
+            }
+            
+            response = requests.post(
+                self.mcp_server_url,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if 'result' in result:
+                    return {
+                        'success': True,
+                        'result': result['result'],
+                        'tool': tool_name,
+                        'arguments': arguments
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': result.get('error', 'Unknown error'),
+                        'tool': tool_name,
+                        'arguments': arguments
+                    }
             else:
                 return {
-                    'command': 'kubectl get events',
-                    'explanation': f"I'll check for any issues: kubectl get events"
+                    'success': False,
+                    'error': f"HTTP {response.status_code}",
+                    'tool': tool_name,
+                    'arguments': arguments
                 }
-        
-        if 'events' in query_lower:
+                
+        except Exception as e:
             return {
-                'command': 'kubectl get events',
-                'explanation': f"I'll check the events: kubectl get events"
+                'success': False,
+                'error': str(e),
+                'tool': tool_name,
+                'arguments': arguments
+            }
+    
+    def process_query(self, query: str) -> dict:
+        """Process natural language query using intelligent MCP tools"""
+        query_lower = query.lower().strip()
+        
+        # Map natural language to MCP tools
+        if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower or 'running' in query_lower):
+            # Use MCP pods_list tool
+            result = self._call_mcp_tool('pods_list', {})
+            return {
+                'command': 'MCP: pods_list',
+                'explanation': f"I'll show you all pods using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            # Use MCP resources_list tool for services
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'v1',
+                'kind': 'Service'
+            })
+            return {
+                'command': 'MCP: resources_list (services)',
+                'explanation': f"I'll show you all services using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            # Use MCP resources_list tool for deployments
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'apps/v1',
+                'kind': 'Deployment'
+            })
+            return {
+                'command': 'MCP: resources_list (deployments)',
+                'explanation': f"I'll show you all deployments using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif 'nodes' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            # Use MCP resources_list tool for nodes
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'v1',
+                'kind': 'Node'
+            })
+            return {
+                'command': 'MCP: resources_list (nodes)',
+                'explanation': f"I'll show you all nodes using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif 'create' in query_lower and 'pod' in query_lower:
+            # Use MCP pods_run tool
+            pod_name = self._extract_pod_name(query)
+            result = self._call_mcp_tool('pods_run', {
+                'name': pod_name,
+                'image': 'nginx'
+            })
+            return {
+                'command': f'MCP: pods_run ({pod_name})',
+                'explanation': f"I'll create a pod named '{pod_name}' using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']) and ('cluster' in query_lower or 'how' in query_lower):
+            # Use MCP events_list tool for cluster health
+            result = self._call_mcp_tool('events_list', {})
+            return {
+                'command': 'MCP: events_list',
+                'explanation': f"I'll check the cluster health by looking at events using MCP tools",
+                'mcp_result': result
+            }
+        
+        elif 'events' in query_lower:
+            # Use MCP events_list tool
+            result = self._call_mcp_tool('events_list', {})
+            return {
+                'command': 'MCP: events_list',
+                'explanation': f"I'll check the events using MCP tools",
+                'mcp_result': result
             }
         
         # Default response
         return {
             'command': None,
-            'explanation': f"I understand you want to: '{query}'. Please try a more specific request like 'show pods', 'list services', or 'check events'."
+            'explanation': f"I understand you want to: '{query}'. I can help with pods, services, deployments, nodes, events, and cluster health using intelligent MCP tools.",
+            'mcp_result': None
         }
     
     def _extract_pod_name(self, query: str) -> str:
@@ -184,8 +223,8 @@ class SimpleKubernetesProcessor:
         
         return pod_name
 
-# Initialize processor
-processor = SimpleKubernetesProcessor()
+# Initialize intelligent MCP processor
+processor = MCPKubernetesProcessor()
 
 # Database Models
 class User(db.Model):
@@ -355,47 +394,49 @@ def api_chat(server_id):
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     else:
-        # Natural language query - use simple processor
+        # Natural language query - use intelligent MCP processor
         try:
             processed = processor.process_query(message)
             
-            if processed['command']:
-                # Execute the command via MCP bridge
-                try:
-                    mcp_response = requests.post(
-                        'http://localhost:5001/api/chat',
-                        json={'message': processed['command']},
-                        timeout=10
-                    )
-                    
-                    if mcp_response.status_code == 200:
-                        mcp_result = mcp_response.json()
-                        response_text = f"{processed['explanation']}\n\n**Result:**\n{mcp_result.get('response', 'No response')}"
-                        
-                        return jsonify({
-                            'response': response_text,
-                            'status': 'success',
-                            'ai_processed': True,
-                            'command_executed': processed['command']
-                        })
+            if processed['command'] and processed.get('mcp_result'):
+                # MCP tool was called directly
+                mcp_result = processed['mcp_result']
+                
+                if mcp_result['success']:
+                    # Format the MCP result nicely
+                    if 'content' in mcp_result['result']:
+                        # Handle MCP content format
+                        content = mcp_result['result']['content']
+                        if isinstance(content, list) and len(content) > 0:
+                            result_text = content[0].get('text', str(content))
+                        else:
+                            result_text = str(content)
                     else:
-                        return jsonify({
-                            'response': f"{processed['explanation']}\n\n**Error:** Failed to execute command",
-                            'status': 'error',
-                            'ai_processed': True
-                        })
-                        
-                except Exception as e:
+                        result_text = str(mcp_result['result'])
+                    
+                    response_text = f"{processed['explanation']}\n\n**MCP Tool Result:**\n{result_text}"
+                    
                     return jsonify({
-                        'response': f"{processed['explanation']}\n\n**Error:** {str(e)}",
+                        'response': response_text,
+                        'status': 'success',
+                        'ai_processed': True,
+                        'mcp_tool': processed['command'],
+                        'mcp_success': True
+                    })
+                else:
+                    return jsonify({
+                        'response': f"{processed['explanation']}\n\n**MCP Error:** {mcp_result.get('error', 'Unknown error')}",
                         'status': 'error',
-                        'ai_processed': True
+                        'ai_processed': True,
+                        'mcp_tool': processed['command'],
+                        'mcp_success': False
                     })
             else:
                 return jsonify({
                     'response': processed['explanation'],
                     'status': 'info',
-                    'ai_processed': True
+                    'ai_processed': True,
+                    'mcp_tool': None
                 })
                 
         except Exception as e:
