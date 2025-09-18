@@ -1,0 +1,251 @@
+{% extends "base.html" %}
+
+{% block title %}AI Chat - {{ server.name }} - AI4K8s{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2 class="mb-1">
+                    <i class="fas fa-comments me-2"></i>AI Chat
+                </h2>
+                <p class="text-muted">
+                    <i class="fas fa-server me-1"></i>{{ server.name }} 
+                    <span class="badge bg-secondary ms-2">{{ server.server_type.title() }}</span>
+                </p>
+            </div>
+            <div>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 class="mb-0">
+                        <i class="fas fa-robot me-2"></i>Kubernetes AI Assistant
+                    </h5>
+                    <small>Ask me anything about your {{ server.name }} cluster</small>
+                </div>
+                <div>
+                    <span class="badge bg-light text-dark" id="connection-status">
+                        <i class="fas fa-circle text-success me-1"></i>Connected
+                    </span>
+                </div>
+            </div>
+            
+            <div class="card-body p-0 d-flex flex-column" style="height: 600px;">
+                <!-- Chat Messages -->
+                <div class="flex-grow-1 p-3 overflow-auto" id="chat-messages" style="max-height: 500px;">
+                    <div class="message bot-message mb-3">
+                        <div class="d-flex">
+                            <div class="avatar me-3">
+                                <i class="fas fa-robot text-primary"></i>
+                            </div>
+                            <div class="message-content">
+                                <div class="message-bubble bg-light p-3 rounded">
+                                    <p class="mb-0">Hello! I'm your Kubernetes AI assistant. I can help you manage your {{ server.name }} cluster. Try asking me things like:</p>
+                                    <ul class="mt-2 mb-0">
+                                        <li>"Show me all pods"</li>
+                                        <li>"What's the status of my cluster?"</li>
+                                        <li>"Get logs from the nginx pod"</li>
+                                        <li>"Show me recent events"</li>
+                                    </ul>
+                                </div>
+                                <small class="text-muted">Just now</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Chat Input -->
+                <div class="border-top p-3">
+                    <form id="chat-form">
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="message-input" 
+                                   placeholder="Ask me about your Kubernetes cluster..." autocomplete="off">
+                            <button class="btn btn-primary" type="submit" id="send-button">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </form>
+                    
+                    <!-- Quick Actions -->
+                    <div class="mt-2">
+                        <small class="text-muted me-3">Quick actions:</small>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="sendQuickMessage('kubectl get pods')">
+                            List Pods
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="sendQuickMessage('kubectl get events')">
+                            Show Events
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary me-1" onclick="sendQuickMessage('kubectl get nodes')">
+                            Node Status
+                        </button>
+                        <button class="btn btn-sm btn-outline-primary" onclick="sendQuickMessage('kubectl top pods')">
+                            Resource Usage
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const serverId = {{ server.id }};
+const chatMessages = document.getElementById('chat-messages');
+const messageInput = document.getElementById('message-input');
+const chatForm = document.getElementById('chat-form');
+const sendButton = document.getElementById('send-button');
+
+function addMessage(content, isBot = true, timestamp = null) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${isBot ? 'bot-message' : 'user-message'} mb-3`;
+    
+    const time = timestamp || new Date().toLocaleTimeString();
+    
+    if (isBot) {
+        messageDiv.innerHTML = `
+            <div class="d-flex">
+                <div class="avatar me-3">
+                    <i class="fas fa-robot text-primary"></i>
+                </div>
+                <div class="message-content">
+                    <div class="message-bubble bg-light p-3 rounded">
+                        <pre class="mb-0" style="white-space: pre-wrap; font-family: inherit;">${content}</pre>
+                    </div>
+                    <small class="text-muted">${time}</small>
+                </div>
+            </div>
+        `;
+    } else {
+        messageDiv.innerHTML = `
+            <div class="d-flex justify-content-end">
+                <div class="message-content text-end">
+                    <div class="message-bubble bg-primary text-white p-3 rounded">
+                        <p class="mb-0">${content}</p>
+                    </div>
+                    <small class="text-muted">${time}</small>
+                </div>
+                <div class="avatar ms-3">
+                    <i class="fas fa-user text-secondary"></i>
+                </div>
+            </div>
+        `;
+    }
+    
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function sendMessage(message) {
+    if (!message.trim()) return;
+    
+    // Add user message
+    addMessage(message, false);
+    
+    // Disable input
+    messageInput.disabled = true;
+    sendButton.disabled = true;
+    sendButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    
+    // Send to API
+    fetch(`/api/chat/${serverId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ message: message })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            addMessage(`Error: ${data.error}`, true);
+        } else {
+            addMessage(data.response, true);
+        }
+    })
+    .catch(error => {
+        addMessage(`Connection error: ${error.message}`, true);
+    })
+    .finally(() => {
+        // Re-enable input
+        messageInput.disabled = false;
+        sendButton.disabled = false;
+        sendButton.innerHTML = '<i class="fas fa-paper-plane"></i>';
+        messageInput.focus();
+    });
+}
+
+function sendQuickMessage(message) {
+    messageInput.value = message;
+    sendMessage(message);
+}
+
+// Event listeners
+chatForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const message = messageInput.value.trim();
+    if (message) {
+        sendMessage(message);
+        messageInput.value = '';
+    }
+});
+
+// Focus input on load
+messageInput.focus();
+</script>
+
+<style>
+.message-bubble {
+    max-width: 80%;
+    word-wrap: break-word;
+}
+
+.user-message .message-bubble {
+    max-width: 60%;
+}
+
+.avatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background-color: #f8f9fa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+#chat-messages {
+    scrollbar-width: thin;
+}
+
+#chat-messages::-webkit-scrollbar {
+    width: 6px;
+}
+
+#chat-messages::-webkit-scrollbar-track {
+    background: #f1f1f1;
+}
+
+#chat-messages::-webkit-scrollbar-thumb {
+    background: #c1c1c1;
+    border-radius: 3px;
+}
+
+#chat-messages::-webkit-scrollbar-thumb:hover {
+    background: #a8a8a8;
+}
+</style>
+{% endblock %}

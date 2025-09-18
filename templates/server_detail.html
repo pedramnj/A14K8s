@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+
+{% block title %}{{ server.name }} - AI4K8s{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h2 class="mb-1">
+                    <i class="fas fa-server me-2"></i>{{ server.name }}
+                </h2>
+                <p class="text-muted">
+                    <span class="badge bg-secondary me-2">{{ server.server_type.title() }}</span>
+                    <span class="badge bg-{% if server.status == 'active' %}success{% elif server.status == 'inactive' %}warning{% else %}danger{% endif %}">
+                        {{ server.status.title() }}
+                    </span>
+                </p>
+            </div>
+            <div>
+                <a href="{{ url_for('chat', server_id=server.id) }}" class="btn btn-primary me-2">
+                    <i class="fas fa-comments me-2"></i>AI Chat
+                </a>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">
+                    <i class="fas fa-arrow-left me-2"></i>Back to Dashboard
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-8">
+        <!-- Server Information -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom">
+                <h5 class="mb-0"><i class="fas fa-info-circle me-2"></i>Server Information</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <table class="table table-borderless">
+                            <tr>
+                                <td><strong>Name:</strong></td>
+                                <td>{{ server.name }}</td>
+                            </tr>
+                            <tr>
+                                <td><strong>Type:</strong></td>
+                                <td>
+                                    <span class="badge bg-secondary">{{ server.server_type.title() }}</span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Status:</strong></td>
+                                <td>
+                                    <span class="badge bg-{% if server.status == 'active' %}success{% elif server.status == 'inactive' %}warning{% else %}danger{% endif %}">
+                                        <i class="fas fa-{% if server.status == 'active' %}check-circle{% elif server.status == 'inactive' %}pause-circle{% else %}exclamation-circle{% endif %} me-1"></i>
+                                        {{ server.status.title() }}
+                                    </span>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Created:</strong></td>
+                                <td>{{ server.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <div class="col-md-6">
+                        <table class="table table-borderless">
+                            <tr>
+                                <td><strong>Connection:</strong></td>
+                                <td><code>{{ server.connection_string }}</code></td>
+                            </tr>
+                            <tr>
+                                <td><strong>Last Accessed:</strong></td>
+                                <td>
+                                    {% if server.last_accessed %}
+                                        {{ server.last_accessed.strftime('%Y-%m-%d %H:%M:%S') }}
+                                    {% else %}
+                                        <span class="text-muted">Never</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            <tr>
+                                <td><strong>Server ID:</strong></td>
+                                <td><code>{{ server.id }}</code></td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom">
+                <h5 class="mb-0"><i class="fas fa-bolt me-2"></i>Quick Actions</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <div class="d-grid">
+                            <a href="{{ url_for('chat', server_id=server.id) }}" class="btn btn-primary">
+                                <i class="fas fa-comments me-2"></i>Start AI Chat
+                            </a>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="d-grid">
+                            <button class="btn btn-outline-info" onclick="checkServerStatus()">
+                                <i class="fas fa-sync-alt me-2"></i>Check Status
+                            </button>
+                        </div>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <div class="d-grid">
+                            <button class="btn btn-outline-warning" onclick="testConnection()">
+                                <i class="fas fa-network-wired me-2"></i>Test Connection
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Kubeconfig (if available) -->
+        {% if server.kubeconfig %}
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-key me-2"></i>Kubeconfig</h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="toggleKubeconfig()">
+                    <i class="fas fa-eye me-1"></i>Show/Hide
+                </button>
+            </div>
+            <div class="card-body">
+                <div id="kubeconfig-content" style="display: none;">
+                    <pre class="bg-light p-3 rounded"><code>{{ server.kubeconfig }}</code></pre>
+                </div>
+                <div id="kubeconfig-placeholder">
+                    <p class="text-muted mb-0">
+                        <i class="fas fa-lock me-2"></i>Kubeconfig is configured (click Show/Hide to view)
+                    </p>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    
+    <div class="col-md-4">
+        <!-- Server Stats -->
+        <div class="card border-0 shadow-sm mb-4">
+            <div class="card-header bg-white border-bottom">
+                <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>Server Stats</h5>
+            </div>
+            <div class="card-body">
+                <div class="text-center mb-3">
+                    <div class="server-icon mb-3">
+                        {% if server.server_type == 'local' %}
+                            <i class="fas fa-desktop fa-3x text-primary"></i>
+                        {% elif server.server_type == 'remote' %}
+                            <i class="fas fa-network-wired fa-3x text-info"></i>
+                        {% else %}
+                            <i class="fas fa-cloud fa-3x text-success"></i>
+                        {% endif %}
+                    </div>
+                    <h6>{{ server.name }}</h6>
+                    <p class="text-muted small">{{ server.server_type.title() }} Server</p>
+                </div>
+                
+                <div class="row text-center">
+                    <div class="col-6">
+                        <div class="border-end">
+                            <h6 class="mb-1" id="uptime">--</h6>
+                            <small class="text-muted">Uptime</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <h6 class="mb-1" id="response-time">--</h6>
+                        <small class="text-muted">Response Time</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Recent Activity -->
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-bottom">
+                <h5 class="mb-0"><i class="fas fa-history me-2"></i>Recent Activity</h5>
+            </div>
+            <div class="card-body">
+                <div class="activity-item">
+                    <div class="d-flex align-items-center">
+                        <div class="activity-icon me-3">
+                            <i class="fas fa-plus-circle text-success"></i>
+                        </div>
+                        <div>
+                            <p class="mb-1">Server created</p>
+                            <small class="text-muted">{{ server.created_at.strftime('%Y-%m-%d %H:%M') }}</small>
+                        </div>
+                    </div>
+                </div>
+                
+                {% if server.last_accessed %}
+                <div class="activity-item mt-3">
+                    <div class="d-flex align-items-center">
+                        <div class="activity-icon me-3">
+                            <i class="fas fa-comments text-primary"></i>
+                        </div>
+                        <div>
+                            <p class="mb-1">Last AI chat session</p>
+                            <small class="text-muted">{{ server.last_accessed.strftime('%Y-%m-%d %H:%M') }}</small>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleKubeconfig() {
+    const content = document.getElementById('kubeconfig-content');
+    const placeholder = document.getElementById('kubeconfig-placeholder');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        placeholder.style.display = 'none';
+    } else {
+        content.style.display = 'none';
+        placeholder.style.display = 'block';
+    }
+}
+
+function checkServerStatus() {
+    fetch(`/api/server_status/{{ server.id }}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.status) {
+                // Update status display
+                location.reload();
+            }
+        })
+        .catch(error => {
+            console.error('Error checking server status:', error);
+            alert('Error checking server status');
+        });
+}
+
+function testConnection() {
+    // This would test the actual connection to the server
+    alert('Connection test functionality will be implemented in the next version');
+}
+
+// Load server stats
+document.addEventListener('DOMContentLoaded', function() {
+    // Simulate loading stats
+    setTimeout(() => {
+        document.getElementById('uptime').textContent = '2h 15m';
+        document.getElementById('response-time').textContent = '45ms';
+    }, 1000);
+});
+</script>
+
+<style>
+.activity-item {
+    padding: 0.5rem 0;
+}
+
+.activity-icon {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+</style>
+{% endblock %}
