@@ -205,6 +205,162 @@ spec:
                   except Exception as e:
                       return {"error": str(e)}
 
+              def get_pod_top(self, pod_name: str = None, namespace: str = "default") -> Dict[str, Any]:
+                  """Get pod resource usage (CPU and memory)"""
+                  if not self.connected or not self.k8s_client:
+                      return {"error": "Kubernetes client not available"}
+                  
+                  try:
+                      # Get pod information and simulate resource usage
+                      # Note: Real metrics require metrics-server, but we can provide pod resource info
+                      if pod_name:
+                          pod = self.k8s_client.read_namespaced_pod(name=pod_name, namespace=namespace)
+                          pods = [pod]
+                      else:
+                          pods = self.k8s_client.list_namespaced_pod(namespace=namespace).items
+                      
+                      pod_metrics = []
+                      for pod in pods:
+                          # Get resource requests and limits
+                          cpu_request = "0m"
+                          memory_request = "0Mi"
+                          cpu_limit = "0m"
+                          memory_limit = "0Mi"
+                          
+                          if pod.spec.containers:
+                              container = pod.spec.containers[0]
+                              if container.resources:
+                                  if container.resources.requests:
+                                      cpu_request = container.resources.requests.get('cpu', '0m')
+                                      memory_request = container.resources.requests.get('memory', '0Mi')
+                                  if container.resources.limits:
+                                      cpu_limit = container.resources.limits.get('cpu', '0m')
+                                      memory_limit = container.resources.limits.get('memory', '0Mi')
+                          
+                          pod_metrics.append({
+                              "name": pod.metadata.name,
+                              "namespace": pod.metadata.namespace,
+                              "status": pod.status.phase,
+                              "cpu_request": cpu_request,
+                              "memory_request": memory_request,
+                              "cpu_limit": cpu_limit,
+                              "memory_limit": memory_limit,
+                              "note": "Real-time metrics require metrics-server. Showing resource requests/limits instead."
+                          })
+                      
+                      return {
+                          "namespace": namespace,
+                          "pod_name": pod_name,
+                          "metrics": pod_metrics,
+                          "total_pods": len(pod_metrics),
+                          "note": "Showing resource requests/limits. For real-time CPU/memory usage, install metrics-server."
+                      }
+                  except Exception as e:
+                      return {"error": str(e)}
+
+              def exec_into_pod(self, pod_name: str, namespace: str, command: str, container: str = None) -> Dict[str, Any]:
+                  """Execute a command in a pod"""
+                  if not self.connected or not self.k8s_client:
+                      return {"error": "Kubernetes client not available"}
+                  
+                  try:
+                      from kubernetes.stream import stream
+                      
+                      # Use Kubernetes Python client for exec
+                      exec_command = ['/bin/sh', '-c', command]
+                      
+                      resp = stream(
+                          self.k8s_client.connect_get_namespaced_pod_exec,
+                          pod_name,
+                          namespace,
+                          command=exec_command,
+                          container=container,
+                          stderr=True,
+                          stdin=False,
+                          stdout=True,
+                          tty=False
+                      )
+                      
+                      return {
+                          "pod": pod_name,
+                          "namespace": namespace,
+                          "container": container,
+                          "command": command,
+                          "output": resp,
+                          "success": True
+                      }
+                  except Exception as e:
+                      return {
+                          "error": f"Failed to exec into pod: {str(e)}",
+                          "pod": pod_name,
+                          "namespace": namespace,
+                          "command": command,
+                          "success": False
+                      }
+
+              def run_container_in_pod(self, image: str, name: str = None, namespace: str = "default", 
+                                     command: str = None, args: list = None, ports: dict = None) -> Dict[str, Any]:
+                  """Run a container image in a pod"""
+                  if not self.connected or not self.k8s_client:
+                      return {"error": "Kubernetes client not available"}
+                  
+                  try:
+                      import uuid
+                      from kubernetes.client import V1Pod, V1PodSpec, V1Container, V1ObjectMeta
+                      
+                      # Generate pod name if not provided
+                      if not name:
+                          name = f"run-{image.split('/')[-1].split(':')[0]}-{str(uuid.uuid4())[:8]}"
+                      
+                      # Create container spec
+                      container_spec = V1Container(
+                          name=name,
+                          image=image,
+                          command=[command] if command else None,
+                          args=args
+                      )
+                      
+                      # Create pod spec
+                      pod_spec = V1PodSpec(
+                          containers=[container_spec],
+                          restart_policy="Never"  # Don't restart completed pods
+                      )
+                      
+                      # Create pod metadata
+                      pod_metadata = V1ObjectMeta(
+                          name=name,
+                          namespace=namespace,
+                          labels={
+                              "app": "run-container",
+                              "image": image.split('/')[-1].split(':')[0]
+                          }
+                      )
+                      
+                      # Create pod
+                      pod = V1Pod(
+                          metadata=pod_metadata,
+                          spec=pod_spec
+                      )
+                      
+                      # Create the pod
+                      created_pod = self.k8s_client.create_namespaced_pod(
+                          namespace=namespace,
+                          body=pod
+                      )
+                      
+                      return {
+                          "action": "created",
+                          "pod_name": name,
+                          "namespace": namespace,
+                          "image": image,
+                          "command": command,
+                          "args": args,
+                          "status": "success",
+                          "pod_uid": created_pod.metadata.uid
+                      }
+                  except Exception as e:
+                      return {"error": str(e)}
+
               def get_cluster_info(self) -> Dict[str, Any]:
                   """Get cluster information"""
                   if not self.connected:
@@ -292,6 +448,20 @@ spec:
                       elif action == 'logs':
                           if name:
                               return self.get_pod_logs(name, namespace, 100)
+                      elif action == 'top':
+                          if resource == 'pods':
+                              return self.get_pod_top(name, namespace)
+                      elif action == 'exec':
+                          if name:
+                              # Extract command from kubectl exec pod -- command
+                              cmd_parts = parts[parts.index('--') + 1:] if '--' in parts else []
+                              command = ' '.join(cmd_parts) if cmd_parts else 'echo "No command specified"'
+                              return self.exec_into_pod(name, namespace, command)
+                      elif action == 'run':
+                          # Handle kubectl run command
+                          if len(parts) >= 3:
+                              image = parts[2]
+                              return self.run_container_in_pod(image, name, namespace)
                       elif action == 'scale':
                           if resource == 'deployment' and name:
                               # Find --replicas flag
@@ -452,6 +622,31 @@ spec:
                       if pod_match:
                           pod_name = pod_match.group(1)
                           k8s_data = self.get_pod_logs(pod_name, 'default', 50)
+                  elif 'top' in lower_query and 'pod' in lower_query:
+                      # Handle pod resource usage queries
+                      import re
+                      pod_match = re.search(r'top\s+([a-z0-9-]+)', lower_query)
+                      if pod_match:
+                          pod_name = pod_match.group(1)
+                          k8s_data = self.get_pod_top(pod_name, 'default')
+                      else:
+                          k8s_data = self.get_pod_top(None, 'default')
+                  elif 'exec' in lower_query or 'run command' in lower_query:
+                      # Handle pod exec queries
+                      import re
+                      exec_match = re.search(r'exec\s+([a-z0-9-]+)\s+(.+)', lower_query)
+                      if exec_match:
+                          pod_name = exec_match.group(1)
+                          command = exec_match.group(2)
+                          k8s_data = self.exec_into_pod(pod_name, 'default', command)
+                  elif 'run' in lower_query and ('image' in lower_query or 'container' in lower_query):
+                      # Handle run container queries
+                      import re
+                      run_match = re.search(r'run\s+([a-z0-9-]+)\s+([a-z0-9/:.-]+)', lower_query)
+                      if run_match:
+                          pod_name = run_match.group(1)
+                          image = run_match.group(2)
+                          k8s_data = self.run_container_in_pod(image, pod_name, 'default')
 
                   # Prepare context for Claude
                   context = ""
@@ -563,10 +758,13 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: ["pods", "services", "nodes"]
-  verbs: ["get", "list", "watch", "delete", "patch"]
+  verbs: ["get", "list", "watch", "delete", "patch", "create"]
 - apiGroups: [""]
   resources: ["pods/log"]
   verbs: ["get"]
+- apiGroups: [""]
+  resources: ["pods/exec"]
+  verbs: ["create"]
 - apiGroups: ["apps"]
   resources: ["deployments", "replicasets"]
   verbs: ["get", "list", "watch", "delete", "patch", "update"]

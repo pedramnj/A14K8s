@@ -286,6 +286,142 @@ class KubernetesMCP:
         except Exception as e:
             return {"error": f"Failed to get containers: {str(e)}"}
 
+    async def get_pod_top(self, pod_name: str = None, namespace: str = "default") -> Dict[str, Any]:
+        """Get pod resource usage (CPU and memory)"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        
+        try:
+            if pod_name:
+                cmd = f"kubectl top pod {pod_name} -n {namespace} --no-headers"
+            else:
+                cmd = f"kubectl top pods -n {namespace} --no-headers"
+            
+            result = subprocess.run(
+                cmd.split(),
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                return {
+                    "error": f"Failed to get pod metrics: {result.stderr}",
+                    "suggestion": "Ensure metrics-server is installed and running"
+                }
+            
+            # Parse the output
+            lines = result.stdout.strip().split('\n')
+            pod_metrics = []
+            
+            for line in lines:
+                if line.strip():
+                    parts = line.split()
+                    if len(parts) >= 3:
+                        pod_metrics.append({
+                            "name": parts[0],
+                            "cpu": parts[1],
+                            "memory": parts[2],
+                            "namespace": namespace
+                        })
+            
+            return {
+                "namespace": namespace,
+                "pod_name": pod_name,
+                "metrics": pod_metrics,
+                "total_pods": len(pod_metrics)
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": "Command timed out - metrics-server may be slow"}
+        except Exception as e:
+            return {"error": f"Failed to get pod metrics: {str(e)}"}
+
+    async def exec_into_pod(self, pod_name: str, namespace: str, command: str, container: str = None) -> Dict[str, Any]:
+        """Execute a command in a pod"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        
+        try:
+            # Build kubectl exec command
+            cmd = ["kubectl", "exec", pod_name, "-n", namespace]
+            
+            if container:
+                cmd.extend(["-c", container])
+            
+            cmd.extend(["--", "sh", "-c", command])
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            return {
+                "pod": pod_name,
+                "namespace": namespace,
+                "container": container,
+                "command": command,
+                "return_code": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "success": result.returncode == 0
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": "Command timed out"}
+        except Exception as e:
+            return {"error": f"Failed to exec into pod: {str(e)}"}
+
+    async def run_container_in_pod(self, image: str, name: str = None, namespace: str = "default", 
+                                 command: str = None, args: list = None) -> Dict[str, Any]:
+        """Run a container image in a pod"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        
+        try:
+            import uuid
+            
+            # Generate pod name if not provided
+            if not name:
+                name = f"run-{image.split('/')[-1].split(':')[0]}-{str(uuid.uuid4())[:8]}"
+            
+            # Build kubectl run command
+            cmd = ["kubectl", "run", name, f"--image={image}", f"-n", namespace, "--restart=Never"]
+            
+            if command:
+                cmd.extend(["--command", "--", command])
+            
+            if args:
+                cmd.extend(args)
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                return {
+                    "error": f"Failed to run container: {result.stderr}",
+                    "command": " ".join(cmd)
+                }
+            
+            return {
+                "action": "created",
+                "pod_name": name,
+                "namespace": namespace,
+                "image": image,
+                "command": command,
+                "args": args,
+                "status": "success",
+                "output": result.stdout
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": "Command timed out"}
+        except Exception as e:
+            return {"error": f"Failed to run container: {str(e)}"}
+
 # Initialize the Kubernetes MCP instance
 k8s_mcp = KubernetesMCP()
 
@@ -396,6 +532,84 @@ async def handle_list_tools() -> List[types.Tool]:
                 "properties": {},
                 "required": []
             }
+        ),
+        types.Tool(
+            name="get_pod_top",
+            description="Get resource usage (CPU and memory) for pods",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pod_name": {
+                        "type": "string",
+                        "description": "Name of the pod (optional, if not provided returns all pods)"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace (default: 'default')",
+                        "default": "default"
+                    }
+                },
+                "required": []
+            }
+        ),
+        types.Tool(
+            name="exec_into_pod",
+            description="Execute a command in a pod",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "pod_name": {
+                        "type": "string",
+                        "description": "Name of the pod"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace (default: 'default')",
+                        "default": "default"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to execute in the pod"
+                    },
+                    "container": {
+                        "type": "string",
+                        "description": "Container name (optional, for multi-container pods)"
+                    }
+                },
+                "required": ["pod_name", "command"]
+            }
+        ),
+        types.Tool(
+            name="run_container_in_pod",
+            description="Run a container image in a new pod",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "image": {
+                        "type": "string",
+                        "description": "Container image to run"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Name for the pod (optional, will be generated if not provided)"
+                    },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Kubernetes namespace (default: 'default')",
+                        "default": "default"
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command to run in the container (optional)"
+                    },
+                    "args": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Arguments for the command (optional)"
+                    }
+                },
+                "required": ["image"]
+            }
         )
     ]
 
@@ -421,6 +635,26 @@ async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.T
             result = await k8s_mcp.execute_kubectl_command(arguments["command"])
         elif name == "get_docker_containers":
             result = await k8s_mcp.get_docker_containers()
+        elif name == "get_pod_top":
+            result = await k8s_mcp.get_pod_top(
+                arguments.get("pod_name"),
+                arguments.get("namespace", "default")
+            )
+        elif name == "exec_into_pod":
+            result = await k8s_mcp.exec_into_pod(
+                arguments["pod_name"],
+                arguments.get("namespace", "default"),
+                arguments["command"],
+                arguments.get("container")
+            )
+        elif name == "run_container_in_pod":
+            result = await k8s_mcp.run_container_in_pod(
+                arguments["image"],
+                arguments.get("name"),
+                arguments.get("namespace", "default"),
+                arguments.get("command"),
+                arguments.get("args")
+            )
         else:
             result = {"error": f"Unknown tool: {name}"}
         
