@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+
+{% block title %}AI4K8s - AI-Powered Kubernetes Management{% endblock %}
+
+{% block content %}
+<div class="hero-section bg-gradient-primary text-white py-5 mb-5 rounded">
+    <div class="container text-center">
+        <h1 class="display-4 fw-bold mb-4">
+            <i class="fas fa-robot me-3"></i>AI4K8s
+        </h1>
+        <p class="lead mb-4">AI-Powered Kubernetes Management Platform</p>
+        <p class="mb-4">Manage your Kubernetes clusters with natural language commands through our intelligent AI agent.</p>
+        
+        {% if not session.user_id %}
+        <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+            <a href="{{ url_for('register') }}" class="btn btn-light btn-lg me-md-2">
+                <i class="fas fa-user-plus me-2"></i>Get Started
+            </a>
+            <a href="{{ url_for('login') }}" class="btn btn-outline-light btn-lg">
+                <i class="fas fa-sign-in-alt me-2"></i>Login
+            </a>
+        </div>
+        {% else %}
+        <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-light btn-lg">
+                <i class="fas fa-tachometer-alt me-2"></i>Go to Dashboard
+            </a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-lg-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="feature-icon bg-primary text-white rounded-circle mx-auto mb-3">
+                    <i class="fas fa-brain fa-2x"></i>
+                </div>
+                <h5 class="card-title">AI-Powered Management</h5>
+                <p class="card-text">Interact with your Kubernetes clusters using natural language. No need to remember complex kubectl commands.</p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="feature-icon bg-success text-white rounded-circle mx-auto mb-3">
+                    <i class="fas fa-server fa-2x"></i>
+                </div>
+                <h5 class="card-title">Multi-Server Support</h5>
+                <p class="card-text">Manage multiple Kubernetes clusters from a single interface. Add your local, remote, or cloud-based clusters.</p>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-lg-4 mb-4">
+        <div class="card h-100 border-0 shadow-sm">
+            <div class="card-body text-center">
+                <div class="feature-icon bg-info text-white rounded-circle mx-auto mb-3">
+                    <i class="fas fa-chart-line fa-2x"></i>
+                </div>
+                <h5 class="card-title">Real-time Monitoring</h5>
+                <p class="card-text">Monitor your cluster health, view events, and get insights through our integrated monitoring dashboard.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-5">
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-cogs me-2"></i>Available Features</h5>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-check text-success me-2"></i>Pod Management</h6>
+                        <ul class="list-unstyled ms-4">
+                            <li>• List and view pod details</li>
+                            <li>• View pod logs and events</li>
+                            <li>• Execute commands in pods</li>
+                            <li>• Monitor resource usage</li>
+                        </ul>
+                        
+                        <h6><i class="fas fa-check text-success me-2"></i>Cluster Monitoring</h6>
+                        <ul class="list-unstyled ms-4">
+                            <li>• View cluster events</li>
+                            <li>• Monitor node status</li>
+                            <li>• Check service health</li>
+                            <li>• Real-time metrics</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-6">
+                        <h6><i class="fas fa-check text-success me-2"></i>AI Chat Interface</h6>
+                        <ul class="list-unstyled ms-4">
+                            <li>• Natural language queries</li>
+                            <li>• Intelligent responses</li>
+                            <li>• Context-aware assistance</li>
+                            <li>• Command suggestions</li>
+                        </ul>
+                        
+                        <h6><i class="fas fa-check text-success me-2"></i>Security & Access</h6>
+                        <ul class="list-unstyled ms-4">
+                            <li>• User authentication</li>
+                            <li>• Secure server connections</li>
+                            <li>• RBAC integration</li>
+                            <li>• Audit logging</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.hero-section {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.feature-icon {
+    width: 80px;
+    height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+</style>
+{% endblock %}

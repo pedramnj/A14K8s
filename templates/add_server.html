@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Add Server - AI4K8s{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8 col-lg-6">
+        <div class="card border-0 shadow">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-plus me-2"></i>Add New Server</h5>
+            </div>
+            <div class="card-body p-4">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="name" class="form-label">Server Name</label>
+                        <input type="text" class="form-control" id="name" name="name" 
+                               placeholder="e.g., My Local Cluster" required>
+                        <div class="form-text">Choose a descriptive name for your server</div>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="server_type" class="form-label">Server Type</label>
+                        <select class="form-select" id="server_type" name="server_type" required>
+                            <option value="">Select server type</option>
+                            <option value="local">Local Development</option>
+                            <option value="remote">Remote Server</option>
+                            <option value="cloud">Cloud Provider</option>
+                        </select>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <label for="connection_string" class="form-label">Connection String</label>
+                        <input type="text" class="form-control" id="connection_string" name="connection_string" 
+                               placeholder="e.g., localhost:8080 or https://my-cluster.example.com">
+                        <div class="form-text">Server address or connection endpoint</div>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <label for="kubeconfig" class="form-label">Kubeconfig (Optional)</label>
+                        <textarea class="form-control" id="kubeconfig" name="kubeconfig" rows="6" 
+                                  placeholder="Paste your kubeconfig content here..."></textarea>
+                        <div class="form-text">For advanced users: paste your kubeconfig content</div>
+                    </div>
+                    
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-end">
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary me-md-2">
+                            <i class="fas fa-times me-2"></i>Cancel
+                        </a>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="fas fa-plus me-2"></i>Add Server
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <!-- Help Section -->
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-header bg-light">
+                <h6 class="mb-0"><i class="fas fa-question-circle me-2"></i>Server Types Guide</h6>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4 mb-3">
+                        <h6><i class="fas fa-desktop text-primary me-2"></i>Local Development</h6>
+                        <p class="small text-muted">For local Kubernetes clusters like minikube, Docker Desktop, or kind.</p>
+                        <ul class="small text-muted">
+                            <li>minikube: <code>minikube ip:8080</code></li>
+                            <li>Docker Desktop: <code>localhost:8080</code></li>
+                            <li>kind: <code>localhost:8080</code></li>
+                        </ul>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <h6><i class="fas fa-network-wired text-info me-2"></i>Remote Server</h6>
+                        <p class="small text-muted">For self-hosted or on-premises Kubernetes clusters.</p>
+                        <ul class="small text-muted">
+                            <li>IP address: <code>192.168.1.100:8080</code></li>
+                            <li>Domain: <code>k8s.company.com</code></li>
+                            <li>Include port if not standard</li>
+                        </ul>
+                    </div>
+                    <div class="col-md-4 mb-3">
+                        <h6><i class="fas fa-cloud text-success me-2"></i>Cloud Provider</h6>
+                        <p class="small text-muted">For managed Kubernetes services.</p>
+                        <ul class="small text-muted">
+                            <li>EKS: <code>your-cluster.region.eks.amazonaws.com</code></li>
+                            <li>GKE: <code>your-cluster.zone.gcp.com</code></li>
+                            <li>AKS: <code>your-cluster.region.azmk8s.io</code></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('server_type').addEventListener('change', function() {
+    const connectionString = document.getElementById('connection_string');
+    const serverType = this.value;
+    
+    switch(serverType) {
+        case 'local':
+            connectionString.value = 'localhost:8080';
+            connectionString.placeholder = 'localhost:8080';
+            break;
+        case 'remote':
+            connectionString.value = '';
+            connectionString.placeholder = '192.168.1.100:8080 or k8s.company.com';
+            break;
+        case 'cloud':
+            connectionString.value = '';
+            connectionString.placeholder = 'your-cluster.region.provider.com';
+            break;
+        default:
+            connectionString.value = '';
+            connectionString.placeholder = 'Enter connection string';
+    }
+});
+</script>
+{% endblock %}
