@@ -19,12 +19,32 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
-# Intelligent MCP-based Natural Language Processor
-class MCPKubernetesProcessor:
+# AI-Powered MCP-based Natural Language Processor
+class AIPoweredMCPKubernetesProcessor:
     def __init__(self):
         self.mcp_server_url = "http://localhost:5002/mcp"
         self.available_tools = None
+        self.use_ai = False
+        self.anthropic = None
         self._load_tools()
+        self._initialize_ai()
+    
+    def _initialize_ai(self):
+        """Initialize Anthropic AI if API key is available"""
+        try:
+            from anthropic import Anthropic
+            import os
+            
+            if os.getenv('ANTHROPIC_API_KEY'):
+                self.anthropic = Anthropic()
+                self.use_ai = True
+                print("🤖 AI-powered processing enabled")
+            else:
+                print("🔧 Regex-only processing (no ANTHROPIC_API_KEY)")
+        except ImportError:
+            print("⚠️  Anthropic package not installed, using regex-only processing")
+        except Exception as e:
+            print(f"⚠️  AI initialization failed: {e}, using regex-only processing")
     
     def _load_tools(self):
         """Load available MCP tools from the server"""
@@ -96,71 +116,201 @@ class MCPKubernetesProcessor:
                 'arguments': arguments
             }
     
-    def process_query(self, query: str) -> dict:
-        """Process natural language query using intelligent MCP tools"""
+    def _get_mcp_tools_for_ai(self):
+        """Get MCP tools formatted for AI context"""
+        if not self.available_tools:
+            return []
+        
+        tools_for_ai = []
+        for tool_name, tool_info in self.available_tools.items():
+            tools_for_ai.append({
+                "name": tool_name,
+                "description": tool_info.get('description', ''),
+                "inputSchema": tool_info.get('inputSchema', {})
+            })
+        return tools_for_ai
+    
+    def _process_with_ai(self, query: str) -> dict:
+        """Process query using Anthropic AI (like the client)"""
+        try:
+            import json
+            
+            # Get available tools for AI
+            available_tools = self._get_mcp_tools_for_ai()
+            
+            # Create system prompt similar to the client
+            system_prompt = (
+                "You are an AI assistant operating an MCP client connected to a Kubernetes MCP server. "
+                "When you need cluster data or to take action, choose the correct tool. "
+                "Be concise and return clear, well-formatted answers.\n\n"
+                f"Available MCP Tools: {json.dumps(available_tools, indent=2)}"
+            )
+            
+            messages = [{"role": "user", "content": query}]
+            
+            # Call Anthropic AI with tools
+            response = self.anthropic.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1200,
+                system=system_prompt,
+                messages=messages,
+                tools=available_tools
+            )
+            
+            # Process AI response and handle tool calls
+            final_text = []
+            tool_results = []
+            
+            for content in response.content:
+                if content.type == 'text':
+                    final_text.append(content.text)
+                elif content.type == 'tool_use':
+                    tool_name = content.name
+                    tool_args = content.input
+                    
+                    # Execute the tool call
+                    result = self._call_mcp_tool(tool_name, tool_args)
+                    tool_results.append({
+                        'tool_name': tool_name,
+                        'tool_args': tool_args,
+                        'result': result
+                    })
+            
+            # Format the response
+            if tool_results:
+                # If tools were called, format the results
+                response_text = "\n\n".join([t.strip() for t in final_text if t and t.strip()])
+                
+                # Add tool results
+                for tool_result in tool_results:
+                    if tool_result['result']['success']:
+                        response_text += f"\n\n**{tool_result['tool_name']} Result:**\n{str(tool_result['result']['result'])}"
+                    else:
+                        response_text += f"\n\n**{tool_result['tool_name']} Error:** {tool_result['result']['error']}"
+                
+                return {
+                    'command': f'AI: {", ".join([tr["tool_name"] for tr in tool_results])}',
+                    'explanation': response_text,
+                    'ai_processed': True,
+                    'tool_results': tool_results,
+                    'mcp_result': tool_results[0]['result'] if tool_results else None
+                }
+            else:
+                # No tools called, just return AI text
+                response_text = "\n\n".join([t.strip() for t in final_text if t and t.strip()])
+                return {
+                    'command': 'AI: text_response',
+                    'explanation': response_text,
+                    'ai_processed': True,
+                    'tool_results': [],
+                    'mcp_result': None
+                }
+                
+        except Exception as e:
+            return {
+                'command': None,
+                'explanation': f"AI processing failed: {str(e)}",
+                'ai_processed': True,
+                'tool_results': [],
+                'mcp_result': None
+            }
+    
+    def _process_with_regex(self, query: str) -> dict:
+        """Process query using regex patterns (fallback)"""
+        import re
         query_lower = query.lower().strip()
         
-        # Map natural language to MCP tools
+        # Enhanced patterns with better parameter extraction
+        
+        # 1. POD DETAILS/GET PATTERN
+        pod_details_match = re.search(r'(?:show|get|describe|details).*pod.*(?:named|called)\s+[\'"]([^\'"]+)[\'"]', query_lower)
+        if pod_details_match:
+            pod_name = pod_details_match.group(1)
+            result = self._call_mcp_tool('pods_get', {
+                'name': pod_name,
+                'namespace': 'default'
+            })
+            return {
+                'command': f'Regex: pods_get ({pod_name})',
+                'explanation': f"I'll get details for pod '{pod_name}' using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 2. POD LOGS PATTERN
+        pod_logs_match = re.search(r'(?:show|get|view).*logs.*pod.*[\'"]([^\'"]+)[\'"]', query_lower)
+        if pod_logs_match:
+            pod_name = pod_logs_match.group(1)
+            result = self._call_mcp_tool('pods_log', {
+                'name': pod_name,
+                'namespace': 'default'
+            })
+            return {
+                'command': f'Regex: pods_log ({pod_name})',
+                'explanation': f"I'll get logs from pod '{pod_name}' using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 3. POD EXEC PATTERN
+        pod_exec_match = re.search(r'(?:execute|run|exec).*command.*[\'"]([^\'"]+)[\'"].*pod.*[\'"]([^\'"]+)[\'"]', query_lower)
+        if pod_exec_match:
+            command = pod_exec_match.group(1)
+            pod_name = pod_exec_match.group(2)
+            result = self._call_mcp_tool('pods_exec', {
+                'name': pod_name,
+                'command': [command],
+                'namespace': 'default'
+            })
+            return {
+                'command': f'Regex: pods_exec ({command} in {pod_name})',
+                'explanation': f"I'll execute '{command}' in pod '{pod_name}' using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 4. POD TOP/RESOURCE USAGE PATTERN
+        if re.search(r'(?:resource|usage|top|metrics).*pod', query_lower):
+            result = self._call_mcp_tool('pods_top', {
+                'all_namespaces': True
+            })
+            return {
+                'command': 'Regex: pods_top',
+                'explanation': f"I'll show pod resource usage using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 5. ENHANCED POD LISTING
         if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower or 'running' in query_lower):
-            # Use MCP pods_list tool
             result = self._call_mcp_tool('pods_list', {})
             return {
-                'command': 'MCP: pods_list',
+                'command': 'Regex: pods_list',
                 'explanation': f"I'll show you all pods using MCP tools",
+                'ai_processed': False,
                 'mcp_result': result
             }
         
-        elif 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
-            # Use MCP resources_list tool for services
-            result = self._call_mcp_tool('resources_list', {
-                'apiVersion': 'v1',
-                'kind': 'Service'
-            })
-            return {
-                'command': 'MCP: resources_list (services)',
-                'explanation': f"I'll show you all services using MCP tools",
-                'mcp_result': result
-            }
-        
-        elif 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
-            # Use MCP resources_list tool for deployments
-            result = self._call_mcp_tool('resources_list', {
-                'apiVersion': 'apps/v1',
-                'kind': 'Deployment'
-            })
-            return {
-                'command': 'MCP: resources_list (deployments)',
-                'explanation': f"I'll show you all deployments using MCP tools",
-                'mcp_result': result
-            }
-        
-        elif 'nodes' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
-            # Use MCP resources_list tool for nodes
-            result = self._call_mcp_tool('resources_list', {
-                'apiVersion': 'v1',
-                'kind': 'Node'
-            })
-            return {
-                'command': 'MCP: resources_list (nodes)',
-                'explanation': f"I'll show you all nodes using MCP tools",
-                'mcp_result': result
-            }
-        
+        # 6. ENHANCED POD CREATION with image extraction
         elif 'create' in query_lower and 'pod' in query_lower:
-            # Use MCP pods_run tool
             pod_name = self._extract_pod_name(query)
+            # Extract image if specified
+            image_match = re.search(r'(?:with|using|from).*image.*[\'"]([^\'"]+)[\'"]', query_lower)
+            image = image_match.group(1) if image_match else 'nginx'
+            
             result = self._call_mcp_tool('pods_run', {
                 'name': pod_name,
-                'image': 'nginx'
+                'image': image
             })
             return {
-                'command': f'MCP: pods_run ({pod_name})',
-                'explanation': f"I'll create a pod named '{pod_name}' using MCP tools",
+                'command': f'Regex: pods_run ({pod_name} with {image})',
+                'explanation': f"I'll create a pod named '{pod_name}' with {image} image using MCP tools",
+                'ai_processed': False,
                 'mcp_result': result
             }
         
+        # 7. ENHANCED POD DELETION
         elif ('delete' in query_lower or 'stop' in query_lower or 'remove' in query_lower) and 'pod' in query_lower:
-            # Use MCP pods_delete tool
             pod_name = self._extract_pod_name_from_delete(query)
             if pod_name:
                 result = self._call_mcp_tool('pods_delete', {
@@ -168,32 +318,75 @@ class MCPKubernetesProcessor:
                     'namespace': 'default'
                 })
                 return {
-                    'command': f'MCP: pods_delete ({pod_name})',
+                    'command': f'Regex: pods_delete ({pod_name})',
                     'explanation': f"I'll delete the pod named '{pod_name}' using MCP tools",
+                    'ai_processed': False,
                     'mcp_result': result
                 }
             else:
                 return {
                     'command': None,
                     'explanation': f"I understand you want to delete a pod, but I couldn't extract the pod name from: '{query}'. Please try 'delete pod <name>' or 'stop pod <name>'.",
+                    'ai_processed': False,
                     'mcp_result': None
                 }
         
-        elif any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']) and ('cluster' in query_lower or 'how' in query_lower):
-            # Use MCP events_list tool for cluster health
-            result = self._call_mcp_tool('events_list', {})
+        # 8. SERVICES
+        elif 'services' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'v1',
+                'kind': 'Service'
+            })
             return {
-                'command': 'MCP: events_list',
-                'explanation': f"I'll check the cluster health by looking at events using MCP tools",
+                'command': 'Regex: resources_list (services)',
+                'explanation': f"I'll show you all services using MCP tools",
+                'ai_processed': False,
                 'mcp_result': result
             }
         
-        elif 'events' in query_lower:
-            # Use MCP events_list tool
+        # 9. DEPLOYMENTS
+        elif 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'apps/v1',
+                'kind': 'Deployment'
+            })
+            return {
+                'command': 'Regex: resources_list (deployments)',
+                'explanation': f"I'll show you all deployments using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 10. NODES
+        elif 'nodes' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
+            result = self._call_mcp_tool('resources_list', {
+                'apiVersion': 'v1',
+                'kind': 'Node'
+            })
+            return {
+                'command': 'Regex: resources_list (nodes)',
+                'explanation': f"I'll show you all nodes using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 11. CLUSTER HEALTH CHECK
+        elif any(word in query_lower for word in ['health', 'wrong', 'error', 'problem', 'issue', 'diagnose', 'check']) and ('cluster' in query_lower or 'how' in query_lower):
             result = self._call_mcp_tool('events_list', {})
             return {
-                'command': 'MCP: events_list',
+                'command': 'Regex: events_list',
+                'explanation': f"I'll check the cluster health by looking at events using MCP tools",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
+        # 12. EVENTS
+        elif 'events' in query_lower:
+            result = self._call_mcp_tool('events_list', {})
+            return {
+                'command': 'Regex: events_list',
                 'explanation': f"I'll check the events using MCP tools",
+                'ai_processed': False,
                 'mcp_result': result
             }
         
@@ -201,8 +394,26 @@ class MCPKubernetesProcessor:
         return {
             'command': None,
             'explanation': f"I understand you want to: '{query}'. I can help with pods, services, deployments, nodes, events, and cluster health using intelligent MCP tools.",
+            'ai_processed': False,
             'mcp_result': None
         }
+    
+    def process_query(self, query: str) -> dict:
+        """Process natural language query using AI-first approach with regex fallback"""
+        
+        # Try AI processing first if available
+        if self.use_ai and self.anthropic:
+            try:
+                ai_result = self._process_with_ai(query)
+                # If AI successfully processed the query, return it
+                if ai_result.get('ai_processed') and ai_result.get('command'):
+                    return ai_result
+                # If AI couldn't process it, fall back to regex
+            except Exception as e:
+                print(f"⚠️  AI processing failed, falling back to regex: {e}")
+        
+        # Fall back to regex processing
+        return self._process_with_regex(query)
     
     def _extract_pod_name(self, query: str) -> str:
         """Extract pod name from create pod query"""
@@ -269,8 +480,8 @@ class MCPKubernetesProcessor:
         
         return pod_name
 
-# Initialize intelligent MCP processor
-processor = MCPKubernetesProcessor()
+# Initialize AI-powered MCP processor
+processor = AIPoweredMCPKubernetesProcessor()
 
 # Database Models
 class User(db.Model):
@@ -465,24 +676,27 @@ def api_chat(server_id):
                     return jsonify({
                         'response': response_text,
                         'status': 'success',
-                        'ai_processed': True,
+                        'ai_processed': processed.get('ai_processed', False),
                         'mcp_tool': processed['command'],
-                        'mcp_success': True
+                        'mcp_success': True,
+                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
                     })
                 else:
                     return jsonify({
                         'response': f"{processed['explanation']}\n\n**MCP Error:** {mcp_result.get('error', 'Unknown error')}",
                         'status': 'error',
-                        'ai_processed': True,
+                        'ai_processed': processed.get('ai_processed', False),
                         'mcp_tool': processed['command'],
-                        'mcp_success': False
+                        'mcp_success': False,
+                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
                     })
             else:
                 return jsonify({
                     'response': processed['explanation'],
                     'status': 'info',
-                    'ai_processed': True,
-                    'mcp_tool': None
+                    'ai_processed': processed.get('ai_processed', False),
+                    'mcp_tool': None,
+                    'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
                 })
                 
         except Exception as e:
@@ -512,8 +726,8 @@ def server_status(server_id):
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    print("🚀 Starting Simplified AI4K8s Web Application...")
-    print("✅ Natural Language Processing: Ready")
+    print("🚀 Starting AI-Powered AI4K8s Web Application...")
+    print("✅ AI-Powered Natural Language Processing: Ready")
     print("✅ MCP Bridge Integration: Ready")
     print("✅ Database: Ready")
     app.run(debug=True, host='0.0.0.0', port=5003)
