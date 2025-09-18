@@ -77,8 +77,9 @@
                         <tr>
                             <th>Name</th>
                             <th>Type</th>
+                            <th>Authentication</th>
                             <th>Status</th>
-                            <th>Last Accessed</th>
+                            <th>Last Tested</th>
                             <th>Actions</th>
                         </tr>
                     </thead>
@@ -104,6 +105,23 @@
                             </td>
                             <td>
                                 <span class="badge bg-secondary">{{ server.server_type.title() }}</span>
+                            </td>
+                            <td>
+                                {% if server.server_type == 'local' %}
+                                    <small class="text-muted">Local Access</small>
+                                {% else %}
+                                    <div>
+                                        {% if server.username %}
+                                            <small class="text-muted">User: {{ server.username }}</small><br>
+                                        {% endif %}
+                                        {% if server.has_password %}
+                                            <span class="badge bg-info badge-sm">Password</span>
+                                        {% endif %}
+                                        {% if server.has_ssh_key %}
+                                            <span class="badge bg-success badge-sm">SSH Key</span>
+                                        {% endif %}
+                                    </div>
+                                {% endif %}
                             </td>
                             <td>
                                 {% if server.status == 'active' %}
@@ -137,8 +155,12 @@
                                        class="btn btn-outline-success" title="AI Chat">
                                         <i class="fas fa-comments"></i>
                                     </a>
+                                    <button class="btn btn-outline-secondary" 
+                                            onclick="testConnection('{{ server.id }}')" title="Test Connection">
+                                        <i class="fas fa-plug"></i>
+                                    </button>
                                     <button class="btn btn-outline-info" 
-                                            onclick="checkServerStatus({{ server.id }})" title="Check Status">
+                                            onclick="checkServerStatus('{{ server.id }}')" title="Check Status">
                                         <i class="fas fa-sync-alt"></i>
                                     </button>
                                 </div>
@@ -176,6 +198,66 @@ function checkServerStatus(serverId) {
         .catch(error => {
             console.error('Error checking server status:', error);
         });
+}
+
+function testConnection(serverId) {
+    // Show loading state
+    const button = event.target.closest('button');
+    const originalHTML = button.innerHTML;
+    button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+    button.disabled = true;
+    
+    fetch(`/api/test_connection/${serverId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        // Show result
+        if (data.success) {
+            showAlert('success', data.message);
+        } else {
+            showAlert('danger', data.message + (data.error ? ': ' + data.error : ''));
+        }
+        
+        // Reload the page to show updated status
+        setTimeout(() => location.reload(), 1000);
+    })
+    .catch(error => {
+        console.error('Error testing connection:', error);
+        showAlert('danger', 'Connection test failed: ' + error.message);
+    })
+    .finally(() => {
+        // Restore button state
+        button.innerHTML = originalHTML;
+        button.disabled = false;
+    });
+}
+
+function showAlert(type, message) {
+    // Create alert element
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show position-fixed`;
+    alertDiv.style.top = '20px';
+    alertDiv.style.right = '20px';
+    alertDiv.style.zIndex = '9999';
+    alertDiv.style.minWidth = '300px';
+    
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    document.body.appendChild(alertDiv);
+    
+    // Auto remove after 5 seconds
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
 }
 </script>
 {% endblock %}
