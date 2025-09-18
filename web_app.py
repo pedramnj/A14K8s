@@ -11,6 +11,10 @@ import os
 import json
 import requests
 import uuid
+from anthropic import Anthropic
+import asyncio
+import subprocess
+import tempfile
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
@@ -18,6 +22,200 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai4k8s.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
+
+# AI Integration Class
+class AIKubernetesAssistant:
+    def __init__(self):
+        self.anthropic = None
+        self.available_commands = [
+            "kubectl get pods", "kubectl get pod <name>", "kubectl get events", 
+            "kubectl get nodes", "kubectl get services", "kubectl get deployments",
+            "kubectl logs <pod_name>", "kubectl delete pod <name>", "kubectl top pods",
+            "kubectl top pod <name>", "kubectl exec <pod_name> -- <command>",
+            "kubectl run <name> --image=<image>", "kubectl create deployment <name> --image=<image>",
+            "kubectl scale deployment <name> --replicas=<number>", "kubectl describe pod <name>"
+        ]
+        
+        # Try to initialize Anthropic client
+        try:
+            api_key = os.environ.get('ANTHROPIC_API_KEY')
+            if api_key:
+                self.anthropic = Anthropic(api_key=api_key)
+                print("✅ AI Assistant initialized successfully")
+            else:
+                print("⚠️  ANTHROPIC_API_KEY not found, AI features disabled")
+        except Exception as e:
+            print(f"⚠️  Failed to initialize AI Assistant: {e}")
+            self.anthropic = None
+    
+    def process_natural_language_query(self, query: str, server_info: dict) -> dict:
+        """Process natural language query and return appropriate response"""
+        try:
+            # Check if AI is available
+            if not self.anthropic:
+                return self._fallback_response(query)
+            
+            # Create a prompt for the AI
+            system_prompt = f"""You are a Kubernetes AI assistant. You can help users manage their Kubernetes cluster through natural language.
+
+Available kubectl commands you can suggest or execute:
+{', '.join(self.available_commands)}
+
+Server Information:
+- Name: {server_info.get('name', 'Unknown')}
+- Type: {server_info.get('server_type', 'Unknown')}
+- Connection: {server_info.get('connection_string', 'Unknown')}
+
+When a user asks you to do something, you should:
+1. Understand their intent
+2. Suggest the appropriate kubectl command
+3. If it's a simple query, provide the command directly
+4. If it's complex, explain what you would do
+
+Examples:
+- "create a new pod name it funky dance" → "kubectl run funky-dance --image=nginx"
+- "show me all pods" → "kubectl get pods"
+- "what's wrong with my cluster" → "kubectl get events"
+- "get logs from nginx pod" → "kubectl logs nginx"
+
+Always be helpful and provide clear, actionable responses."""
+
+            response = self.anthropic.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=1000,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": query}
+                ]
+            )
+            
+            ai_response = response.content[0].text
+            
+            # Check if the AI suggested a kubectl command
+            if "kubectl" in ai_response.lower():
+                # Extract the kubectl command from the response
+                lines = ai_response.split('\n')
+                kubectl_command = None
+                for line in lines:
+                    if line.strip().startswith('kubectl'):
+                        kubectl_command = line.strip()
+                        break
+                
+                if kubectl_command:
+                    # Execute the command via MCP bridge
+                    try:
+                        mcp_response = requests.post(
+                            'http://localhost:5001/api/chat',
+                            json={'message': kubectl_command},
+                            timeout=30
+                        )
+                        
+                        if mcp_response.status_code == 200:
+                            mcp_result = mcp_response.json()
+                            return {
+                                "ai_explanation": ai_response,
+                                "command_executed": kubectl_command,
+                                "command_result": mcp_result.get('response', 'No response'),
+                                "status": "success"
+                            }
+                        else:
+                            return {
+                                "ai_explanation": ai_response,
+                                "command_executed": kubectl_command,
+                                "command_result": f"Error executing command: {mcp_response.status_code}",
+                                "status": "error"
+                            }
+                    except Exception as e:
+                        return {
+                            "ai_explanation": ai_response,
+                            "command_executed": kubectl_command,
+                            "command_result": f"Error connecting to MCP bridge: {str(e)}",
+                            "status": "error"
+                        }
+            
+            # If no kubectl command was suggested, just return the AI response
+            return {
+                "ai_explanation": ai_response,
+                "command_executed": None,
+                "command_result": None,
+                "status": "info"
+            }
+            
+        except Exception as e:
+            return {
+                "ai_explanation": f"I apologize, but I encountered an error: {str(e)}",
+                "command_executed": None,
+                "command_result": None,
+                "status": "error"
+            }
+    
+    def _fallback_response(self, query: str) -> dict:
+        """Fallback response when AI is not available"""
+        query_lower = query.lower()
+        
+        # Simple pattern matching for common requests
+        if "create" in query_lower and "pod" in query_lower:
+            # Extract pod name from query - look for "name it" or "called" patterns
+            words = query.split()
+            pod_name = "new-pod"
+            
+            # Look for "name it" pattern
+            for i, word in enumerate(words):
+                if word.lower() == "name" and i + 1 < len(words) and words[i + 1].lower() == "it":
+                    # Get the next word(s) after "it"
+                    if i + 2 < len(words):
+                        name_words = []
+                        for j in range(i + 2, len(words)):
+                            if words[j].lower() in ["with", "using", "from", "image"]:
+                                break
+                            name_words.append(words[j])
+                        if name_words:
+                            pod_name = "-".join(name_words).lower()
+                    break
+                elif word.lower() in ["called", "named"] and i + 1 < len(words):
+                    # Get the next word(s) after "called" or "named"
+                    name_words = []
+                    for j in range(i + 1, len(words)):
+                        if words[j].lower() in ["with", "using", "from", "image"]:
+                            break
+                        name_words.append(words[j])
+                    if name_words:
+                        pod_name = "-".join(name_words).lower()
+                    break
+            
+            kubectl_command = f"kubectl run {pod_name} --image=nginx"
+            return {
+                "ai_explanation": f"I understand you want to create a pod. I'll run: `{kubectl_command}`",
+                "command_executed": kubectl_command,
+                "command_result": None,
+                "status": "success"
+            }
+        elif "show" in query_lower and "pods" in query_lower:
+            kubectl_command = "kubectl get pods"
+            return {
+                "ai_explanation": f"I'll show you all the pods in your cluster: `{kubectl_command}`",
+                "command_executed": kubectl_command,
+                "command_result": None,
+                "status": "success"
+            }
+        elif "events" in query_lower or "wrong" in query_lower:
+            kubectl_command = "kubectl get events"
+            return {
+                "ai_explanation": f"I'll check the events to see what's happening: `{kubectl_command}`",
+                "command_executed": kubectl_command,
+                "command_result": None,
+                "status": "success"
+            }
+        else:
+            return {
+                "ai_explanation": f"I understand you want to: '{query}'. However, AI features are currently disabled. Please use direct kubectl commands like 'kubectl get pods' or 'kubectl get events'.",
+                "command_executed": None,
+                "command_result": None,
+                "status": "info"
+            }
+
+# Initialize AI Assistant
+ai_assistant = AIKubernetesAssistant()
 
 # Database Models
 class User(db.Model):
@@ -179,24 +377,57 @@ def api_chat(server_id):
     data = request.get_json()
     message = data.get('message', '')
     
-    # For now, we'll use the existing MCP bridge
-    # In the future, this will be adapted to work with user-specific servers
-    try:
-        # Forward the request to the MCP bridge
-        response = requests.post(
-            'http://localhost:5001/api/chat',
-            json={'message': message},
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return jsonify(result)
-        else:
-            return jsonify({'error': 'MCP bridge error'}), 500
+    # Check if it's a direct kubectl command
+    if message.strip().startswith('kubectl'):
+        # Direct kubectl command - use MCP bridge
+        try:
+            response = requests.post(
+                'http://localhost:5001/api/chat',
+                json={'message': message},
+                timeout=30
+            )
             
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+            if response.status_code == 200:
+                result = response.json()
+                return jsonify(result)
+            else:
+                return jsonify({'error': 'MCP bridge error'}), 500
+                
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    else:
+        # Natural language query - use AI assistant
+        try:
+            server_info = {
+                'name': server.name,
+                'server_type': server.server_type,
+                'connection_string': server.connection_string
+            }
+            
+            ai_result = ai_assistant.process_natural_language_query(message, server_info)
+            
+            # Format the response for the frontend
+            if ai_result['status'] == 'success':
+                response_text = f"{ai_result['ai_explanation']}\n\n**Command Executed:** `{ai_result['command_executed']}`\n\n**Result:**\n{ai_result['command_result']}"
+            elif ai_result['status'] == 'error':
+                response_text = f"{ai_result['ai_explanation']}\n\n**Error:** {ai_result.get('command_result', 'Unknown error')}"
+            else:
+                response_text = ai_result['ai_explanation']
+            
+            return jsonify({
+                'response': response_text,
+                'status': 'success',
+                'ai_processed': True,
+                'command_executed': ai_result.get('command_executed'),
+                'ai_explanation': ai_result['ai_explanation']
+            })
+            
+        except Exception as e:
+            return jsonify({
+                'response': f"I apologize, but I encountered an error processing your request: {str(e)}",
+                'status': 'error',
+                'ai_processed': True
+            }), 500
 
 @app.route('/api/server_status/<int:server_id>')
 def server_status(server_id):
