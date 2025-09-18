@@ -737,8 +737,17 @@ def server_status(server_id):
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+    
+    # Get configuration from environment variables
+    debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
+    host = os.environ.get('FLASK_HOST', '0.0.0.0')
+    port = int(os.environ.get('FLASK_PORT', 5003))
+    
     print("🚀 Starting AI-Powered AI4K8s Web Application...")
     print("✅ AI-Powered Natural Language Processing: Ready")
     print("✅ MCP Bridge Integration: Ready")
     print("✅ Database: Ready")
-    app.run(debug=True, host='0.0.0.0', port=5003)
+    print(f"🌐 Server: http://{host}:{port}")
+    print(f"🔧 Debug Mode: {debug_mode}")
+    
+    app.run(debug=debug_mode, host=host, port=port)
