@@ -1,0 +1,185 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{longtable}
+\geometry{margin=1in}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+\lstdefinestyle{bashstyle}{language=bash,basicstyle=\ttfamily\small,showstringspaces=false,columns=fullflexible,frame=single,breaklines=true}
+
+\title{AI4K8s: My End-to-End Thesis Build (MCP + Kubernetes + Web UI)}
+\author{Pedram}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Abstract}
+In this report I document, step by step, how I built AI4K8s: my AI agent for Kubernetes. I started on AWS Free Tier, hit real limits, and moved everything local. I wired up the Model Context Protocol (MCP), wrote a bridge that talks to the Kubernetes API and Claude, and built a Flask web UI with live cluster stats and links to Prometheus and Grafana. I also record the exact errors I faced and how I fixed each one.
+
+\section{Introduction}
+My goal was simple: I wanted to ask natural-language questions (``stop nginx'', ``show pods'') and have the system understand, execute the right actions on my cluster, and explain what it did. I wanted both a browser interface and a terminal client so I could demo and debug easily.
+
+I used:
+\begin{itemize}[noitemsep]
+  \item Kubernetes locally (Docker Desktop / kind)
+  \item An MCP Server in Python (my Kubernetes tools as MCP tools)
+  \item An MCP Client in Python (Claude Messages API + iterative tool use)
+  \item A Bridge Service in-cluster (Flask + Kubernetes Python client + Claude)
+  \item A Flask Web UI (Dashboard with live stats, AI Chat, Monitoring links)
+  \item Prometheus and Grafana for monitoring
+  \item ngrok for quick external demos
+\end{itemize}
+
+\section{Chronological Timeline}
+\subsection{Phase 1: I Tried AWS First (and Abandoned It)}
+I provisioned an EC2 t3.micro and tried to install Docker, k3s, Prometheus, and Grafana. It was painful: TLS handshake timeouts pulling images, SELinux/packaging friction, old Python environments, and the instance constantly choking on memory. After enough waiting and restarts, I decided to cut my losses and move everything local. I also cleaned the repo to remove AWS-specific files and docs.
+
+\subsection{Phase 2: I Brought Up a Local Cluster}
+I enabled Kubernetes in Docker Desktop (alternatively kind works too). At first, the Docker daemon wasn't running and the API refused connections. I fixed those, then verified with:
+\begin{lstlisting}[style=bashstyle]
+kubectl cluster-info
+kubectl get nodes
+\end{lstlisting}
+
+\subsection{Phase 3: I Built the MCP Server and Client}
+I implemented the MCP server in Python, following the updated stdio API (\texttt{mcp.server.stdio.stdio\_server}). I exposed these tools: \texttt{get\_cluster\_info}, \texttt{get\_pods}, \texttt{get\_services}, \texttt{get\_deployments}, \texttt{get\_pod\_logs}, \texttt{execute\_kubectl}, and \texttt{get\_docker\_containers}.
+
+On the client side I used Claude's Messages API with iterative tool use. I fixed a key Anthropic error by moving the system prompt to the top-level \texttt{system} parameter (not a system-role message in the list).
+
+\subsection{Phase 4: I Built the Web UI}
+I created a Flask app with three main pages: the Dashboard, Monitoring, and AI Chat. I ran it in-cluster behind an nginx proxy and accessed it locally via port-forwarding. I initially embedded Grafana/Prometheus in iframes, but for external users via ngrok I switched to direct links and documented how to tunnel each service.
+
+\subsection{Phase 5: I Added a Bridge for Intelligent Actions}
+To make the AI actually do things, I wrote a Flask ``mcp-bridge'' that runs in the cluster and talks to the Kubernetes API directly using the Kubernetes Python client, and to Claude for reasoning. I added intent handling so commands like ``stop nginx'' scale the deployment to 0.
+
+I also created a ServiceAccount + ClusterRole + ClusterRoleBinding for the bridge. When I hit 403s, I granted the \texttt{deployments/scale} subresource and confirmed that scaling worked end-to-end.
+
+\subsection{Phase 6: I Turned the Dashboard into Live Data}
+The Dashboard started with fake numbers. I replaced them with a real \texttt{/api/stats} endpoint that counts nodes, running pods (across namespaces), services, and deployments, and shows the number of MCP tools. I fixed a sneaky heredoc/JavaScript placement issue so the browser actually ran my script, then added a 30-second auto-refresh.
+
+I also clarified an apparent discrepancy: the Dashboard shows running pods cluster-wide, while the AI chat defaults to the \texttt{default} namespace (so the counts differ by design).
+
+\section{Architecture}
+\subsection{How My Pieces Talk}
+\begin{itemize}[noitemsep]
+  \item Web (Flask) $\rightarrow$ \texttt{/api/chat} $\rightarrow$ Bridge (Flask) $\rightarrow$ K8s Python client $\rightarrow$ Claude API
+  \item Web (Flask) $\rightarrow$ \texttt{/api/stats} $\rightarrow$ Kubernetes API (using the Web app's ServiceAccount)
+  \item Terminal MCP: the client connects to my MCP server over stdio and Claude decides which tools to call
+\end{itemize}
+
+\subsection{Files I Touched and Why}
+\begin{longtable}{p{0.35\linewidth} p{0.58\linewidth}}
+\texttt{mcp\_server.py} & My MCP server exposing Kubernetes tools. \\
+\texttt{client/client.py} & My MCP client with Claude tool-use loop. \\
+\texttt{mcp-bridge-deployment.yaml} & In-cluster Flask bridge with K8s client + Claude; RBAC for reads/writes. \\
+\texttt{web-app-iframe-solution.yaml} & Web UI deployment with inline Flask code; RBAC for cluster reads; Dashboard/AI Chat. \\
+\texttt{run\_chat.sh} & Script to start the MCP server and client (works with \texttt{uv}). \\
+\end{longtable}
+
+\section{How I Operate the System}
+\subsection{I Run the Web UI}
+\begin{lstlisting}[style=bashstyle]
+kubectl -n web port-forward --address 0.0.0.0 service/nginx-proxy 8080:80
+# Open http://localhost:8080
+\end{lstlisting}
+
+\subsection{I Use the Terminal MCP Client}
+\begin{lstlisting}[style=bashstyle]
+# From repo root
+./run_chat.sh
+
+# Or, from the client directory
+cd client
+uv run client.py ../mcp_server.py
+\end{lstlisting}
+
+\subsection{I Demo Externally (Optional)}
+\begin{lstlisting}[style=bashstyle]
+ngrok http http://localhost:8080
+\end{lstlisting}
+
+\section{RBAC I Needed}
+\subsection{Web App (read-only)}
+For my Dashboard, I gave the Web app a ClusterRole with get/list/watch on \texttt{pods}, \texttt{services}, \texttt{nodes}, and \texttt{pods/log}. That’s how \texttt{/api/stats} reads cluster-wide state.
+
+\subsection{Bridge (read + write)}
+For the Bridge, I granted reads plus updates/patches (and deletes where needed) on \texttt{deployments}, \texttt{replicasets}, and the \texttt{deployments/scale} subresource. That’s what enables actions like scaling a deployment from the AI chat.
+
+\section{Errors I Hit and How I Fixed Them}
+\subsection*{Cloud and Environment}
+\begin{itemize}[noitemsep]
+  \item Docker Hub TLS timeouts, SELinux packaging, slow EC2: I moved to local and deleted AWS-specific files.
+  \item Docker/Kubernetes not running locally: I started Docker Desktop and enabled Kubernetes; then verified the API.
+\end{itemize}
+
+\subsection*{MCP/Client}
+\begin{itemize}[noitemsep]
+  \item MCP stdio API changed: I used \texttt{mcp.server.stdio.stdio\_server()} and the new server wiring.
+  \item Anthropic error (system as a role): I passed the system prompt via top-level \texttt{system}.
+\end{itemize}
+
+\subsection*{Web UI}
+\begin{itemize}[noitemsep]
+  \item Fake stats: I implemented \texttt{/api/stats}, wrote a small JS fetcher, and \textit{moved the JS inside the heredoc} so the browser ran it. I also added auto-refresh.
+  \item 404 favicon: I embedded a tiny data-URL favicon.
+\end{itemize}
+
+\subsection*{Bridge and RBAC}
+\begin{itemize}[noitemsep]
+  \item 403 scaling a deployment: I added the \texttt{deployments/scale} subresource permissions; after that “stop nginx” worked (scaled to 0) and the AI explained what it did.
+  \item I made the Bridge smarter about parsing things like \texttt{--replicas} so it executed the intended action.
+\end{itemize}
+
+\section{What I Can Do Now}
+\subsection{Web AI Chat}
+I can say ``stop nginx'' and it will scale the deployment to 0, or “start nginx with 3 replicas” and it will scale up. I can ask for logs, pods, services, deployments, and it responds intelligently. If it hits permissions, it tells me exactly why.
+
+\subsection{Terminal MCP Client}
+In the terminal I can run an interactive session where Claude iteratively decides which MCP tools to call: cluster info, pods, services, deployments, pod logs, running kubectl, and even Docker containers.
+
+\subsection{Dashboard}
+I see live nodes, running pods (across namespaces), services, deployments, and my MCP tool count. It refreshes every 30s. I documented that the web counts all namespaces, while the chat defaults to \texttt{default}, so the numbers differ by design.
+
+\section{What I Plan Next}
+\begin{itemize}[noitemsep]
+  \item Add guardrails/dry-run/confirmation for destructive actions
+  \item Toggle namespace scope both in chat and on the dashboard
+  \item Record an audit trail of conversations and actions
+  \item Extend tools to cover events, PVC/PV, ingress, HPA, and node conditions
+\end{itemize}
+
+\section*{Appendix}
+\subsection*{Commands I Actually Use}
+\begin{lstlisting}[style=bashstyle]
+# Validate cluster
+kubectl cluster-info
+kubectl get nodes
+kubectl get pods -A
+
+# Port-forward the web app
+kubectl -n web port-forward --address 0.0.0.0 service/nginx-proxy 8080:80
+
+# Start the terminal client
+./run_chat.sh
+# or
+cd client && uv run client.py ../mcp_server.py
+
+# Quick API checks
+curl -s http://localhost:8080/api/stats | jq .
+curl -s -X POST http://localhost:8080/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"kubectl get deployments"}' | jq .
+\end{lstlisting}
+
+\subsection*{MCP Tools I Exposed}
+\texttt{get\_cluster\_info}, \texttt{get\_pods}, \texttt{get\_services}, \texttt{get\_deployments}, \texttt{get\_pod\_logs}, \texttt{execute\_kubectl}, \texttt{get\_docker\_containers}.
+
+\end{document}

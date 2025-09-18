@@ -1,0 +1,813 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+  namespace: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      serviceAccountName: web-app-sa
+      containers:
+      - name: web-app
+        image: python:3.11-slim
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          apt-get update && apt-get install -y curl ca-certificates >/dev/null 2>&1 || true
+          ARCH=$(uname -m); if [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "amd64" ]; then ARCH=amd64; fi
+          KREL=$(curl -L -s https://dl.k8s.io/release/stable.txt) && \
+          curl -L -o /usr/local/bin/kubectl https://dl.k8s.io/release/${KREL}/bin/linux/${ARCH}/kubectl && \
+          chmod +x /usr/local/bin/kubectl || true
+          pip install flask requests
+          cat > app.py << 'EOL'
+          from flask import Flask, render_template, request, jsonify, redirect, url_for
+          import subprocess
+          import json
+          import os
+          import re
+          import requests
+          from datetime import datetime
+          
+          # In-cluster Kubernetes API client using service account
+          KUBE_HOST = os.environ.get('KUBERNETES_SERVICE_HOST', 'kubernetes.default.svc')
+          KUBE_PORT = os.environ.get('KUBERNETES_SERVICE_PORT', '443')
+          SA_TOKEN_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/token'
+          SA_CA_PATH = '/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'
+          try:
+              with open(SA_TOKEN_PATH, 'r') as f:
+                  SA_TOKEN = f.read().strip()
+          except Exception:
+              SA_TOKEN = None
+          
+          def k8s_get(api_path, params=None):
+              """GET request to Kubernetes API using in-cluster auth."""
+              base = f'https://{KUBE_HOST}:{KUBE_PORT}'
+              headers = {'Authorization': f'Bearer {SA_TOKEN}'} if SA_TOKEN else {}
+              return requests.get(base + api_path, headers=headers, verify=SA_CA_PATH, timeout=10, params=params or {})
+          
+          app = Flask(__name__)
+          app.secret_key = 'ai4k8s-thesis-2024'
+          
+          # Get service URLs from environment or use defaults
+          GRAFANA_URL = os.getenv('GRAFANA_URL', 'http://grafana.default.svc.cluster.local:80')
+          PROMETHEUS_URL = os.getenv('PROMETHEUS_URL', 'http://prometheus-server.default.svc.cluster.local:80')
+          
+          @app.route('/api/stats')
+          def get_cluster_stats():
+              """Get real-time cluster statistics"""
+              try:
+                  # Get nodes
+                  nodes_resp = k8s_get('/api/v1/nodes')
+                  if nodes_resp.status_code == 200:
+                      node_count = len(nodes_resp.json().get('items', []))
+                  else:
+                      print(f"Nodes API error: {nodes_resp.status_code} - {nodes_resp.text}")
+                      node_count = 0
+                  
+                  # Get pods (all namespaces)
+                  pods_resp = k8s_get('/api/v1/pods')
+                  if pods_resp.status_code == 200:
+                      pods_data = pods_resp.json().get('items', [])
+                      running_pods = len([p for p in pods_data if p.get('status', {}).get('phase') == 'Running'])
+                  else:
+                      print(f"Pods API error: {pods_resp.status_code} - {pods_resp.text}")
+                      pods_data = []
+                      running_pods = 0
+                  
+                  # Get services (all namespaces)
+                  services_resp = k8s_get('/api/v1/services')
+                  if services_resp.status_code == 200:
+                      service_count = len(services_resp.json().get('items', []))
+                  else:
+                      print(f"Services API error: {services_resp.status_code} - {services_resp.text}")
+                      service_count = 0
+                  
+                  # Get deployments (all namespaces)
+                  deployments_resp = k8s_get('/apis/apps/v1/deployments')
+                  if deployments_resp.status_code == 200:
+                      deployment_count = len(deployments_resp.json().get('items', []))
+                  else:
+                      print(f"Deployments API error: {deployments_resp.status_code} - {deployments_resp.text}")
+                      deployment_count = 0
+                  
+                  return jsonify({
+                      'nodes': node_count,
+                      'running_pods': running_pods,
+                      'total_pods': len(pods_data),
+                      'services': service_count,
+                      'deployments': deployment_count,
+                      'mcp_tools': 8  # Fixed number of MCP tools we have
+                  })
+              except Exception as e:
+                  return jsonify({'error': str(e)}), 500
+
+          @app.route('/')
+          def index():
+              return '''
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>AI4K8s - AI-Powered Kubernetes Management</title>
+                  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+                  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+                  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+                  <style>
+                      body { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+                      .main-container { background: rgba(255, 255, 255, 0.95); border-radius: 20px; margin: 50px auto; padding: 50px; }
+                      .metric-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 15px; padding: 20px; text-align: center; margin: 10px; }
+                      .metric-number { font-size: 2.5rem; font-weight: bold; }
+                      .nav-link { color: white !important; }
+                      .navbar { background: rgba(44, 62, 80, 0.95) !important; }
+                  </style>
+              </head>
+              <body>
+                  <nav class="navbar navbar-expand-lg navbar-dark">
+                      <div class="container">
+                          <a class="navbar-brand" href="/">
+                              <i class="fas fa-robot me-2"></i>AI4K8s
+                          </a>
+                          <div class="navbar-nav ms-auto">
+                              <a class="nav-link" href="/">Dashboard</a>
+                              <a class="nav-link" href="/monitoring">Monitoring</a>
+                              <a class="nav-link" href="/ai-chat">AI Chat</a>
+                              <a class="nav-link" href="/grafana">Grafana</a>
+                              <a class="nav-link" href="/prometheus">Prometheus</a>
+                          </div>
+                      </div>
+                  </nav>
+                  
+                  <div class="container">
+                      <div class="main-container text-center">
+                          <h1 class="display-4 mb-4"><i class="fas fa-robot text-primary me-3"></i>AI4K8s</h1>
+                          <p class="lead mb-5">AI-Powered Kubernetes Management System</p>
+                          
+                          <div class="row">
+                              <div class="col-md-3">
+                                  <div class="metric-card">
+                                      <div class="metric-number" id="node-count">-</div>
+                                      <div>Kubernetes Node</div>
+                                  </div>
+                              </div>
+                              <div class="col-md-3">
+                                  <div class="metric-card">
+                                      <div class="metric-number" id="pod-count">-</div>
+                                      <div>Running Pods</div>
+                                  </div>
+                              </div>
+                              <div class="col-md-3">
+                                  <div class="metric-card">
+                                      <div class="metric-number" id="service-count">-</div>
+                                      <div>Services</div>
+                                  </div>
+                              </div>
+                              <div class="col-md-3">
+                                  <div class="metric-card">
+                                      <div class="metric-number" id="mcp-count">-</div>
+                                      <div>MCP Tools</div>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <div class="row mt-5">
+                              <div class="col-md-4 mb-3">
+                                  <div class="card h-100">
+                                      <div class="card-body text-center">
+                                          <i class="fas fa-comments fa-3x text-primary mb-3"></i>
+                                          <h5 class="card-title">AI Chat</h5>
+                                          <p class="card-text">Ask questions about your cluster in natural language</p>
+                                          <a href="/ai-chat" class="btn btn-primary">Start Chat</a>
+                                      </div>
+                                  </div>
+                              </div>
+                              <div class="col-md-4 mb-3">
+                                  <div class="card h-100">
+                                      <div class="card-body text-center">
+                                          <i class="fas fa-chart-line fa-3x text-success mb-3"></i>
+                                          <h5 class="card-title">Monitoring</h5>
+                                          <p class="card-text">View real-time metrics and dashboards</p>
+                                          <a href="/monitoring" class="btn btn-primary">View Metrics</a>
+                                      </div>
+                                  </div>
+                              </div>
+                              <div class="col-md-4 mb-3">
+                                  <div class="card h-100">
+                                      <div class="card-body text-center">
+                                          <i class="fas fa-chart-bar fa-3x text-info mb-3"></i>
+                                          <h5 class="card-title">Grafana</h5>
+                                          <p class="card-text">Advanced visualization and dashboards</p>
+                                          <a href="/grafana" class="btn btn-primary">Open Grafana</a>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <div class="mt-5">
+                              <div class="row mt-4">
+                                  <div class="col-md-6">
+                                      <div class="alert alert-success">
+                                          <i class="fas fa-check-circle me-2"></i>
+                                          <strong>Grafana Status:</strong> <span id="grafana-status">Checking...</span>
+                                      </div>
+                                  </div>
+                                  <div class="col-md-6">
+                                      <div class="alert alert-success">
+                                          <i class="fas fa-check-circle me-2"></i>
+                                          <strong>Prometheus Status:</strong> <span id="prometheus-status">Checking...</span>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+                  
+              </body>
+              <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+              <script>
+                  async function loadClusterStats() {
+                      try {
+                          const response = await fetch('/api/stats');
+                          const data = await response.json();
+                          if (data.error) {
+                              console.error('Error loading stats:', data.error);
+                              return;
+                          }
+                          document.getElementById('node-count').textContent = data.nodes;
+                          document.getElementById('pod-count').textContent = data.running_pods;
+                          document.getElementById('service-count').textContent = data.services;
+                          document.getElementById('mcp-count').textContent = data.mcp_tools;
+                          document.querySelectorAll('.metric-number').forEach(el => {
+                              el.style.color = '#28a745';
+                              el.title = 'Live data - Last updated: ' + new Date().toLocaleTimeString();
+                          });
+                      } catch (error) {
+                          console.error('Failed to load cluster stats:', error);
+                          document.getElementById('node-count').textContent = '?';
+                          document.getElementById('pod-count').textContent = '?';
+                          document.getElementById('service-count').textContent = '?';
+                          document.getElementById('mcp-count').textContent = '?';
+                      }
+                  }
+                  document.addEventListener('DOMContentLoaded', loadClusterStats);
+                  setInterval(loadClusterStats, 30000);
+              </script>
+              <script>
+                  async function updateMonitoringStatus() {
+                      try {
+                          const g = await fetch('/api/grafana-status');
+                          const gj = await g.json();
+                          const ge = document.getElementById('grafana-status');
+                          if (gj.status === 'success' && gj.grafana_status === 'running') {
+                              ge.textContent = 'Running ✅';
+                              ge.className = 'text-success';
+                          } else {
+                              ge.textContent = 'Offline ❌';
+                              ge.className = 'text-danger';
+                          }
+                      } catch (e) {
+                          const ge = document.getElementById('grafana-status');
+                          ge.textContent = 'Error ❌';
+                          ge.className = 'text-danger';
+                      }
+
+                      try {
+                          const p = await fetch('/api/prometheus-status');
+                          const pj = await p.json();
+                          const pe = document.getElementById('prometheus-status');
+                          if (pj.status === 'success' && pj.prometheus_status === 'running') {
+                              pe.textContent = 'Running ✅';
+                              pe.className = 'text-success';
+                          } else {
+                              pe.textContent = 'Offline ❌';
+                              pe.className = 'text-danger';
+                          }
+                      } catch (e) {
+                          const pe = document.getElementById('prometheus-status');
+                          pe.textContent = 'Error ❌';
+                          pe.className = 'text-danger';
+                      }
+                  }
+                  document.addEventListener('DOMContentLoaded', updateMonitoringStatus);
+              </script>
+              <footer class="mt-5 py-4 bg-light text-center">
+                  <div class="container">
+                      <p class="mb-0 text-muted">
+                          <span>👨‍💻 developed by <strong>pedramnj</strong></span> &nbsp;|&nbsp;
+                          <span>✉️ email: <a href="mailto:pedramnikjooy@gmail.com">pedramnikjooy@gmail.com</a></span> &nbsp;|&nbsp;
+                          <span>🌐 website: <a href="https://pedramnikjooy.me" target="_blank" rel="noopener noreferrer">pedramnikjooy.me</a></span>
+                      </p>
+                  </div>
+              </footer>
+              </html>
+              '''
+          
+          @app.route('/ai-chat')
+          def ai_chat():
+              return '''
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>AI Chat Interface - AI4K8s</title>
+                  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+                  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+                  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+                  <style>
+                      body { background: #f8f9fa; }
+                      .chat-container { max-width: 1000px; margin: 20px auto; }
+                      .chat-header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 10px 10px 0 0; }
+                      .chat-messages { height: 500px; overflow-y: auto; background: white; padding: 20px; border: 1px solid #dee2e6; }
+                      .message { margin-bottom: 15px; }
+                      .user-message { text-align: right; }
+                      .user-message .message-content { background: #007bff; color: white; padding: 10px 15px; border-radius: 18px; display: inline-block; max-width: 70%; }
+                      .ai-message .message-content { background: #e9ecef; color: #333; padding: 10px 15px; border-radius: 18px; display: inline-block; max-width: 70%; }
+                      .chat-input { border: 1px solid #dee2e6; border-top: none; padding: 20px; background: white; border-radius: 0 0 10px 10px; }
+                      .typing-indicator { display: none; color: #6c757d; font-style: italic; }
+                      .status-indicator { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; }
+                      .status-online { background: #28a745; }
+                      .status-offline { background: #dc3545; }
+                  </style>
+              </head>
+              <body>
+                  <nav class="navbar navbar-dark bg-dark">
+                      <div class="container">
+                          <a class="navbar-brand" href="/">
+                              <i class="fas fa-robot me-2"></i>AI4K8s Chat
+                          </a>
+                          <a href="/" class="btn btn-outline-light">Back to Dashboard</a>
+                      </div>
+                  </nav>
+                  
+                  <div class="chat-container">
+                      <div class="chat-header">
+                          <h3><i class="fas fa-comments me-2"></i>AI Chat Interface</h3>
+                          <p class="mb-0">Ask questions about your Kubernetes cluster in natural language</p>
+                          <div class="mt-2">
+                              <span class="status-indicator" id="status-indicator"></span>
+                              <span id="status-text">Connecting to MCP server...</span>
+                          </div>
+                      </div>
+                      
+                      <div class="chat-messages" id="chat-messages">
+                          <div class="message ai-message">
+                              <div class="message-content">
+                                  <i class="fas fa-robot me-2"></i>Hello! I'm your AI assistant for Kubernetes management. 
+                                  Ask me anything about your cluster - pods, services, deployments, logs, or any kubectl commands!
+                                  <br><br>
+                                  <strong>Example questions:</strong>
+                                  <ul class="mb-0">
+                                      <li>What pods are running in my cluster?</li>
+                                      <li>Show me the status of my nginx deployment</li>
+                                      <li>Get information about my cluster nodes</li>
+                                      <li>What services are available?</li>
+                                      <li>Show me logs from the grafana pod</li>
+                                  </ul>
+                              </div>
+                          </div>
+                      </div>
+                      
+                      <div class="chat-input">
+                          <div class="typing-indicator" id="typing-indicator">
+                              <i class="fas fa-circle-notch fa-spin me-2"></i>AI is thinking...
+                          </div>
+                          <div class="input-group">
+                              <input type="text" class="form-control" id="message-input" placeholder="Ask about your Kubernetes cluster...">
+                              <button class="btn btn-primary" type="button" id="send-button">
+                                  <i class="fas fa-paper-plane"></i> Send
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+                  
+                  <script>
+                      let isConnected = false;
+                      
+                      // Check MCP server status
+                      async function checkMCPStatus() {
+                          try {
+                              const response = await fetch('/api/mcp-status');
+                              const data = await response.json();
+                              const statusIndicator = document.getElementById('status-indicator');
+                              const statusText = document.getElementById('status-text');
+                              
+                              if (data.status === 'success' && data.mcp_status === 'running') {
+                                  statusIndicator.className = 'status-indicator status-online';
+                                  statusText.textContent = 'Connected to MCP server';
+                                  isConnected = true;
+                              } else {
+                                  statusIndicator.className = 'status-indicator status-offline';
+                                  statusText.textContent = 'MCP server offline';
+                                  isConnected = false;
+                              }
+                          } catch (error) {
+                              document.getElementById('status-indicator').className = 'status-indicator status-offline';
+                              document.getElementById('status-text').textContent = 'Connection error';
+                              isConnected = false;
+                          }
+                      }
+                      
+                      // Send message function
+                      async function sendMessage() {
+                          const input = document.getElementById('message-input');
+                          const message = input.value.trim();
+                          
+                          if (!message) return;
+                          
+                          // Add user message to chat
+                          addMessage(message, 'user');
+                          input.value = '';
+                          
+                          // Show typing indicator
+                          document.getElementById('typing-indicator').style.display = 'block';
+                          
+                          try {
+                              const response = await fetch('/api/chat', {
+                                  method: 'POST',
+                                  headers: {
+                                      'Content-Type': 'application/json',
+                                  },
+                                  body: JSON.stringify({ message: message })
+                              });
+                              
+                              const data = await response.json();
+                              
+                              // Hide typing indicator
+                              document.getElementById('typing-indicator').style.display = 'none';
+                              
+                              if (data.status === 'success') {
+                                  addMessage(data.response, 'ai');
+                              } else {
+                                  addMessage('Sorry, I encountered an error: ' + data.error, 'ai');
+                              }
+                          } catch (error) {
+                              document.getElementById('typing-indicator').style.display = 'none';
+                              addMessage('Sorry, I could not connect to the AI service. Please try again.', 'ai');
+                          }
+                      }
+                      
+                      // Add message to chat
+                      function addMessage(content, sender) {
+                          const chatMessages = document.getElementById('chat-messages');
+                          const messageDiv = document.createElement('div');
+                          messageDiv.className = 'message ' + sender + '-message';
+                          
+                          const contentDiv = document.createElement('div');
+                          contentDiv.className = 'message-content';
+                          contentDiv.innerHTML = content.replace(/\\n/g, '<br>');
+                          
+                          messageDiv.appendChild(contentDiv);
+                          chatMessages.appendChild(messageDiv);
+                          chatMessages.scrollTop = chatMessages.scrollHeight;
+                      }
+                      
+                      
+                      // Check status on page load
+                      document.addEventListener('DOMContentLoaded', function() {
+                          checkMCPStatus();
+                          setInterval(checkMCPStatus, 30000); // Check every 30 seconds
+                          
+                          // Add event listeners
+                          document.getElementById('send-button').addEventListener('click', sendMessage);
+                          document.getElementById('message-input').addEventListener('keypress', function(event) {
+                              if (event.key === 'Enter') {
+                                  sendMessage();
+                              }
+                          });
+                      });
+                  </script>
+              </body>
+              </html>
+              '''
+          
+          @app.route('/monitoring')
+          def monitoring():
+              return '''
+              <!DOCTYPE html>
+              <html>
+              <head>
+                  <title>Monitoring Dashboard - AI4K8s</title>
+                  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+                  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+                  <style>
+                      body { background: #f8f9fa; }
+                      .monitoring-container { margin: 20px; }
+                      .iframe-container { border: 1px solid #dee2e6; border-radius: 8px; overflow: hidden; }
+                      iframe { width: 100%; height: 600px; border: none; }
+                      .info-box { background: #e3f2fd; border: 1px solid #2196f3; border-radius: 8px; padding: 15px; margin: 10px 0; }
+                      .tab-content { margin-top: 20px; }
+                      .nav-tabs .nav-link { color: #495057; }
+                      .nav-tabs .nav-link.active { color: #007bff; }
+                  </style>
+              </head>
+              <body>
+                  <nav class="navbar navbar-dark bg-dark">
+                      <div class="container">
+                          <a class="navbar-brand" href="/">
+                              <i class="fas fa-robot me-2"></i>AI4K8s Monitoring
+                          </a>
+                          <a href="/" class="btn btn-outline-light">Back to Dashboard</a>
+                      </div>
+                  </nav>
+                  
+                  <div class="monitoring-container">
+                      <div class="info-box">
+                          <h5><i class="fas fa-info-circle me-2"></i>Monitoring Access Options</h5>
+                          <p>Choose how you want to access Grafana and Prometheus:</p>
+                      </div>
+                      
+                      <!-- Tabs for different access methods -->
+                      <ul class="nav nav-tabs" id="monitoringTabs" role="tablist">
+                          <li class="nav-item" role="presentation">
+                              <button class="nav-link active" id="iframe-tab" data-bs-toggle="tab" data-bs-target="#iframe" type="button" role="tab">
+                                  <i class="fas fa-window-maximize me-2"></i>Embedded (iFrames)
+                              </button>
+                          </li>
+                          <li class="nav-item" role="presentation">
+                              <button class="nav-link" id="direct-tab" data-bs-toggle="tab" data-bs-target="#direct" type="button" role="tab">
+                                  <i class="fas fa-external-link-alt me-2"></i>Direct Links
+                              </button>
+                          </li>
+                          <li class="nav-item" role="presentation">
+                              <button class="nav-link" id="setup-tab" data-bs-toggle="tab" data-bs-target="#setup" type="button" role="tab">
+                                  <i class="fas fa-cog me-2"></i>Setup Guide
+                              </button>
+                          </li>
+                      </ul>
+                      
+                      <div class="tab-content" id="monitoringTabContent">
+                          <!-- iFrame Tab -->
+                          <div class="tab-pane fade show active" id="iframe" role="tabpanel">
+                              <div class="alert alert-warning">
+                                  <i class="fas fa-exclamation-triangle me-2"></i>
+                                  <strong>Note:</strong> iFrames may not work for external users due to localhost restrictions. Try the Direct Links tab instead.
+                              </div>
+                              <div class="row">
+                                  <div class="col-md-6 mb-4">
+                                      <h3>Grafana Dashboard</h3>
+                                      <div class="iframe-container">
+                                          <iframe src="http://localhost:3001/login" title="Grafana" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                          </iframe>
+                                          <div style="display:none; padding: 20px; text-align: center; background: #f8f9fa; border: 1px solid #dee2e6;">
+                                              <i class="fas fa-exclamation-triangle text-warning fa-2x mb-2"></i>
+                                              <p>Grafana iframe not accessible. Use Direct Links tab instead.</p>
+                                          </div>
+                                      </div>
+                                  </div>
+                                  <div class="col-md-6 mb-4">
+                                      <h3>Prometheus Query Interface</h3>
+                                      <div class="iframe-container">
+                                          <iframe src="http://localhost:9091/graph" title="Prometheus" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                          </iframe>
+                                          <div style="display:none; padding: 20px; text-align: center; background: #f8f9fa; border: 1px solid #dee2e6;">
+                                              <i class="fas fa-exclamation-triangle text-warning fa-2x mb-2"></i>
+                                              <p>Prometheus iframe not accessible. Use Direct Links tab instead.</p>
+                                          </div>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <!-- Direct Links Tab -->
+                          <div class="tab-pane fade" id="direct" role="tabpanel">
+                              <div class="row">
+                                  <div class="col-md-6 mb-4">
+                                      <div class="card">
+                                          <div class="card-body text-center">
+                                              <h3><i class="fas fa-chart-bar text-primary me-2"></i>Grafana Dashboard</h3>
+                                              <p>Advanced visualization and monitoring dashboards</p>
+                                              <a href="http://localhost:3001/login" class="btn btn-primary btn-lg" target="_blank">
+                                                  <i class="fas fa-external-link-alt me-2"></i>Open Grafana
+                                              </a>
+                                              <small class="d-block text-muted mt-2">Opens in new tab</small>
+                                          </div>
+                                      </div>
+                                  </div>
+                                  <div class="col-md-6 mb-4">
+                                      <div class="card">
+                                          <div class="card-body text-center">
+                                              <h3><i class="fas fa-search text-success me-2"></i>Prometheus Query Interface</h3>
+                                              <p>Query metrics and explore your cluster data</p>
+                                              <a href="http://localhost:9091/graph" class="btn btn-success btn-lg" target="_blank">
+                                                  <i class="fas fa-external-link-alt me-2"></i>Open Prometheus
+                                              </a>
+                                              <small class="d-block text-muted mt-2">Opens in new tab</small>
+                                          </div>
+                                      </div>
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <!-- Setup Guide Tab -->
+                          <div class="tab-pane fade" id="setup" role="tabpanel">
+                              <div class="info-box">
+                                  <h5><i class="fas fa-lightbulb me-2"></i>How to Enable External Access</h5>
+                                  <p>To make Grafana and Prometheus accessible to external users:</p>
+                                  <ol>
+                                      <li><strong>Open a new terminal</strong> and run: <code>ngrok http 3001</code></li>
+                                      <li><strong>Open another terminal</strong> and run: <code>ngrok http 9091</code></li>
+                                      <li><strong>Use the generated ngrok URLs</strong> in the iframes above</li>
+                                      <li><strong>Share these URLs</strong> with external users for monitoring access</li>
+                                  </ol>
+                                  <p><strong>Current Status:</strong></p>
+                                  <ul>
+                                      <li>✅ Web Interface: <code>https://25f92182b340.ngrok-free.app</code></li>
+                                      <li>⏳ Grafana: Requires additional ngrok tunnel on port 3001</li>
+                                      <li>⏳ Prometheus: Requires additional ngrok tunnel on port 9091</li>
+                                  </ul>
+                              </div>
+                          </div>
+                      </div>
+                  </div>
+              </body>
+              <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+              </html>
+              '''
+          
+          @app.route('/grafana')
+          def grafana():
+              return redirect('/monitoring')
+          
+          @app.route('/prometheus')
+          def prometheus():
+              return redirect('/monitoring')
+          
+          @app.route('/api/grafana-status')
+          def api_grafana_status():
+              try:
+                  response = requests.get(f'{GRAFANA_URL}/api/health', timeout=5)
+                  return jsonify({
+                      'status': 'success',
+                      'grafana_status': 'running' if response.status_code == 200 else 'error',
+                      'url': GRAFANA_URL
+                  })
+              except Exception as e:
+                  return jsonify({
+                      'status': 'error',
+                      'grafana_status': 'unavailable',
+                      'error': str(e)
+                  })
+          
+          @app.route('/api/prometheus-status')
+          def api_prometheus_status():
+              try:
+                  response = requests.get(f'{PROMETHEUS_URL}/api/v1/status/config', timeout=5)
+                  return jsonify({
+                      'status': 'success',
+                      'prometheus_status': 'running' if response.status_code == 200 else 'error',
+                      'url': PROMETHEUS_URL
+                  })
+              except Exception as e:
+                  return jsonify({
+                      'status': 'error',
+                      'prometheus_status': 'unavailable',
+                      'error': str(e)
+                  })
+          
+          @app.route('/api/mcp-status')
+          def api_mcp_status():
+              try:
+                  # Use Kubernetes API /version as health proxy
+                  r = k8s_get('/version')
+                  ok = (r.status_code == 200)
+                  return jsonify({
+                      'status': 'success' if ok else 'error',
+                      'mcp_status': 'running' if ok else 'offline',
+                      'message': 'Kubernetes API reachable' if ok else f'HTTP {r.status_code}'
+                  })
+              except Exception as e:
+                  return jsonify({
+                      'status': 'error',
+                      'mcp_status': 'unavailable',
+                      'error': str(e)
+                  })
+          
+          @app.route('/api/chat', methods=['POST'])
+          def api_chat():
+              try:
+                  data = request.get_json()
+                  message = (data or {}).get('message', '').strip()
+                  if not message:
+                      return jsonify({'status': 'error', 'error': 'No message provided'})
+
+                  # Forward to MCP bridge service
+                  try:
+                      bridge_response = requests.post('http://mcp-bridge:5001/api/chat', 
+                                                    json={'message': message}, 
+                                                    timeout=30)
+                      if bridge_response.status_code == 200:
+                          bridge_data = bridge_response.json()
+                          return jsonify(bridge_data)
+                      else:
+                          return jsonify({'status': 'error', 'error': f'MCP bridge error: {bridge_response.status_code}'})
+                  except requests.exceptions.RequestException as e:
+                      return jsonify({'status': 'error', 'error': f'Could not connect to MCP bridge: {str(e)}'})
+
+              except Exception as e:
+                  return jsonify({'status': 'error', 'error': str(e)})
+          
+          if __name__ == '__main__':
+              app.run(host='0.0.0.0', port=8000, debug=True)
+          EOL
+          python app.py
+        env:
+        - name: FLASK_APP
+          value: "app.py"
+        - name: FLASK_ENV
+          value: "development"
+        - name: GRAFANA_URL
+          value: "http://grafana.default.svc.cluster.local:80"
+        - name: PROMETHEUS_URL
+          value: "http://prometheus-server.default.svc.cluster.local:80"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-app-sa
+  namespace: web
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: web-app-reader
+  namespace: web
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-app-reader-binding
+  namespace: web
+subjects:
+- kind: ServiceAccount
+  name: web-app-sa
+  namespace: web
+roleRef:
+  kind: Role
+  name: web-app-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: web-app-reader-cluster
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "nodes"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods/log"]
+  verbs: ["get"]
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: web-app-reader-cluster-binding
+subjects:
+- kind: ServiceAccount
+  name: web-app-sa
+  namespace: web
+roleRef:
+  kind: ClusterRole
+  name: web-app-reader-cluster
+  apiGroup: rbac.authorization.k8s.io
