@@ -107,7 +107,7 @@ class AIMonitoringIntegration:
         # Perform one-time analysis if no continuous monitoring
         try:
             metrics_data = self.metrics_collector.get_aggregated_metrics()
-            if "error" not in metrics_data:
+            if "error" not in metrics_data and "aggregated_metrics" in metrics_data:
                 agg_metrics = metrics_data["aggregated_metrics"]
                 resource_metrics = ResourceMetrics(
                     timestamp=datetime.now(),
@@ -120,11 +120,15 @@ class AIMonitoringIntegration:
                 )
                 
                 self.monitoring_system.add_metrics(resource_metrics)
-                return self.monitoring_system.analyze()
+                analysis_result = self.monitoring_system.analyze()
+                if "error" not in analysis_result:
+                    self.last_analysis = analysis_result
+                    return analysis_result
         except Exception as e:
             logger.error(f"Failed to get current analysis: {e}")
         
         # Fallback: Generate synthetic data for demonstration
+        logger.info("Using demo mode for AI monitoring")
         return self._generate_demo_analysis()
     
     def _generate_demo_analysis(self) -> Dict[str, Any]:
@@ -154,8 +158,15 @@ class AIMonitoringIntegration:
         # Add to monitoring system
         self.monitoring_system.add_metrics(demo_metrics)
         
-        # Generate analysis
-        analysis = self.monitoring_system.analyze()
+        # Generate analysis with error handling
+        try:
+            analysis = self.monitoring_system.analyze()
+            if "error" in analysis:
+                # If analysis fails, create a basic demo response
+                analysis = self._create_basic_demo_analysis(demo_metrics)
+        except Exception as e:
+            logger.error(f"Demo analysis failed: {e}")
+            analysis = self._create_basic_demo_analysis(demo_metrics)
         
         # Add demo indicator
         analysis["demo_mode"] = True
@@ -163,124 +174,197 @@ class AIMonitoringIntegration:
         
         return analysis
     
+    def _create_basic_demo_analysis(self, metrics: ResourceMetrics) -> Dict[str, Any]:
+        """Create a basic demo analysis when ML models fail"""
+        return {
+            "timestamp": metrics.timestamp.isoformat(),
+            "current_metrics": {
+                "cpu_usage": metrics.cpu_usage,
+                "memory_usage": metrics.memory_usage,
+                "network_io": metrics.network_io,
+                "disk_io": metrics.disk_io,
+                "pod_count": metrics.pod_count,
+                "node_count": metrics.node_count
+            },
+            "health_score": {
+                "score": 85,
+                "status": "healthy",
+                "message": "Demo cluster is running normally"
+            },
+            "anomaly_detection": {
+                "anomaly_detected": False,
+                "severity": "none",
+                "message": "No anomalies detected in demo data"
+            },
+            "forecasts": {
+                "cpu_forecast": {
+                    "trend": "stable",
+                    "predicted_values": [metrics.cpu_usage] * 6,
+                    "recommendation": "CPU usage is stable"
+                },
+                "memory_forecast": {
+                    "trend": "stable", 
+                    "predicted_values": [metrics.memory_usage] * 6,
+                    "recommendation": "Memory usage is stable"
+                }
+            },
+            "recommendations": [
+                {
+                    "type": "demo",
+                    "priority": "low",
+                    "recommendation": "This is demo data. Connect to a real Kubernetes cluster for live monitoring."
+                }
+            ]
+        }
+    
     def get_anomaly_alerts(self) -> List[Dict[str, Any]]:
         """Get current anomaly alerts"""
-        analysis = self.get_current_analysis()
-        
-        alerts = []
-        if "anomaly_detection" in analysis and analysis["anomaly_detection"]["is_anomaly"]:
-            anomaly = analysis["anomaly_detection"]
-            alerts.append({
-                "type": "anomaly",
-                "severity": anomaly["severity"],
-                "message": f"Anomaly detected: {anomaly['anomaly_type']}",
-                "details": anomaly,
-                "timestamp": analysis["timestamp"]
-            })
-        
-        return alerts
+        try:
+            analysis = self.get_current_analysis()
+            
+            alerts = []
+            if "anomaly_detection" in analysis and analysis["anomaly_detection"].get("is_anomaly", False):
+                anomaly = analysis["anomaly_detection"]
+                alerts.append({
+                    "type": "anomaly",
+                    "severity": anomaly.get("severity", "low"),
+                    "message": f"Anomaly detected: {anomaly.get('anomaly_type', 'unknown')}",
+                    "details": anomaly,
+                    "timestamp": analysis.get("timestamp", datetime.now().isoformat())
+                })
+            
+            return alerts
+        except Exception as e:
+            logger.error(f"Failed to get anomaly alerts: {e}")
+            return []
     
     def get_performance_recommendations(self) -> List[Dict[str, Any]]:
         """Get performance optimization recommendations"""
-        analysis = self.get_current_analysis()
-        
-        recommendations = []
-        
-        # Add performance optimization recommendations
-        if "performance_optimization" in analysis:
-            perf_recs = analysis["performance_optimization"].get("recommendations", [])
-            for rec in perf_recs:
-                recommendations.append({
-                    "type": "performance",
-                    "priority": rec["priority"],
-                    "message": rec["recommendation"],
-                    "action": rec.get("action", "monitor"),
-                    "details": rec
-                })
-        
-        # Add capacity planning recommendations
-        if "capacity_planning" in analysis:
-            cap_recs = analysis["capacity_planning"].get("recommendations", [])
-            for rec in cap_recs:
-                recommendations.append({
-                    "type": "capacity",
-                    "priority": rec.get("urgency", "low"),
-                    "message": rec["recommendation"],
-                    "action": rec["action"],
-                    "details": rec
-                })
-        
-        return recommendations
+        try:
+            analysis = self.get_current_analysis()
+            
+            recommendations = []
+            
+            # Add performance optimization recommendations
+            if "performance_optimization" in analysis:
+                perf_recs = analysis["performance_optimization"].get("recommendations", [])
+                for rec in perf_recs:
+                    recommendations.append({
+                        "type": "performance",
+                        "priority": rec.get("priority", "low"),
+                        "message": rec.get("recommendation", "Performance optimization available"),
+                        "action": rec.get("action", "monitor"),
+                        "details": rec
+                    })
+            
+            # Add capacity planning recommendations
+            if "capacity_planning" in analysis:
+                cap_recs = analysis["capacity_planning"].get("recommendations", [])
+                for rec in cap_recs:
+                    recommendations.append({
+                        "type": "capacity",
+                        "priority": rec.get("urgency", "low"),
+                        "message": rec.get("recommendation", "Capacity planning recommendation"),
+                        "action": rec.get("action", "monitor"),
+                        "details": rec
+                    })
+            
+            # Add demo recommendations if in demo mode
+            if analysis.get("demo_mode", False) and "recommendations" in analysis:
+                for rec in analysis["recommendations"]:
+                    recommendations.append({
+                        "type": "demo",
+                        "priority": rec.get("priority", "low"),
+                        "message": rec.get("recommendation", "Demo recommendation"),
+                        "action": "demo",
+                        "details": rec
+                    })
+            
+            return recommendations
+        except Exception as e:
+            logger.error(f"Failed to get performance recommendations: {e}")
+            return []
     
     def get_forecast_summary(self) -> Dict[str, Any]:
         """Get a summary of forecasts"""
-        analysis = self.get_current_analysis()
-        
-        if "forecasts" not in analysis:
-            return {"error": "No forecast data available"}
-        
-        forecasts = analysis["forecasts"]
-        summary = {
-            "timestamp": analysis["timestamp"],
-            "cpu_forecast": {
-                "current": forecasts["cpu"]["current"],
-                "trend": forecasts["cpu"]["trend"],
-                "next_hour_prediction": forecasts["cpu"]["predicted"][0] if forecasts["cpu"]["predicted"] else None,
-                "recommendation": forecasts["cpu"]["recommendation"]
-            },
-            "memory_forecast": {
-                "current": forecasts["memory"]["current"],
-                "trend": forecasts["memory"]["trend"],
-                "next_hour_prediction": forecasts["memory"]["predicted"][0] if forecasts["memory"]["predicted"] else None,
-                "recommendation": forecasts["memory"]["recommendation"]
+        try:
+            analysis = self.get_current_analysis()
+            
+            if "forecasts" not in analysis:
+                return {"error": "No forecast data available"}
+            
+            forecasts = analysis["forecasts"]
+            summary = {
+                "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
+                "cpu_forecast": {
+                    "current": forecasts.get("cpu", {}).get("current", 0),
+                    "trend": forecasts.get("cpu", {}).get("trend", "unknown"),
+                    "next_hour_prediction": forecasts.get("cpu", {}).get("predicted", [0])[0] if forecasts.get("cpu", {}).get("predicted") else None,
+                    "recommendation": forecasts.get("cpu", {}).get("recommendation", "No recommendation available")
+                },
+                "memory_forecast": {
+                    "current": forecasts.get("memory", {}).get("current", 0),
+                    "trend": forecasts.get("memory", {}).get("trend", "unknown"),
+                    "next_hour_prediction": forecasts.get("memory", {}).get("predicted", [0])[0] if forecasts.get("memory", {}).get("predicted") else None,
+                    "recommendation": forecasts.get("memory", {}).get("recommendation", "No recommendation available")
+                }
             }
-        }
-        
-        return summary
+            
+            return summary
+        except Exception as e:
+            logger.error(f"Failed to get forecast summary: {e}")
+            return {"error": f"Failed to get forecast summary: {str(e)}"}
     
     def get_health_score(self) -> Dict[str, Any]:
         """Calculate overall cluster health score"""
-        analysis = self.get_current_analysis()
-        
-        if "error" in analysis:
-            return {"error": "Cannot calculate health score"}
-        
-        current_metrics = analysis["current_metrics"]
-        
-        # Calculate health score (0-100)
-        cpu_health = max(0, 100 - current_metrics["cpu_usage"])
-        memory_health = max(0, 100 - current_metrics["memory_usage"])
-        
-        # Penalize for anomalies
-        anomaly_penalty = 0
-        if analysis["anomaly_detection"]["is_anomaly"]:
-            severity_penalties = {"low": 5, "medium": 15, "high": 30, "critical": 50}
-            anomaly_penalty = severity_penalties.get(analysis["anomaly_detection"]["severity"], 10)
-        
-        # Calculate overall score
-        overall_score = (cpu_health + memory_health) / 2 - anomaly_penalty
-        overall_score = max(0, min(100, overall_score))
-        
-        # Determine health status
-        if overall_score >= 80:
-            status = "excellent"
-        elif overall_score >= 60:
-            status = "good"
-        elif overall_score >= 40:
-            status = "fair"
-        elif overall_score >= 20:
-            status = "poor"
-        else:
-            status = "critical"
-        
-        return {
-            "overall_score": round(overall_score, 1),
-            "status": status,
-            "cpu_health": round(cpu_health, 1),
-            "memory_health": round(memory_health, 1),
-            "anomaly_penalty": anomaly_penalty,
-            "timestamp": analysis["timestamp"]
-        }
+        try:
+            analysis = self.get_current_analysis()
+            
+            if "error" in analysis:
+                return {"error": "Cannot calculate health score"}
+            
+            current_metrics = analysis.get("current_metrics", {})
+            
+            # Calculate health score (0-100)
+            cpu_usage = current_metrics.get("cpu_usage", 0)
+            memory_usage = current_metrics.get("memory_usage", 0)
+            cpu_health = max(0, 100 - cpu_usage)
+            memory_health = max(0, 100 - memory_usage)
+            
+            # Penalize for anomalies
+            anomaly_penalty = 0
+            anomaly_detection = analysis.get("anomaly_detection", {})
+            if anomaly_detection.get("is_anomaly", False):
+                severity_penalties = {"low": 5, "medium": 15, "high": 30, "critical": 50}
+                anomaly_penalty = severity_penalties.get(anomaly_detection.get("severity", "low"), 10)
+            
+            # Calculate overall score
+            overall_score = (cpu_health + memory_health) / 2 - anomaly_penalty
+            overall_score = max(0, min(100, overall_score))
+            
+            # Determine health status
+            if overall_score >= 80:
+                status = "excellent"
+            elif overall_score >= 60:
+                status = "good"
+            elif overall_score >= 40:
+                status = "fair"
+            elif overall_score >= 20:
+                status = "poor"
+            else:
+                status = "critical"
+            
+            return {
+                "overall_score": round(overall_score, 1),
+                "status": status,
+                "cpu_health": round(cpu_health, 1),
+                "memory_health": round(memory_health, 1),
+                "anomaly_penalty": anomaly_penalty,
+                "timestamp": analysis.get("timestamp", datetime.now().isoformat())
+            }
+        except Exception as e:
+            logger.error(f"Failed to get health score: {e}")
+            return {"error": f"Failed to get health score: {str(e)}"}
     
     def get_dashboard_data(self) -> Dict[str, Any]:
         """Get comprehensive dashboard data"""
