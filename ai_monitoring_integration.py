@@ -124,7 +124,44 @@ class AIMonitoringIntegration:
         except Exception as e:
             logger.error(f"Failed to get current analysis: {e}")
         
-        return {"error": "No analysis available"}
+        # Fallback: Generate synthetic data for demonstration
+        return self._generate_demo_analysis()
+    
+    def _generate_demo_analysis(self) -> Dict[str, Any]:
+        """Generate demo analysis when Kubernetes is not available"""
+        import random
+        
+        # Generate realistic demo metrics
+        current_time = datetime.now()
+        cpu_usage = random.uniform(25, 75)
+        memory_usage = random.uniform(30, 80)
+        network_io = random.uniform(100, 500)
+        disk_io = random.uniform(50, 200)
+        pod_count = random.randint(5, 15)
+        node_count = 3
+        
+        # Create demo metrics
+        demo_metrics = ResourceMetrics(
+            timestamp=current_time,
+            cpu_usage=cpu_usage,
+            memory_usage=memory_usage,
+            network_io=network_io,
+            disk_io=disk_io,
+            pod_count=pod_count,
+            node_count=node_count
+        )
+        
+        # Add to monitoring system
+        self.monitoring_system.add_metrics(demo_metrics)
+        
+        # Generate analysis
+        analysis = self.monitoring_system.analyze()
+        
+        # Add demo indicator
+        analysis["demo_mode"] = True
+        analysis["demo_message"] = "Demo mode: Using synthetic data for demonstration purposes"
+        
+        return analysis
     
     def get_anomaly_alerts(self) -> List[Dict[str, Any]]:
         """Get current anomaly alerts"""

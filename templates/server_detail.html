@@ -98,21 +98,28 @@
             </div>
             <div class="card-body">
                 <div class="row">
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-3 mb-3">
                         <div class="d-grid">
                             <a href="{{ url_for('chat', server_id=server.id) }}" class="btn btn-primary">
                                 <i class="fas fa-comments me-2"></i>Start AI Chat
                             </a>
                         </div>
                     </div>
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-3 mb-3">
+                        <div class="d-grid">
+                            <a href="{{ url_for('monitoring_dashboard', server_id=server.id) }}" class="btn btn-success">
+                                <i class="fas fa-brain me-2"></i>AI Monitoring
+                            </a>
+                        </div>
+                    </div>
+                    <div class="col-md-3 mb-3">
                         <div class="d-grid">
                             <button class="btn btn-outline-info" onclick="checkServerStatus()">
                                 <i class="fas fa-sync-alt me-2"></i>Check Status
                             </button>
                         </div>
                     </div>
-                    <div class="col-md-4 mb-3">
+                    <div class="col-md-3 mb-3">
                         <div class="d-grid">
                             <button class="btn btn-outline-warning" onclick="testConnection()">
                                 <i class="fas fa-network-wired me-2"></i>Test Connection
