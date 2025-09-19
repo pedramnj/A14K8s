@@ -12,6 +12,14 @@ import json
 import requests
 import uuid
 
+# Import predictive monitoring components
+try:
+    from ai_monitoring_integration import AIMonitoringIntegration
+    PREDICTIVE_MONITORING_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️  Predictive monitoring not available: {e}")
+    PREDICTIVE_MONITORING_AVAILABLE = False
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai4k8s.db'
@@ -956,6 +964,105 @@ def test_connection(server_id):
             'status': server.status,
             'error': server.connection_error
         }), 500
+
+# Predictive Monitoring Routes
+if PREDICTIVE_MONITORING_AVAILABLE:
+    # Initialize AI monitoring integration
+    ai_monitoring = AIMonitoringIntegration()
+    
+    @app.route('/monitoring')
+    def monitoring_dashboard():
+        """Predictive monitoring dashboard"""
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        
+        user = User.query.get(session['user_id'])
+        return render_template('monitoring.html', user=user)
+    
+    @app.route('/api/monitoring/insights')
+    def get_monitoring_insights():
+        """Get AI monitoring insights"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            insights = ai_monitoring.get_dashboard_data()
+            return jsonify(insights)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/alerts')
+    def get_monitoring_alerts():
+        """Get anomaly alerts"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            alerts = ai_monitoring.get_anomaly_alerts()
+            return jsonify({'alerts': alerts, 'count': len(alerts)})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/recommendations')
+    def get_monitoring_recommendations():
+        """Get performance recommendations"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            recommendations = ai_monitoring.get_performance_recommendations()
+            return jsonify({'recommendations': recommendations, 'count': len(recommendations)})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/forecast')
+    def get_monitoring_forecast():
+        """Get capacity forecasts"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            forecast = ai_monitoring.get_forecast_summary()
+            return jsonify(forecast)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/health')
+    def get_monitoring_health():
+        """Get cluster health score"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            health = ai_monitoring.get_health_score()
+            return jsonify(health)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/start')
+    def start_monitoring():
+        """Start continuous monitoring"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            interval = request.json.get('interval', 300) if request.is_json else 300
+            ai_monitoring.start_monitoring(interval)
+            return jsonify({'success': True, 'message': 'Monitoring started'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/monitoring/stop')
+    def stop_monitoring():
+        """Stop continuous monitoring"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        try:
+            ai_monitoring.stop_monitoring()
+            return jsonify({'success': True, 'message': 'Monitoring stopped'})
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     with app.app_context():
