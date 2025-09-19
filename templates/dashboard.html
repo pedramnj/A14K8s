@@ -66,14 +66,14 @@
 
 <!-- Servers List -->
 <div class="card border-0 shadow-sm">
-    <div class="card-header bg-white border-bottom">
-        <h5 class="mb-0"><i class="fas fa-server me-2"></i>Your Servers</h5>
+    <div class="card-header border-bottom">
+        <h5 class="mb-0 text-light"><i class="fas fa-server me-2"></i>Your Servers</h5>
     </div>
     <div class="card-body p-0">
         {% if servers %}
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead class="table-light">
+                    <thead>
                         <tr>
                             <th>Name</th>
                             <th>Type</th>
@@ -114,10 +114,10 @@
                                         {% if server.username %}
                                             <small class="text-muted">User: {{ server.username }}</small><br>
                                         {% endif %}
-                                        {% if server.has_password %}
+                                        {% if server.password %}
                                             <span class="badge bg-info badge-sm">Password</span>
                                         {% endif %}
-                                        {% if server.has_ssh_key %}
+                                        {% if server.ssh_key %}
                                             <span class="badge bg-success badge-sm">SSH Key</span>
                                         {% endif %}
                                     </div>
