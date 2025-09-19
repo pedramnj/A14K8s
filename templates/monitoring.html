@@ -1,12 +1,22 @@
 {% extends "base.html" %}
 
-{% block title %}AI Monitoring Dashboard - AI4K8s{% endblock %}
+{% block title %}AI Monitoring Dashboard - {{ server.name }} - AI4K8s{% endblock %}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <div>
         <h2 class="mb-1">AI Monitoring Dashboard</h2>
-        <p class="text-muted">Predictive analytics and intelligent insights for your Kubernetes clusters</p>
+        <p class="text-muted">Predictive analytics and intelligent insights for <strong>{{ server.name }}</strong></p>
+        <small class="text-muted">
+            <i class="fas fa-server me-1"></i>{{ server.server_type.title() }} Server
+            <span class="badge bg-{% if server.status == 'active' %}success{% elif server.status == 'inactive' %}warning{% else %}danger{% endif %} ms-2">
+                {{ server.status.title() }}
+            </span>
+        </small>
+        <div id="demoModeIndicator" class="alert alert-info mt-2" style="display: none;">
+            <i class="fas fa-info-circle me-2"></i>
+            <strong>Demo Mode:</strong> Using synthetic data for demonstration. Connect to a real Kubernetes cluster for live monitoring.
+        </div>
     </div>
     <div>
         <button id="startMonitoring" class="btn btn-success me-2">
@@ -201,16 +211,23 @@ async function loadDashboardData() {
     try {
         showLoading(true);
         
+        const serverId = {{ server.id }};
+        
         // Load all data in parallel
         const [insights, alerts, recommendations, forecast, health] = await Promise.all([
-            fetch('/api/monitoring/insights').then(r => r.json()),
-            fetch('/api/monitoring/alerts').then(r => r.json()),
-            fetch('/api/monitoring/recommendations').then(r => r.json()),
-            fetch('/api/monitoring/forecast').then(r => r.json()),
-            fetch('/api/monitoring/health').then(r => r.json())
+            fetch(`/api/monitoring/insights/${serverId}`).then(r => r.json()),
+            fetch(`/api/monitoring/alerts/${serverId}`).then(r => r.json()),
+            fetch(`/api/monitoring/recommendations/${serverId}`).then(r => r.json()),
+            fetch(`/api/monitoring/forecast/${serverId}`).then(r => r.json()),
+            fetch(`/api/monitoring/health/${serverId}`).then(r => r.json())
         ]);
         
         updateDashboard(insights, alerts, recommendations, forecast, health);
+        
+        // Show demo mode indicator if in demo mode
+        if (insights && insights.demo_mode) {
+            document.getElementById('demoModeIndicator').style.display = 'block';
+        }
         
     } catch (error) {
         console.error('Error loading dashboard data:', error);
@@ -454,7 +471,8 @@ document.getElementById('refreshData').addEventListener('click', loadDashboardDa
 
 document.getElementById('startMonitoring').addEventListener('click', async function() {
     try {
-        const response = await fetch('/api/monitoring/start', {
+        const serverId = {{ server.id }};
+        const response = await fetch(`/api/monitoring/start/${serverId}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({interval: 300})
@@ -473,7 +491,8 @@ document.getElementById('startMonitoring').addEventListener('click', async funct
 
 document.getElementById('stopMonitoring').addEventListener('click', async function() {
     try {
-        const response = await fetch('/api/monitoring/stop', {method: 'POST'});
+        const serverId = {{ server.id }};
+        const response = await fetch(`/api/monitoring/stop/${serverId}`, {method: 'POST'});
         const result = await response.json();
         
         if (result.success) {

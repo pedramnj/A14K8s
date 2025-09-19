@@ -967,100 +967,163 @@ def test_connection(server_id):
 
 # Predictive Monitoring Routes
 if PREDICTIVE_MONITORING_AVAILABLE:
-    # Initialize AI monitoring integration
-    ai_monitoring = AIMonitoringIntegration()
+    # Store AI monitoring instances per server
+    ai_monitoring_instances = {}
     
-    @app.route('/monitoring')
-    def monitoring_dashboard():
-        """Predictive monitoring dashboard"""
+    def get_ai_monitoring(server_id):
+        """Get or create AI monitoring instance for a specific server"""
+        if server_id not in ai_monitoring_instances:
+            # Get server details to determine kubeconfig path
+            server = Server.query.get(server_id)
+            if server:
+                kubeconfig_path = None
+                if server.server_type == 'remote' and hasattr(server, 'kubeconfig_path'):
+                    kubeconfig_path = server.kubeconfig_path
+                ai_monitoring_instances[server_id] = AIMonitoringIntegration(kubeconfig_path)
+        return ai_monitoring_instances.get(server_id)
+    
+    @app.route('/monitoring/<int:server_id>')
+    def monitoring_dashboard(server_id):
+        """Predictive monitoring dashboard for specific server"""
         if 'user_id' not in session:
             return redirect(url_for('login'))
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
         user = User.query.get(session['user_id'])
-        return render_template('monitoring.html', user=user)
+        return render_template('monitoring.html', user=user, server=server)
     
-    @app.route('/api/monitoring/insights')
-    def get_monitoring_insights():
-        """Get AI monitoring insights"""
+    @app.route('/api/monitoring/insights/<int:server_id>')
+    def get_monitoring_insights(server_id):
+        """Get AI monitoring insights for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             insights = ai_monitoring.get_dashboard_data()
             return jsonify(insights)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/alerts')
-    def get_monitoring_alerts():
-        """Get anomaly alerts"""
+    @app.route('/api/monitoring/alerts/<int:server_id>')
+    def get_monitoring_alerts(server_id):
+        """Get anomaly alerts for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             alerts = ai_monitoring.get_anomaly_alerts()
             return jsonify({'alerts': alerts, 'count': len(alerts)})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/recommendations')
-    def get_monitoring_recommendations():
-        """Get performance recommendations"""
+    @app.route('/api/monitoring/recommendations/<int:server_id>')
+    def get_monitoring_recommendations(server_id):
+        """Get performance recommendations for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             recommendations = ai_monitoring.get_performance_recommendations()
             return jsonify({'recommendations': recommendations, 'count': len(recommendations)})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/forecast')
-    def get_monitoring_forecast():
-        """Get capacity forecasts"""
+    @app.route('/api/monitoring/forecast/<int:server_id>')
+    def get_monitoring_forecast(server_id):
+        """Get capacity forecasts for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             forecast = ai_monitoring.get_forecast_summary()
             return jsonify(forecast)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/health')
-    def get_monitoring_health():
-        """Get cluster health score"""
+    @app.route('/api/monitoring/health/<int:server_id>')
+    def get_monitoring_health(server_id):
+        """Get cluster health score for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             health = ai_monitoring.get_health_score()
             return jsonify(health)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/start')
-    def start_monitoring():
-        """Start continuous monitoring"""
+    @app.route('/api/monitoring/start/<int:server_id>', methods=['POST'])
+    def start_monitoring(server_id):
+        """Start continuous monitoring for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             interval = request.json.get('interval', 300) if request.is_json else 300
             ai_monitoring.start_monitoring(interval)
-            return jsonify({'success': True, 'message': 'Monitoring started'})
+            return jsonify({'success': True, 'message': f'Monitoring started for {server.name}'})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
-    @app.route('/api/monitoring/stop')
-    def stop_monitoring():
-        """Stop continuous monitoring"""
+    @app.route('/api/monitoring/stop/<int:server_id>', methods=['POST'])
+    def stop_monitoring(server_id):
+        """Stop continuous monitoring for specific server"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
+        # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
         try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            
             ai_monitoring.stop_monitoring()
-            return jsonify({'success': True, 'message': 'Monitoring stopped'})
+            return jsonify({'success': True, 'message': f'Monitoring stopped for {server.name}'})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
 
