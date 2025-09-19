@@ -88,7 +88,7 @@ class TimeSeriesForecaster:
                 trend="insufficient_data",
                 recommendation="Collect more data for accurate forecasting"
             )
-        
+
         # Extract CPU usage data
         cpu_data = [m.cpu_usage for m in self.history[-self.window_size:]]
         current_cpu = cpu_data[-1]
@@ -493,7 +493,7 @@ class CapacityPlanner:
                 "recommendation": f"Scale up CPU resources by {scale_factor:.1f}x to handle predicted peak usage",
                 "urgency": "high" if max_predicted_cpu > 90 else "medium"
             })
-        elif max_predicted_cpu < self.scaling_thresholds["cpu_scale_down"]:
+        elif max_predicted_cpu < self.scaling_thresholds["cpu_scale_down"] and max_predicted_cpu > 0:
             scale_factor = self.scaling_thresholds["cpu_scale_down"] / max_predicted_cpu
             recommendations.append({
                 "resource": "cpu",
@@ -519,7 +519,7 @@ class CapacityPlanner:
                 "recommendation": f"Scale up memory resources by {scale_factor:.1f}x to handle predicted peak usage",
                 "urgency": "high" if max_predicted_memory > 95 else "medium"
             })
-        elif max_predicted_memory < self.scaling_thresholds["memory_scale_down"]:
+        elif max_predicted_memory < self.scaling_thresholds["memory_scale_down"] and max_predicted_memory > 0:
             scale_factor = self.scaling_thresholds["memory_scale_down"] / max_predicted_memory
             recommendations.append({
                 "resource": "memory",
