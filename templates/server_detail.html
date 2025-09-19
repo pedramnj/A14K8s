@@ -250,8 +250,73 @@ function checkServerStatus() {
 }
 
 function testConnection() {
-    // This would test the actual connection to the server
-    alert('Connection test functionality will be implemented in the next version');
+    const button = event.target;
+    const originalText = button.innerHTML;
+    
+    // Show loading state
+    button.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Testing...';
+    button.disabled = true;
+    
+    fetch(`/api/test_connection/{{ server.id }}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            // Success - show success message and update status
+            showAlert('success', data.message);
+            // Update the status badge
+            updateServerStatus(data.status);
+        } else {
+            // Error - show error message
+            showAlert('danger', data.message);
+            if (data.error) {
+                console.error('Connection test error:', data.error);
+            }
+        }
+    })
+    .catch(error => {
+        console.error('Error testing connection:', error);
+        showAlert('danger', 'Failed to test connection. Please try again.');
+    })
+    .finally(() => {
+        // Restore button state
+        button.innerHTML = originalText;
+        button.disabled = false;
+    });
+}
+
+function showAlert(type, message) {
+    // Create and show a Bootstrap alert
+    const alertDiv = document.createElement('div');
+    alertDiv.className = `alert alert-${type} alert-dismissible fade show`;
+    alertDiv.innerHTML = `
+        ${message}
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    
+    // Insert at the top of the page
+    const container = document.querySelector('.row');
+    container.insertBefore(alertDiv, container.firstChild);
+    
+    // Auto-dismiss after 5 seconds
+    setTimeout(() => {
+        if (alertDiv.parentNode) {
+            alertDiv.remove();
+        }
+    }, 5000);
+}
+
+function updateServerStatus(status) {
+    // Update the status badge
+    const statusBadge = document.querySelector('.badge.bg-success, .badge.bg-warning, .badge.bg-danger');
+    if (statusBadge) {
+        statusBadge.className = `badge bg-${status === 'active' ? 'success' : status === 'inactive' ? 'warning' : 'danger'}`;
+        statusBadge.innerHTML = `<i class="fas fa-${status === 'active' ? 'check-circle' : status === 'inactive' ? 'pause-circle' : 'exclamation-circle'} me-1"></i>${status.charAt(0).toUpperCase() + status.slice(1)}`;
+    }
 }
 
 // Load server stats
