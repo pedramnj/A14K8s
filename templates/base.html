@@ -78,19 +78,93 @@
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="bg-light mt-5 py-4">
-        <div class="container">
+    <footer class="footer bg-dark text-light mt-5">
+        <div class="container py-5">
             <div class="row">
-                <div class="col-md-6">
-                    <h5>AI4K8s</h5>
-                    <p class="text-muted">AI-Powered Kubernetes Management Platform</p>
+                <div class="col-lg-4 mb-4">
+                    <div class="footer-brand">
+                        <h4 class="text-primary mb-3">
+                            <i class="fas fa-robot me-2"></i>AI4K8s
+                        </h4>
+                        <p class="text-light opacity-75">
+                            AI-Powered Kubernetes Management Platform with intelligent natural language processing and MCP integration.
+                        </p>
+                    </div>
                 </div>
-                <div class="col-md-6 text-end">
-                    <p class="text-muted">
+                
+                <div class="col-lg-4 mb-4">
+                    <h5 class="text-primary mb-3">Quick Links</h5>
+                    <ul class="list-unstyled">
+                        <li class="mb-2">
+                            <a href="{{ url_for('index') }}" class="text-light text-decoration-none opacity-75 hover-opacity-100">
+                                <i class="fas fa-home me-2"></i>Home
+                            </a>
+                        </li>
+                        {% if session.user_id %}
+                        <li class="mb-2">
+                            <a href="{{ url_for('dashboard') }}" class="text-light text-decoration-none opacity-75 hover-opacity-100">
+                                <i class="fas fa-tachometer-alt me-2"></i>Dashboard
+                            </a>
+                        </li>
+                        {% endif %}
+                        <li class="mb-2">
+                            <a href="https://github.com/pedramnj/A14K8s" target="_blank" class="text-light text-decoration-none opacity-75 hover-opacity-100">
+                                <i class="fab fa-github me-2"></i>GitHub Repository
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+                
+                <div class="col-lg-4 mb-4">
+                    <h5 class="text-primary mb-3">Developer</h5>
+                    <div class="developer-info">
+                        <p class="text-light mb-2">
+                            <i class="fas fa-user me-2"></i>
+                            <strong>Pedram Nikjooy</strong>
+                        </p>
+                        <p class="text-light mb-2">
+                            <i class="fas fa-globe me-2"></i>
+                            <a href="https://pedramnikjooy.me" target="_blank" class="text-primary text-decoration-none">
+                                pedramnikjooy.me
+                            </a>
+                        </p>
+                        <p class="text-light mb-3">
+                            <i class="fas fa-envelope me-2"></i>
+                            <a href="mailto:pedramnikjooy@gmail.com" class="text-primary text-decoration-none">
+                                pedramnikjooy@gmail.com
+                            </a>
+                        </p>
+                        <div class="social-links">
+                            <a href="https://github.com/pedramnj" target="_blank" class="text-light me-3 opacity-75 hover-opacity-100">
+                                <i class="fab fa-github fa-lg"></i>
+                            </a>
+                            <a href="https://linkedin.com/in/pedramnikjooy" target="_blank" class="text-light me-3 opacity-75 hover-opacity-100">
+                                <i class="fab fa-linkedin fa-lg"></i>
+                            </a>
+                            <a href="mailto:pedramnikjooy@gmail.com" class="text-light opacity-75 hover-opacity-100">
+                                <i class="fas fa-envelope fa-lg"></i>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <hr class="my-4 border-secondary">
+            
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <p class="text-light opacity-75 mb-0">
                         <small>
-                            Developed by Pedram Nikjooy<br>
-                            University of Applied Sciences<br>
-                            Thesis Project 2024
+                            <i class="fas fa-copyright me-1"></i>
+                            2024 Pedram Nikjooy. All rights reserved.
+                        </small>
+                    </p>
+                </div>
+                <div class="col-md-6 text-md-end">
+                    <p class="text-light opacity-75 mb-0">
+                        <small>
+                            <i class="fas fa-graduation-cap me-1"></i>
+                            University of Applied Sciences Thesis Project
                         </small>
                     </p>
                 </div>
