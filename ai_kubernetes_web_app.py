@@ -19,6 +19,11 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
 
+# Context processor to make current year available in all templates
+@app.context_processor
+def inject_current_year():
+    return {'current_year': datetime.now().year}
+
 # AI-Powered MCP-based Natural Language Processor
 class AIPoweredMCPKubernetesProcessor:
     def __init__(self):
