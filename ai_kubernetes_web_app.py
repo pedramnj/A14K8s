@@ -35,6 +35,9 @@ class AIPoweredMCPKubernetesProcessor:
             from anthropic import Anthropic
             import os
             
+            # Try to load .env file from client directory
+            self._load_env_file()
+            
             if os.getenv('ANTHROPIC_API_KEY'):
                 # Set the API key in environment and initialize client
                 os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY')
@@ -47,6 +50,33 @@ class AIPoweredMCPKubernetesProcessor:
             print("⚠️  Anthropic package not installed, using regex-only processing")
         except Exception as e:
             print(f"⚠️  AI initialization failed: {e}, using regex-only processing")
+    
+    def _load_env_file(self):
+        """Load environment variables from .env file"""
+        import os
+        
+        # Try multiple locations for .env file
+        env_paths = [
+            'client/.env',
+            '.env',
+            os.path.expanduser('~/.anthropic_api_key')
+        ]
+        
+        for env_path in env_paths:
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line and not line.startswith('#') and '=' in line:
+                                key, value = line.split('=', 1)
+                                os.environ[key] = value
+                    print(f"✅ Loaded environment from {env_path}")
+                    return
+                except Exception as e:
+                    print(f"⚠️  Failed to load {env_path}: {e}")
+        
+        print("⚠️  No .env file found in expected locations")
     
     def _load_tools(self):
         """Load available MCP tools from the server"""
@@ -822,8 +852,9 @@ def test_connection(server_id):
         if server.server_type == 'local':
             # For local servers, test kubectl connectivity
             import subprocess
+            timeout = getattr(server, 'connection_timeout', 30)
             result = subprocess.run(['kubectl', 'cluster-info'], 
-                                  capture_output=True, text=True, timeout=server.connection_timeout)
+                                  capture_output=True, text=True, timeout=timeout)
             if result.returncode == 0:
                 server.status = 'active'
                 server.connection_error = None
@@ -844,29 +875,32 @@ def test_connection(server_id):
                 port = int(port)
             else:
                 host = server.connection_string
-                port = server.ssh_port
+                port = getattr(server, 'ssh_port', 22)
             
             # Test SSH connection
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             
             try:
-                if server.ssh_key:
+                username = getattr(server, 'username', None)
+                timeout = getattr(server, 'connection_timeout', 30)
+                
+                if getattr(server, 'ssh_key', None):
                     # Use SSH key content
                     import io
                     key_file = io.StringIO(server.ssh_key)
                     private_key = paramiko.RSAKey.from_private_key(key_file)
-                    ssh.connect(host, port=port, username=server.username, pkey=private_key, 
-                               timeout=server.connection_timeout)
-                elif server.ssh_key_path:
+                    ssh.connect(host, port=port, username=username, pkey=private_key, 
+                               timeout=timeout)
+                elif getattr(server, 'ssh_key_path', None):
                     # Use SSH key file path
                     private_key = paramiko.RSAKey.from_private_key_file(server.ssh_key_path)
-                    ssh.connect(host, port=port, username=server.username, pkey=private_key,
-                               timeout=server.connection_timeout)
-                elif server.password:
+                    ssh.connect(host, port=port, username=username, pkey=private_key,
+                               timeout=timeout)
+                elif getattr(server, 'password', None):
                     # Use password authentication
-                    ssh.connect(host, port=port, username=server.username, password=server.password,
-                               timeout=server.connection_timeout)
+                    ssh.connect(host, port=port, username=username, password=server.password,
+                               timeout=timeout)
                 else:
                     raise Exception('No authentication method provided')
                 
