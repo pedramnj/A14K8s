@@ -200,6 +200,7 @@ let monitoringInterval = null;
 
 // Initialize dashboard
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('🚀 DOM loaded, starting dashboard initialization');
     loadDashboardData();
     
     // Set up auto-refresh every 30 seconds
@@ -222,16 +223,34 @@ async function loadDashboardData() {
             fetch(`/api/monitoring/health/${serverId}`).then(r => r.json())
         ]);
         
+        // Debug: Log the API responses
+        console.log('API Responses:', {
+            insights: insights,
+            alerts: alerts,
+            recommendations: recommendations,
+            forecast: forecast,
+            health: health
+        });
+        
         updateDashboard(insights, alerts, recommendations, forecast, health);
         
         // Show demo mode indicator if in demo mode
-        if (insights && insights.demo_mode) {
-            document.getElementById('demoModeIndicator').style.display = 'block';
+        const demoIndicator = document.getElementById('demoModeIndicator');
+        if (demoIndicator) {
+            if (insights && insights.demo_mode) {
+                console.log('🎭 Demo mode detected, showing indicator');
+                demoIndicator.style.display = 'block';
+            } else {
+                console.log('🔗 Live mode detected, hiding demo indicator');
+                demoIndicator.style.display = 'none';
+            }
+        } else {
+            console.log('⚠️ Demo mode indicator element not found');
         }
         
     } catch (error) {
         console.error('Error loading dashboard data:', error);
-        showError('Failed to load monitoring data');
+        showError('Failed to load monitoring data: ' + error.message);
     } finally {
         showLoading(false);
     }
@@ -239,10 +258,33 @@ async function loadDashboardData() {
 
 // Update dashboard with data
 function updateDashboard(insights, alerts, recommendations, forecast, health) {
+    console.log('Updating dashboard with:', { insights, alerts, recommendations, forecast, health });
+    
+    // Check if we have any valid data
+    const hasValidData = (health && !health.error) || (insights && !insights.error) || (alerts && !alerts.error);
+    
+    if (!hasValidData) {
+        console.log('No valid data received, showing error state');
+        console.log('Health:', health);
+        console.log('Insights:', insights);
+        console.log('Alerts:', alerts);
+        showError('No monitoring data available. Check if Kubernetes is running and accessible.');
+        return;
+    }
+    
+    console.log('✅ Valid data received, updating dashboard');
+    
     // Update health score
     if (health && !health.error) {
-        document.getElementById('healthScore').textContent = health.overall_score + '%';
-        document.getElementById('healthStatus').textContent = health.status.toUpperCase();
+        const healthScoreEl = document.getElementById('healthScore');
+        const healthStatusEl = document.getElementById('healthStatus');
+        
+        if (healthScoreEl) {
+            healthScoreEl.textContent = health.overall_score + '%';
+        }
+        if (healthStatusEl) {
+            healthStatusEl.textContent = health.status.toUpperCase();
+        }
         
         // Update health score color
         const healthCard = document.querySelector('.col-md-3:first-child .card');
@@ -444,7 +486,11 @@ function getRecommendationIcon(type) {
 
 function showLoading(show) {
     const overlay = document.getElementById('loadingOverlay');
-    overlay.style.display = show ? 'flex' : 'none';
+    if (overlay) {
+        overlay.style.display = show ? 'flex' : 'none';
+    } else {
+        console.log('⚠️ Loading overlay element not found');
+    }
 }
 
 function showError(message) {
