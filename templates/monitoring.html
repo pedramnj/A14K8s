@@ -262,6 +262,19 @@ async function loadDashboardData() {
         console.log('🔄 Hiding loading overlay...');
         showLoading(false);
         console.log('✅ Loading overlay hidden');
+        
+        // Double-check that overlay is actually hidden
+        const overlay = document.getElementById('loadingOverlay');
+        if (overlay) {
+            const isVisible = window.getComputedStyle(overlay).display !== 'none';
+            console.log('🔧 Final overlay visibility check:', isVisible ? 'VISIBLE' : 'HIDDEN');
+            if (isVisible) {
+                console.log('⚠️ Overlay is still visible, forcing hide...');
+                overlay.style.setProperty('display', 'none', 'important');
+                overlay.style.visibility = 'hidden';
+                overlay.style.opacity = '0';
+            }
+        }
     }
 }
 
@@ -499,9 +512,13 @@ function showLoading(show) {
         if (show) {
             overlay.style.display = 'flex';
             console.log('🔄 Showing loading overlay');
+            console.log('🔧 Overlay display style:', overlay.style.display);
         } else {
             overlay.style.display = 'none';
+            overlay.style.setProperty('display', 'none', 'important');
             console.log('✅ Hiding loading overlay');
+            console.log('🔧 Overlay display style after hiding:', overlay.style.display);
+            console.log('🔧 Overlay computed style:', window.getComputedStyle(overlay).display);
         }
     } else {
         console.log('⚠️ Loading overlay element not found');

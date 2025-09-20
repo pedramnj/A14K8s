@@ -169,28 +169,30 @@ class KubernetesMetricsCollector:
                     lines = result.stdout.strip().split('\n')[1:]  # Skip header
                     for line in lines:
                         parts = line.split()
-                        if len(parts) >= 3:
-                            name = parts[0]
-                            cpu_usage = parts[1]
-                            memory_usage = parts[2]
-                            
-                            # Parse CPU usage (e.g., "150m" or "1.5")
-                            cpu_percent = self._parse_cpu_usage(cpu_usage)
-                            
-                            # Parse memory usage (e.g., "1.2Gi" or "1.2G")
-                            memory_percent = self._parse_memory_usage(memory_usage)
-                            
-                            # Get pod count for this node
-                            pod_count = self._get_pod_count_for_node(name)
-                            
-                            node_metrics.append(NodeMetrics(
-                                name=name,
-                                cpu_usage_percent=cpu_percent,
-                                memory_usage_percent=memory_percent,
-                                cpu_capacity="unknown",
-                                memory_capacity="unknown",
-                                pod_count=pod_count
-                            ))
+                        if len(parts) >= 4:  # NAME, CPU(cores), CPU(%), MEMORY(bytes), MEMORY(%)
+                            try:
+                                name = parts[0]
+                                cpu_cores = parts[1]
+                                cpu_percent = float(parts[2].rstrip('%'))  # CPU percentage (remove %)
+                                memory_bytes = parts[3]
+                                memory_percent = float(parts[4].rstrip('%'))  # Memory percentage (remove %)
+                                
+                                # Get pod count for this node
+                                pod_count = self._get_pod_count_for_node(name)
+                                
+                                node_metrics.append(NodeMetrics(
+                                    name=name,
+                                    cpu_usage_percent=cpu_percent,
+                                    memory_usage_percent=memory_percent,
+                                    cpu_capacity="unknown",
+                                    memory_capacity="unknown",
+                                    pod_count=pod_count
+                                ))
+                                
+                                logger.info(f"✅ Parsed node {name}: CPU={cpu_percent}%, Memory={memory_percent}%, Pods={pod_count}")
+                            except (ValueError, IndexError) as e:
+                                logger.error(f"Failed to parse node metrics line: {line} - Error: {e}")
+                                continue
             else:
                 # Fallback: get basic node info without metrics
                 v1 = client.CoreV1Api(self.k8s_client)
@@ -369,6 +371,11 @@ class KubernetesMetricsCollector:
             total_cpu_usage = sum(node.cpu_usage_percent for node in node_metrics) / len(node_metrics) if node_metrics else 0
             total_memory_usage = sum(node.memory_usage_percent for node in node_metrics) / len(node_metrics) if node_metrics else 0
             total_pod_count = sum(node.pod_count for node in node_metrics)
+            
+            # Debug logging
+            logger.info(f"📊 Collected metrics: CPU={total_cpu_usage:.1f}%, Memory={total_memory_usage:.1f}%, Pods={total_pod_count}")
+            for node in node_metrics:
+                logger.info(f"  Node {node.name}: CPU={node.cpu_usage_percent:.1f}%, Memory={node.memory_usage_percent:.1f}%, Pods={node.pod_count}")
             
             # Calculate network and disk I/O (simplified)
             network_io = len(pod_metrics) * 10  # Rough estimate
