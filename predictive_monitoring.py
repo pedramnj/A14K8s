@@ -114,6 +114,7 @@ class TimeSeriesForecaster:
             current_cpu = cpu_data[-1]
         
         # Simple linear trend + seasonal component
+        import numpy as np
         x = np.arange(len(cpu_data))
         trend = np.polyfit(x, cpu_data, 1)[0]
         
@@ -207,6 +208,7 @@ class TimeSeriesForecaster:
             current_memory = memory_data[-1]
         
         # Simple exponential smoothing
+        import numpy as np
         alpha = 0.3
         predictions = []
         confidence_intervals = []
