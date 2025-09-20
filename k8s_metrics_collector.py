@@ -65,19 +65,28 @@ class KubernetesMetricsCollector:
         """Initialize Kubernetes client"""
         try:
             if self.kubeconfig_path:
+                logger.info(f"Loading kubeconfig from: {self.kubeconfig_path}")
                 config.load_kube_config(config_file=self.kubeconfig_path)
             else:
-                config.load_incluster_config()  # For in-cluster usage
-                # Fallback to default kubeconfig
+                logger.info("No kubeconfig path provided, trying default locations")
+                # Try in-cluster config first (for pods running in cluster)
                 try:
-                    config.load_kube_config()
+                    config.load_incluster_config()
+                    logger.info("Using in-cluster config")
                 except:
-                    pass
+                    # Fallback to default kubeconfig
+                    try:
+                        config.load_kube_config()
+                        logger.info("Using default kubeconfig")
+                    except Exception as e:
+                        logger.warning(f"Could not load default kubeconfig: {e}")
+                        raise
             
             self.k8s_client = client.ApiClient()
             logger.info("Kubernetes client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize Kubernetes client: {e}")
+            logger.warning("Will fall back to demo mode for metrics collection")
             self.k8s_client = None
     
     def _check_metrics_server(self):
@@ -101,6 +110,17 @@ class KubernetesMetricsCollector:
     
     def get_cluster_info(self) -> Dict[str, Any]:
         """Get basic cluster information"""
+        if not self.k8s_client:
+            logger.warning("Kubernetes client not available, returning demo data")
+            return {
+                "node_count": 0,
+                "namespace_count": 0,
+                "pod_count": 0,
+                "service_count": 0,
+                "timestamp": datetime.now().isoformat(),
+                "demo_mode": True
+            }
+        
         try:
             v1 = client.CoreV1Api(self.k8s_client)
             
@@ -316,6 +336,30 @@ class KubernetesMetricsCollector:
     
     def get_aggregated_metrics(self) -> Dict[str, Any]:
         """Get aggregated cluster metrics"""
+        if not self.k8s_client:
+            logger.warning("Kubernetes client not available, returning demo metrics")
+            return {
+                "timestamp": datetime.now().isoformat(),
+                "cluster_info": {
+                    "node_count": 0,
+                    "namespace_count": 0,
+                    "pod_count": 0,
+                    "service_count": 0,
+                    "demo_mode": True
+                },
+                "aggregated_metrics": {
+                    "cpu_usage_percent": 0,
+                    "memory_usage_percent": 0,
+                    "network_io_mbps": 0,
+                    "disk_io_mbps": 0,
+                    "pod_count": 0,
+                    "node_count": 0
+                },
+                "node_metrics": [],
+                "pod_count_by_namespace": {},
+                "demo_mode": True
+            }
+        
         try:
             cluster_info = self.get_cluster_info()
             node_metrics = self.get_node_metrics()
