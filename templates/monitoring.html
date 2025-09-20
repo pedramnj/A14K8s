@@ -187,7 +187,7 @@
 </div>
 
 <!-- Loading Overlay -->
-<div id="loadingOverlay" class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.5); z-index: 9999; display: none !important;">
+<div id="loadingOverlay" class="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center" style="background: rgba(0,0,0,0.5); z-index: 9999; display: none;">
     <div class="text-center text-light">
         <i class="fas fa-spinner fa-spin fa-3x mb-3"></i>
         <h4>Analyzing Cluster Data...</h4>
@@ -210,9 +210,11 @@ document.addEventListener('DOMContentLoaded', function() {
 // Load all dashboard data
 async function loadDashboardData() {
     try {
+        console.log('🔄 Starting to load dashboard data...');
         showLoading(true);
         
         const serverId = {{ server.id }};
+        console.log(`📊 Loading data for server ${serverId}`);
         
         // Load all data in parallel
         const [insights, alerts, recommendations, forecast, health] = await Promise.all([
@@ -223,6 +225,8 @@ async function loadDashboardData() {
             fetch(`/api/monitoring/health/${serverId}`).then(r => r.json())
         ]);
         
+        console.log('✅ All API calls completed');
+        
         // Debug: Log the API responses
         console.log('API Responses:', {
             insights: insights,
@@ -232,6 +236,7 @@ async function loadDashboardData() {
             health: health
         });
         
+        console.log('🔄 Updating dashboard with received data...');
         updateDashboard(insights, alerts, recommendations, forecast, health);
         
         // Show demo mode indicator if in demo mode
@@ -248,11 +253,15 @@ async function loadDashboardData() {
             console.log('⚠️ Demo mode indicator element not found');
         }
         
+        console.log('✅ Dashboard update completed');
+        
     } catch (error) {
-        console.error('Error loading dashboard data:', error);
+        console.error('❌ Error loading dashboard data:', error);
         showError('Failed to load monitoring data: ' + error.message);
     } finally {
+        console.log('🔄 Hiding loading overlay...');
         showLoading(false);
+        console.log('✅ Loading overlay hidden');
     }
 }
 
@@ -487,7 +496,13 @@ function getRecommendationIcon(type) {
 function showLoading(show) {
     const overlay = document.getElementById('loadingOverlay');
     if (overlay) {
-        overlay.style.display = show ? 'flex' : 'none';
+        if (show) {
+            overlay.style.display = 'flex';
+            console.log('🔄 Showing loading overlay');
+        } else {
+            overlay.style.display = 'none';
+            console.log('✅ Hiding loading overlay');
+        }
     } else {
         console.log('⚠️ Loading overlay element not found');
     }
