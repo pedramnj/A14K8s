@@ -1036,9 +1036,31 @@ if PREDICTIVE_MONITORING_AVAILABLE:
             server = Server.query.get(server_id)
             if server:
                 kubeconfig_path = None
-                if server.server_type == 'remote' and hasattr(server, 'kubeconfig_path'):
-                    kubeconfig_path = server.kubeconfig_path
+                # For local servers, try to use default kubeconfig
+                if server.server_type == 'local':
+                    # Try to find kubeconfig in common locations
+                    import os
+                    kubeconfig_paths = [
+                        os.path.expanduser('~/.kube/config'),
+                        '/etc/kubernetes/admin.conf',
+                        '/var/lib/kubelet/kubeconfig'
+                    ]
+                    for path in kubeconfig_paths:
+                        if os.path.exists(path):
+                            kubeconfig_path = path
+                            break
+                # For remote servers, use the stored kubeconfig
+                elif server.server_type == 'remote' and server.kubeconfig:
+                    # Save kubeconfig to a temporary file
+                    import tempfile
+                    import os
+                    temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                    temp_file.write(server.kubeconfig)
+                    temp_file.close()
+                    kubeconfig_path = temp_file.name
+                
                 print(f"🔧 Creating AI monitoring instance for server {server_id} ({server.name})")
+                print(f"🔧 Using kubeconfig: {kubeconfig_path}")
                 ai_monitoring_instances[server_id] = AIMonitoringIntegration(kubeconfig_path)
             else:
                 print(f"⚠️  Server {server_id} not found")
