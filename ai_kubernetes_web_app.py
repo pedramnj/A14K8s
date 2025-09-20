@@ -192,11 +192,35 @@ class AIPoweredMCPKubernetesProcessor:
             # Get available tools for AI
             available_tools = self._get_mcp_tools_for_ai()
             
-            # Create system prompt similar to the client
+            # Create enhanced system prompt for intelligent Kubernetes operations
             system_prompt = (
-                "You are an AI assistant operating an MCP client connected to a Kubernetes MCP server. "
-                "When you need cluster data or to take action, choose the correct tool. "
-                "Be concise and return clear, well-formatted answers.\n\n"
+                "You are an intelligent Kubernetes AI assistant with access to MCP tools for cluster management. "
+                "You should be proactive and intelligent in your responses:\n\n"
+                
+                "**CRITICAL: ALWAYS USE INTELLIGENT DEFAULTS**\n"
+                "- When user wants to create a pod with just a name, ALWAYS use 'nginx' as the default image\n"
+                "- NEVER ask for clarification when you can use intelligent defaults\n"
+                "- ALWAYS execute the tool immediately, don't ask questions\n\n"
+                
+                "**POD OPERATIONS:**\n"
+                "- 'create a pod and name it BOBO' → Use pods_run with name='bobo', image='nginx'\n"
+                "- 'create pod BOBO' → Use pods_run with name='bobo', image='nginx'\n"
+                "- 'create a pod named BOBO' → Use pods_run with name='bobo', image='nginx'\n"
+                "- 'delete the BOBO pod' → Use pods_delete with name='bobo'\n"
+                "- 'show me all pods' → Use pods_list\n"
+                "- 'get logs from BOBO' → Use pods_log with name='bobo'\n\n"
+                
+                "**MANDATORY BEHAVIOR:**\n"
+                "- If user says 'create a pod and name it BOBO', IMMEDIATELY call pods_run with name='bobo' and image='nginx'\n"
+                "- If user says 'i don't want to use any image', STILL use 'nginx' as default\n"
+                "- NEVER ask 'what image do you want?' - always use 'nginx'\n"
+                "- ALWAYS execute the tool, never ask for clarification\n\n"
+                
+                "**EXAMPLES OF CORRECT BEHAVIOR:**\n"
+                "- User: 'create a pod and name it BOBO' → IMMEDIATELY call pods_run(name='bobo', image='nginx')\n"
+                "- User: 'i don't want to use any image' → STILL call pods_run(name='bobo', image='nginx')\n"
+                "- User: 'create pod test' → IMMEDIATELY call pods_run(name='test', image='nginx')\n\n"
+                
                 f"Available MCP Tools: {json.dumps(available_tools, indent=2)}"
             )
             
@@ -215,12 +239,16 @@ class AIPoweredMCPKubernetesProcessor:
             final_text = []
             tool_results = []
             
+            print(f"🔧 AI Response Content: {[c.type for c in response.content]}")
+            
             for content in response.content:
                 if content.type == 'text':
+                    print(f"🔧 AI Text: {content.text}")
                     final_text.append(content.text)
                 elif content.type == 'tool_use':
                     tool_name = content.name
                     tool_args = content.input
+                    print(f"🔧 AI Tool Call: {tool_name} with args: {tool_args}")
                     
                     # Execute the tool call
                     result = self._call_mcp_tool(tool_name, tool_args)
@@ -348,10 +376,24 @@ class AIPoweredMCPKubernetesProcessor:
         # 6. ENHANCED POD CREATION with image extraction
         elif 'create' in query_lower and 'pod' in query_lower:
             pod_name = self._extract_pod_name(query)
-            # Extract image if specified
+            # Extract image if specified, otherwise use nginx as default
             image_match = re.search(r'(?:with|using|from).*image.*[\'"]([^\'"]+)[\'"]', query_lower)
             image = image_match.group(1) if image_match else 'nginx'
             
+            # Handle "i don't want to use any image" case - still use nginx
+            if 'don\'t want' in query_lower and 'image' in query_lower:
+                image = 'nginx'
+                print(f"🔧 User doesn't want image, using default: {image}")
+            
+            if not pod_name:
+                return {
+                    'command': None,
+                    'explanation': f"I understand you want to create a pod, but I couldn't extract the pod name from: '{query}'. Please try 'create pod <name>' or 'create a pod named <name>'.",
+                    'ai_processed': False,
+                    'mcp_result': None
+                }
+            
+            print(f"🔧 Creating pod: {pod_name} with image: {image}")
             result = self._call_mcp_tool('pods_run', {
                 'name': pod_name,
                 'image': image
@@ -459,53 +501,70 @@ class AIPoweredMCPKubernetesProcessor:
         if self.use_ai and self.anthropic:
             try:
                 ai_result = self._process_with_ai(query)
+                print(f"🔧 AI Result: {ai_result}")
                 # If AI successfully processed the query, return it
                 if ai_result.get('ai_processed') and ai_result.get('command'):
+                    print(f"✅ Using AI result: {ai_result.get('command')}")
                     return ai_result
-                # If AI couldn't process it, fall back to regex
+                else:
+                    print(f"⚠️  AI didn't process properly, falling back to regex")
             except Exception as e:
                 print(f"⚠️  AI processing failed, falling back to regex: {e}")
         
         # Fall back to regex processing
+        print(f"🔧 Using regex fallback for: {query}")
         return self._process_with_regex(query)
     
     def _extract_pod_name(self, query: str) -> str:
         """Extract pod name from create pod query"""
+        import re
         words = query.split()
-        pod_name = "new-pod"
+        pod_name = None
         
-        # Look for "name it" pattern
-        for i, word in enumerate(words):
-            if word.lower() == "name" and i + 1 < len(words) and words[i + 1].lower() == "it":
-                if i + 2 < len(words):
-                    name_words = []
-                    for j in range(i + 2, len(words)):
-                        if words[j].lower() in ["with", "using", "from", "image"]:
-                            break
-                        name_words.append(words[j])
-                    if name_words:
-                        pod_name = "-".join(name_words).lower()
-                break
-            elif word.lower() in ["called", "named"] and i + 1 < len(words):
-                name_words = []
-                for j in range(i + 1, len(words)):
-                    if words[j].lower() in ["with", "using", "from", "image"]:
-                        break
-                    name_words.append(words[j])
-                if name_words:
-                    pod_name = "-".join(name_words).lower()
-                break
-            elif word.lower() == "name" and i + 1 < len(words):
-                # Direct "name toto" pattern
-                name_words = []
-                for j in range(i + 1, len(words)):
-                    if words[j].lower() in ["with", "using", "from", "image", "pod"]:
-                        break
-                    name_words.append(words[j])
-                if name_words:
-                    pod_name = "-".join(name_words).lower()
-                break
+        print(f"🔧 Extracting pod name from: '{query}'")
         
+        # Pattern 1: "name it BOBO" or "name it BOBO pod"
+        name_it_match = re.search(r'name\s+it\s+([a-zA-Z0-9-_]+)', query, re.IGNORECASE)
+        if name_it_match:
+            pod_name = name_it_match.group(1).lower()
+            print(f"✅ Pattern 1 matched: {pod_name}")
+            return pod_name
+        
+        # Pattern 2: "named BOBO" or "called BOBO"
+        named_match = re.search(r'(?:named|called)\s+([a-zA-Z0-9-_]+)', query, re.IGNORECASE)
+        if named_match:
+            pod_name = named_match.group(1).lower()
+            print(f"✅ Pattern 2 matched: {pod_name}")
+            return pod_name
+        
+        # Pattern 3: "create pod BOBO" or "create a pod BOBO"
+        create_pod_match = re.search(r'create\s+(?:a\s+)?pod\s+([a-zA-Z0-9-_]+)', query, re.IGNORECASE)
+        if create_pod_match:
+            pod_name = create_pod_match.group(1).lower()
+            print(f"✅ Pattern 3 matched: {pod_name}")
+            return pod_name
+        
+        # Pattern 4: "pod named BOBO" or "pod called BOBO"
+        pod_named_match = re.search(r'pod\s+(?:named|called)\s+([a-zA-Z0-9-_]+)', query, re.IGNORECASE)
+        if pod_named_match:
+            pod_name = pod_named_match.group(1).lower()
+            print(f"✅ Pattern 4 matched: {pod_name}")
+            return pod_name
+        
+        # Pattern 5: Look for capitalized words that might be pod names
+        # This handles cases like "create a pod and name it BOBO"
+        capitalized_words = re.findall(r'\b[A-Z][A-Z0-9-_]*\b', query)
+        if capitalized_words:
+            print(f"🔧 Found capitalized words: {capitalized_words}")
+            # Return the first capitalized word that's not common words
+            common_words = {'POD', 'CREATE', 'NAME', 'IT', 'AND', 'THE', 'A', 'AN'}
+            for word in capitalized_words:
+                if word not in common_words:
+                    pod_name = word.lower()
+                    print(f"✅ Pattern 5 matched: {pod_name}")
+                    return pod_name
+        
+        print(f"❌ No pattern matched for: '{query}'")
         return pod_name
     
     def _extract_pod_name_from_delete(self, query: str) -> str:
@@ -979,7 +1038,10 @@ if PREDICTIVE_MONITORING_AVAILABLE:
                 kubeconfig_path = None
                 if server.server_type == 'remote' and hasattr(server, 'kubeconfig_path'):
                     kubeconfig_path = server.kubeconfig_path
+                print(f"🔧 Creating AI monitoring instance for server {server_id} ({server.name})")
                 ai_monitoring_instances[server_id] = AIMonitoringIntegration(kubeconfig_path)
+            else:
+                print(f"⚠️  Server {server_id} not found")
         return ai_monitoring_instances.get(server_id)
     
     @app.route('/monitoring/<int:server_id>')
@@ -1003,13 +1065,18 @@ if PREDICTIVE_MONITORING_AVAILABLE:
         server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
         
         try:
+            print(f"🔍 Getting AI monitoring insights for server {server_id}")
             ai_monitoring = get_ai_monitoring(server_id)
             if not ai_monitoring:
+                print(f"❌ AI monitoring not available for server {server_id}")
                 return jsonify({'error': 'AI monitoring not available for this server'}), 500
             
+            print(f"📊 Getting dashboard data for server {server_id}")
             insights = ai_monitoring.get_dashboard_data()
+            print(f"✅ Dashboard data retrieved: {type(insights)}")
             return jsonify(insights)
         except Exception as e:
+            print(f"❌ Error getting insights for server {server_id}: {e}")
             return jsonify({'error': str(e)}), 500
     
     @app.route('/api/monitoring/alerts/<int:server_id>')

@@ -34,12 +34,28 @@ class AIMonitoringIntegration:
     """Integrates AI monitoring with the web application"""
     
     def __init__(self, kubeconfig_path: Optional[str] = None):
-        self.monitoring_system = PredictiveMonitoringSystem()
-        self.metrics_collector = KubernetesMetricsCollector(kubeconfig_path)
-        self.is_running = False
-        self.collection_thread = None
-        self.collection_interval = 300  # 5 minutes
-        self.last_analysis = None
+        try:
+            print(f"🔧 Initializing AI monitoring integration...")
+            self.monitoring_system = PredictiveMonitoringSystem()
+            print(f"✅ Predictive monitoring system initialized")
+            
+            self.metrics_collector = KubernetesMetricsCollector(kubeconfig_path)
+            print(f"✅ Kubernetes metrics collector initialized")
+            
+            self.is_running = False
+            self.collection_thread = None
+            self.collection_interval = 300  # 5 minutes
+            self.last_analysis = None
+            print(f"✅ AI monitoring integration initialized successfully")
+        except Exception as e:
+            print(f"❌ Failed to initialize AI monitoring integration: {e}")
+            # Create a minimal fallback
+            self.monitoring_system = None
+            self.metrics_collector = None
+            self.is_running = False
+            self.collection_thread = None
+            self.collection_interval = 300
+            self.last_analysis = None
         
     def start_monitoring(self, interval_seconds: int = 300):
         """Start continuous monitoring"""
@@ -104,6 +120,11 @@ class AIMonitoringIntegration:
         if self.last_analysis:
             return self.last_analysis
         
+        # Check if components are available
+        if not self.monitoring_system or not self.metrics_collector:
+            print("⚠️  AI monitoring components not available, using demo mode")
+            return self._generate_demo_analysis()
+        
         # Perform one-time analysis if no continuous monitoring
         try:
             metrics_data = self.metrics_collector.get_aggregated_metrics()
@@ -155,17 +176,21 @@ class AIMonitoringIntegration:
             node_count=node_count
         )
         
-        # Add to monitoring system
-        self.monitoring_system.add_metrics(demo_metrics)
-        
-        # Generate analysis with error handling
-        try:
-            analysis = self.monitoring_system.analyze()
-            if "error" in analysis:
-                # If analysis fails, create a basic demo response
+        # Add to monitoring system if available
+        if self.monitoring_system:
+            self.monitoring_system.add_metrics(demo_metrics)
+            
+            # Generate analysis with error handling
+            try:
+                analysis = self.monitoring_system.analyze()
+                if "error" in analysis:
+                    # If analysis fails, create a basic demo response
+                    analysis = self._create_basic_demo_analysis(demo_metrics)
+            except Exception as e:
+                logger.error(f"Demo analysis failed: {e}")
                 analysis = self._create_basic_demo_analysis(demo_metrics)
-        except Exception as e:
-            logger.error(f"Demo analysis failed: {e}")
+        else:
+            # If monitoring system is not available, create basic demo response
             analysis = self._create_basic_demo_analysis(demo_metrics)
         
         # Add demo indicator
@@ -374,13 +399,15 @@ class AIMonitoringIntegration:
             return {"error": "No analysis data available"}
         
         return {
-            "timestamp": analysis["timestamp"],
-            "current_metrics": analysis["current_metrics"],
+            "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
+            "current_metrics": analysis.get("current_metrics", {}),
             "health_score": self.get_health_score(),
             "forecasts": self.get_forecast_summary(),
             "alerts": self.get_anomaly_alerts(),
             "recommendations": self.get_performance_recommendations(),
-            "summary": analysis["summary"]
+            "summary": analysis.get("summary", "AI monitoring analysis"),
+            "demo_mode": analysis.get("demo_mode", False),
+            "demo_message": analysis.get("demo_message", "")
         }
 
 # MCP Tool Integration Functions

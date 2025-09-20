@@ -50,7 +50,7 @@
                                 <i class="fas fa-robot text-primary"></i>
                             </div>
                             <div class="message-content">
-                                <div class="message-bubble bg-light p-3 rounded">
+                                <div class="message-bubble bg-dark text-light p-3 rounded">
                                     <p class="mb-0">Hello! I'm your Kubernetes AI assistant. I can help you manage your {{ server.name }} cluster. Try asking me things like:</p>
                                     <ul class="mt-2 mb-0">
                                         <li>"Show me all pods"</li>
@@ -121,7 +121,7 @@ function addMessage(content, isBot = true, timestamp = null) {
                     <i class="fas fa-robot text-primary"></i>
                 </div>
                 <div class="message-content">
-                    <div class="message-bubble bg-light p-3 rounded">
+                    <div class="message-bubble bg-dark text-light p-3 rounded">
                         <pre class="mb-0" style="white-space: pre-wrap; font-family: inherit;">${content}</pre>
                     </div>
                     <small class="text-muted">${time}</small>
@@ -220,7 +220,7 @@ messageInput.focus();
     width: 40px;
     height: 40px;
     border-radius: 50%;
-    background-color: #f8f9fa;
+    background-color: #343a40;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -236,16 +236,16 @@ messageInput.focus();
 }
 
 #chat-messages::-webkit-scrollbar-track {
-    background: #f1f1f1;
+    background: #343a40;
 }
 
 #chat-messages::-webkit-scrollbar-thumb {
-    background: #c1c1c1;
+    background: #6c757d;
     border-radius: 3px;
 }
 
 #chat-messages::-webkit-scrollbar-thumb:hover {
-    background: #a8a8a8;
+    background: #495057;
 }
 </style>
 {% endblock %}
