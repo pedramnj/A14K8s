@@ -625,47 +625,6 @@ Politecnico di Torino
 - **GitHub**: [@pedramnj](https://github.com/pedramnj)
 - **LinkedIn**: [pedramnikjooy](https://linkedin.com/in/pedramnikjooy)
 
-## 🔄 Version Control & Deployment
-
-### Latest Changes Committed ✅
-
-All comprehensive testing framework, academic documentation, and visualizations have been committed to the repository:
-
-```bash
-# Latest commits include:
-git add .
-git commit -m "feat: Add comprehensive testing framework and academic documentation
-
-- Implement comprehensive testing framework with 6 test suites (100% success rate)
-- Add thesis report generator with 8 publication-ready visualizations
-- Generate academic-quality documentation and reports
-- Create performance validation with 88.5% ML accuracy
-- Add comparative analysis with baseline systems
-- Update README.md with latest features and documentation
-- Update OVERLEAF_REPORT.tex with testing results and academic standards"
-
-git push origin main
-```
-
-### Repository Structure Updates ✅
-
-The repository now includes:
-- **`test_framework.py`** - Comprehensive testing framework
-- **`thesis_report_generator.py`** - Academic report generator
-- **`test_results/`** - Testing results and performance charts
-- **`thesis_reports/`** - Academic documentation and visualizations
-- **`final_thesis_summary.md`** - Executive summary
-- **Updated `README.md`** - Complete project documentation
-- **Updated `OVERLEAF_REPORT.tex`** - Thesis document with testing results
-
-### Documentation Links ✅
-
-All generated documentation and visualizations are now available in the repository:
-- **8 Academic Visualizations** (300 DPI) in `thesis_reports/figures/`
-- **Comprehensive Test Reports** in `test_results/reports/`
-- **Performance Metrics** in CSV format
-- **Academic Analysis** in `thesis_reports/thesis_comprehensive_report.md`
-
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
