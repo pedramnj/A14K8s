@@ -594,7 +594,14 @@ class AIPoweredMCPKubernetesProcessor:
         return pod_name
 
 # Initialize AI-powered MCP processor
-processor = AIPoweredMCPKubernetesProcessor()
+try:
+    from ai_processor import EnhancedAIProcessor
+    processor = EnhancedAIProcessor()
+    print("✅ Using enhanced AI processor with post-processing")
+except ImportError:
+    from ai_kubernetes_web_app import AIPoweredMCPKubernetesProcessor
+    processor = AIPoweredMCPKubernetesProcessor()
+    print("⚠️  Using original AI processor (enhanced processor not available)")
 
 # Database Models
 class User(db.Model):
@@ -642,6 +649,21 @@ class Server(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_accessed = db.Column(db.DateTime, nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    chats = db.relationship('Chat', backref='server', lazy=True, cascade='all, delete-orphan')
+
+class Chat(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    server_id = db.Column(db.Integer, db.ForeignKey('server.id'), nullable=False)
+    user_message = db.Column(db.Text, nullable=False)
+    ai_response = db.Column(db.Text, nullable=False)
+    mcp_tool_used = db.Column(db.String(100), nullable=True)
+    processing_method = db.Column(db.String(50), nullable=True)  # 'AI' or 'Regex'
+    mcp_success = db.Column(db.Boolean, nullable=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def __repr__(self):
+        return f'<Chat {self.id}: {self.user_message[:50]}...>'
 
     def set_password(self, password):
         """Encrypt and store password"""
@@ -832,6 +854,21 @@ def api_chat(server_id):
             
             if response.status_code == 200:
                 result = response.json()
+                
+                # Store kubectl command in database
+                chat = Chat(
+                    user_id=session['user_id'],
+                    server_id=server_id,
+                    user_message=message,
+                    ai_response=result.get('response', ''),
+                    mcp_tool_used='kubectl_direct',
+                    processing_method='Direct',
+                    mcp_success=result.get('status') == 'success'
+                )
+                db.session.add(chat)
+                db.session.commit()
+                
+                result['chat_id'] = chat.id
                 return jsonify(result)
             else:
                 return jsonify({'error': 'MCP bridge error'}), 500
@@ -861,38 +898,131 @@ def api_chat(server_id):
                     
                     response_text = f"{processed['explanation']}\n\n**MCP Tool Result:**\n{result_text}"
                     
+                    # Store chat in database
+                    chat = Chat(
+                        user_id=session['user_id'],
+                        server_id=server_id,
+                        user_message=message,
+                        ai_response=response_text,
+                        mcp_tool_used=processed['command'],
+                        processing_method='AI' if processed.get('ai_processed') else 'Regex',
+                        mcp_success=True
+                    )
+                    db.session.add(chat)
+                    db.session.commit()
+                    
                     return jsonify({
                         'response': response_text,
                         'status': 'success',
                         'ai_processed': processed.get('ai_processed', False),
                         'mcp_tool': processed['command'],
                         'mcp_success': True,
-                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
+                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex',
+                        'chat_id': chat.id
                     })
                 else:
+                    error_response = f"{processed['explanation']}\n\n**MCP Error:** {mcp_result.get('error', 'Unknown error')}"
+                    
+                    # Store chat in database
+                    chat = Chat(
+                        user_id=session['user_id'],
+                        server_id=server_id,
+                        user_message=message,
+                        ai_response=error_response,
+                        mcp_tool_used=processed['command'],
+                        processing_method='AI' if processed.get('ai_processed') else 'Regex',
+                        mcp_success=False
+                    )
+                    db.session.add(chat)
+                    db.session.commit()
+                    
                     return jsonify({
-                        'response': f"{processed['explanation']}\n\n**MCP Error:** {mcp_result.get('error', 'Unknown error')}",
+                        'response': error_response,
                         'status': 'error',
                         'ai_processed': processed.get('ai_processed', False),
                         'mcp_tool': processed['command'],
                         'mcp_success': False,
-                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
+                        'processing_method': 'AI' if processed.get('ai_processed') else 'Regex',
+                        'chat_id': chat.id
                     })
             else:
+                # Store chat in database
+                chat = Chat(
+                    user_id=session['user_id'],
+                    server_id=server_id,
+                    user_message=message,
+                    ai_response=processed['explanation'],
+                    mcp_tool_used=None,
+                    processing_method='AI' if processed.get('ai_processed') else 'Regex',
+                    mcp_success=None
+                )
+                db.session.add(chat)
+                db.session.commit()
+                
                 return jsonify({
                     'response': processed['explanation'],
                     'status': 'info',
                     'ai_processed': processed.get('ai_processed', False),
                     'mcp_tool': None,
-                    'processing_method': 'AI' if processed.get('ai_processed') else 'Regex'
+                    'processing_method': 'AI' if processed.get('ai_processed') else 'Regex',
+                    'chat_id': chat.id
                 })
                 
         except Exception as e:
+            # Store error in database
+            error_response = f"I apologize, but I encountered an error: {str(e)}"
+            chat = Chat(
+                user_id=session['user_id'],
+                server_id=server_id,
+                user_message=message,
+                ai_response=error_response,
+                mcp_tool_used=None,
+                processing_method='Error',
+                mcp_success=False
+            )
+            db.session.add(chat)
+            db.session.commit()
+            
             return jsonify({
-                'response': f"I apologize, but I encountered an error: {str(e)}",
+                'response': error_response,
                 'status': 'error',
-                'ai_processed': True
+                'ai_processed': True,
+                'chat_id': chat.id
             }), 500
+
+@app.route('/api/chat_history/<int:server_id>')
+def get_chat_history(server_id):
+    """Get chat history for a specific server"""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    
+    server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first()
+    if not server:
+        return jsonify({'error': 'Server not found'}), 404
+    
+    # Get chat history, ordered by most recent first
+    chats = Chat.query.filter_by(
+        server_id=server_id, 
+        user_id=session['user_id']
+    ).order_by(Chat.timestamp.desc()).limit(50).all()
+    
+    chat_history = []
+    for chat in chats:
+        chat_history.append({
+            'id': chat.id,
+            'user_message': chat.user_message,
+            'ai_response': chat.ai_response,
+            'mcp_tool_used': chat.mcp_tool_used,
+            'processing_method': chat.processing_method,
+            'mcp_success': chat.mcp_success,
+            'timestamp': chat.timestamp.isoformat()
+        })
+    
+    return jsonify({
+        'chats': chat_history,
+        'server_id': server_id,
+        'server_name': server.name
+    })
 
 @app.route('/api/server_status/<int:server_id>')
 def server_status(server_id):

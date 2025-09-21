@@ -1,0 +1,160 @@
+{
+  "summary": {
+    "total_tests": 15,
+    "passed_tests": 0,
+    "failed_tests": 15,
+    "success_rate": 0.0
+  },
+  "test_results": [
+    {
+      "test_name": "List All Pods",
+      "message": "Show me all the pods running in my cluster",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493513.9059799
+    },
+    {
+      "test_name": "List Pods in Default Namespace",
+      "message": "List all pods in the default namespace",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493513.908143
+    },
+    {
+      "test_name": "Get Pod by Name",
+      "message": "Get the details for the pod named 'blueberry'",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493513.909866
+    },
+    {
+      "test_name": "Create Test Pod",
+      "message": "Create a pod named 'test-pod' using the nginx image",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493513.911736
+    },
+    {
+      "test_name": "Show Pod Logs",
+      "message": "Show me the logs for the pod named 'test-pod'",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.937758
+    },
+    {
+      "test_name": "Get Pod Resource Usage",
+      "message": "Show me the resource usage for the 'test-pod' pod",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.9436328
+    },
+    {
+      "test_name": "Get All Pods Resource Usage",
+      "message": "Show me the resource usage for all pods in the cluster",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.949561
+    },
+    {
+      "test_name": "Exec Into Pod",
+      "message": "Execute the command 'ls -la' in the 'test-pod' pod",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.958004
+    },
+    {
+      "test_name": "Run Container with Port Exposure",
+      "message": "Run a pod named 'web-server' using nginx image and expose it on port 80",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.961602
+    },
+    {
+      "test_name": "Delete Pod",
+      "message": "Delete the pod named 'test-pod'",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.9660978
+    },
+    {
+      "test_name": "Complex Natural Language Query",
+      "message": "I want to see what's running in my cluster, then create a new web application pod, and finally show me the logs from it",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.972073
+    },
+    {
+      "test_name": "Pod Health Check",
+      "message": "Check the health and status of all my pods",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.974587
+    },
+    {
+      "test_name": "Pod Troubleshooting",
+      "message": "Help me troubleshoot any issues with my pods",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.97725
+    },
+    {
+      "test_name": "Advanced Pod Operations",
+      "message": "Show me all pods with their labels, then restart any pods that might be having issues",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.98082
+    },
+    {
+      "test_name": "Pod Scaling",
+      "message": "Create a deployment with 3 replicas of nginx pods",
+      "result": {
+        "error": "HTTP 401",
+        "response": "{\"error\":\"Unauthorized\"}\n"
+      },
+      "success": false,
+      "timestamp": 1758493516.985196
+    }
+  ]
+}
