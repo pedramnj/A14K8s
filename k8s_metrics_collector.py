@@ -20,7 +20,9 @@ import re
 from dataclasses import dataclass
 import requests
 from kubernetes import client, config
+from kubernetes.client import CustomObjectsApi
 from kubernetes.client.rest import ApiException
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -103,7 +105,20 @@ class KubernetesMetricsCollector:
             if self.metrics_server_available:
                 logger.info("Metrics server is available")
             else:
-                logger.warning("Metrics server is not available - using alternative methods")
+                logger.warning("Metrics server kubectl not available - trying metrics API")
+                # Attempt direct metrics.k8s.io API call
+                try:
+                    if self.k8s_client:
+                        co = CustomObjectsApi(self.k8s_client)
+                        data = co.list_cluster_custom_object(
+                            group="metrics.k8s.io", version="v1beta1", plural="nodes"
+                        )
+                        if isinstance(data, dict) and data.get('items') is not None:
+                            self.metrics_server_available = True
+                            logger.info("Metrics API available via metrics.k8s.io")
+                            return
+                except Exception as e:
+                    logger.warning(f"Metrics API not reachable: {e}")
         except Exception as e:
             logger.warning(f"Could not check metrics server: {e}")
             self.metrics_server_available = False
@@ -165,7 +180,7 @@ class KubernetesMetricsCollector:
                     timeout=10
                 )
                 
-                if result.returncode == 0:
+                if result.returncode == 0 and result.stdout.strip():
                     lines = result.stdout.strip().split('\n')[1:]  # Skip header
                     for line in lines:
                         parts = line.split()
@@ -193,7 +208,78 @@ class KubernetesMetricsCollector:
                             except (ValueError, IndexError) as e:
                                 logger.error(f"Failed to parse node metrics line: {line} - Error: {e}")
                                 continue
-            else:
+                else:
+                    # Try metrics.k8s.io API if kubectl top not present
+                    try:
+                        co = CustomObjectsApi(self.k8s_client)
+                        data = co.list_cluster_custom_object(
+                            group="metrics.k8s.io", version="v1beta1", plural="nodes"
+                        )
+                        v1 = client.CoreV1Api(self.k8s_client)
+                        nodes = {n.metadata.name: n for n in v1.list_node().items}
+                        for item in data.get('items', []):
+                            name = item['metadata']['name']
+                            usage = item.get('usage', {})
+                            # CPU usage in n cores (e.g., '123456n') or 'm'
+                            cpu_str = usage.get('cpu', '0')
+                            mem_str = usage.get('memory', '0')
+                            # Convert to percentages using node capacity
+                            cpu_percent = 0.0
+                            mem_percent = 0.0
+                            try:
+                                node = nodes.get(name)
+                                if node:
+                                    cap_cpu = str(node.status.capacity.get('cpu', '1'))
+                                    cap_mem = str(node.status.capacity.get('memory', '1Ki'))
+                                    # capacity cpu cores -> millicores
+                                    if cap_cpu.endswith('m'):
+                                        cap_m = float(cap_cpu[:-1])
+                                    else:
+                                        cap_m = float(cap_cpu) * 1000.0
+                                    # usage cpu to millicores
+                                    if cpu_str.endswith('n'):
+                                        cpu_m = float(cpu_str[:-1]) / 1e6
+                                    elif cpu_str.endswith('m'):
+                                        cpu_m = float(cpu_str[:-1])
+                                    else:
+                                        cpu_m = float(cpu_str) * 1000.0
+                                    cpu_percent = min(100.0, max(0.0, (cpu_m / cap_m) * 100.0)) if cap_m > 0 else 0.0
+                                    # memory capacity in Ki
+                                    if cap_mem.endswith('Ki'):
+                                        cap_k = float(cap_mem[:-2])
+                                    elif cap_mem.endswith('Mi'):
+                                        cap_k = float(cap_mem[:-2]) * 1024.0
+                                    elif cap_mem.endswith('Gi'):
+                                        cap_k = float(cap_mem[:-2]) * 1024.0 * 1024.0
+                                    else:
+                                        # Some clusters report as integer bytes; convert to Ki
+                                        cap_k = float(cap_mem) / 1024.0
+                                    # usage memory to Ki
+                                    if mem_str.endswith('Ki'):
+                                        mem_k = float(mem_str[:-2])
+                                    elif mem_str.endswith('Mi'):
+                                        mem_k = float(mem_str[:-2]) * 1024.0
+                                    elif mem_str.endswith('Gi'):
+                                        mem_k = float(mem_str[:-2]) * 1024.0 * 1024.0
+                                    else:
+                                        # Assume bytes -> to Ki
+                                        mem_k = float(mem_str) / 1024.0
+                                    mem_percent = min(100.0, max(0.0, (mem_k / cap_k) * 100.0)) if cap_k > 0 else 0.0
+                            except Exception as e:
+                                logger.warning(f"Failed to compute percentages for node {name}: {e}")
+                            pod_count = self._get_pod_count_for_node(name)
+                            node_metrics.append(NodeMetrics(
+                                name=name,
+                                cpu_usage_percent=cpu_percent,
+                                memory_usage_percent=mem_percent,
+                                cpu_capacity=str(nodes.get(name).status.capacity.get('cpu', 'unknown')) if nodes.get(name) else 'unknown',
+                                memory_capacity=str(nodes.get(name).status.capacity.get('memory', 'unknown')) if nodes.get(name) else 'unknown',
+                                pod_count=pod_count
+                            ))
+                    except Exception as e:
+                        logger.warning(f"metrics.k8s.io API fetch failed: {e}")
+                        # fall through to basic info
+            if not node_metrics:
                 # Fallback: get basic node info without metrics
                 v1 = client.CoreV1Api(self.k8s_client)
                 nodes = v1.list_node()
@@ -380,6 +466,108 @@ class KubernetesMetricsCollector:
             # Calculate network and disk I/O (simplified)
             network_io = len(pod_metrics) * 10  # Rough estimate
             disk_io = len(pod_metrics) * 5  # Rough estimate
+
+            # Fallback: if percentages are zero or missing, compute from metrics.k8s.io pods vs node capacity
+            if (total_cpu_usage == 0 or total_memory_usage == 0) and self.k8s_client:
+                try:
+                    co = CustomObjectsApi(self.k8s_client)
+                    pm = co.list_cluster_custom_object(
+                        group="metrics.k8s.io", version="v1beta1", plural="pods"
+                    )
+                    v1 = client.CoreV1Api(self.k8s_client)
+                    nodes = v1.list_node().items
+                    total_cap_m = 0.0
+                    total_cap_k = 0.0
+                    for n in nodes:
+                        cap_cpu = str(n.status.capacity.get('cpu', '1'))
+                        if cap_cpu.endswith('m'):
+                            total_cap_m += float(cap_cpu[:-1])
+                        else:
+                            total_cap_m += float(cap_cpu) * 1000.0
+                        cap_mem = str(n.status.capacity.get('memory', '1Ki'))
+                        if cap_mem.endswith('Ki'):
+                            total_cap_k += float(cap_mem[:-2])
+                        elif cap_mem.endswith('Mi'):
+                            total_cap_k += float(cap_mem[:-2]) * 1024.0
+                        elif cap_mem.endswith('Gi'):
+                            total_cap_k += float(cap_mem[:-2]) * 1024.0 * 1024.0
+                        else:
+                            total_cap_k += float(cap_mem) / 1024.0
+                    used_m = 0.0
+                    used_k = 0.0
+                    for item in pm.get('items', []):
+                        for c in item.get('containers', []):
+                            cpu_str = c.get('usage', {}).get('cpu', '0')
+                            mem_str = c.get('usage', {}).get('memory', '0')
+                            if cpu_str.endswith('n'):
+                                used_m += float(cpu_str[:-1]) / 1e6
+                            elif cpu_str.endswith('m'):
+                                used_m += float(cpu_str[:-1])
+                            else:
+                                used_m += float(cpu_str) * 1000.0
+                            if mem_str.endswith('Ki'):
+                                used_k += float(mem_str[:-2])
+                            elif mem_str.endswith('Mi'):
+                                used_k += float(mem_str[:-2]) * 1024.0
+                            elif mem_str.endswith('Gi'):
+                                used_k += float(mem_str[:-2]) * 1024.0 * 1024.0
+                            else:
+                                used_k += float(mem_str) / 1024.0
+                    if total_cap_m > 0 and total_cpu_usage == 0:
+                        total_cpu_usage = min(100.0, max(0.0, (used_m / total_cap_m) * 100.0))
+                    if total_cap_k > 0 and total_memory_usage == 0:
+                        total_memory_usage = min(100.0, max(0.0, (used_k / total_cap_k) * 100.0))
+                    logger.info(f"📊 Fallback pods metrics: CPU={total_cpu_usage:.1f}%, Memory={total_memory_usage:.1f}%")
+                except Exception as e:
+                    logger.warning(f"Fallback pods metrics computation failed: {e}")
+
+            # Final fallback: kubelet summary API via apiserver proxy
+            if (total_cpu_usage == 0 or total_memory_usage == 0) and self.k8s_client:
+                try:
+                    v1 = client.CoreV1Api(self.k8s_client)
+                    nodes = v1.list_node().items
+                    total_cap_m = 0.0
+                    total_cap_k = 0.0
+                    used_m = 0.0
+                    used_k = 0.0
+                    for n in nodes:
+                        cap_cpu = str(n.status.capacity.get('cpu', '1'))
+                        if cap_cpu.endswith('m'):
+                            total_cap_m += float(cap_cpu[:-1])
+                        else:
+                            total_cap_m += float(cap_cpu) * 1000.0
+                        cap_mem = str(n.status.capacity.get('memory', '1Ki'))
+                        if cap_mem.endswith('Ki'):
+                            total_cap_k += float(cap_mem[:-2])
+                        elif cap_mem.endswith('Mi'):
+                            total_cap_k += float(cap_mem[:-2]) * 1024.0
+                        elif cap_mem.endswith('Gi'):
+                            total_cap_k += float(cap_mem[:-2]) * 1024.0 * 1024.0
+                        else:
+                            total_cap_k += float(cap_mem) / 1024.0
+                        # Call summary API
+                        try:
+                            resp = self.k8s_client.call_api(
+                                '/api/v1/nodes/{name}/proxy/stats/summary',
+                                'GET',
+                                path_params={'name': n.metadata.name},
+                                response_type='object',
+                                _preload_content=False
+                            )
+                            data = json.loads(resp.data)
+                            cpu_nano = float(data.get('node', {}).get('cpu', {}).get('usageNanoCores', 0) or 0)
+                            mem_bytes = float(data.get('node', {}).get('memory', {}).get('workingSetBytes', 0) or 0)
+                            used_m += cpu_nano / 1e6
+                            used_k += mem_bytes / 1024.0
+                        except Exception as e2:
+                            logger.warning(f"Summary API failed for node {n.metadata.name}: {e2}")
+                    if total_cap_m > 0 and total_cpu_usage == 0:
+                        total_cpu_usage = min(100.0, max(0.0, (used_m / total_cap_m) * 100.0))
+                    if total_cap_k > 0 and total_memory_usage == 0:
+                        total_memory_usage = min(100.0, max(0.0, (used_k / total_cap_k) * 100.0))
+                    logger.info(f"📊 Summary API fallback: CPU={total_cpu_usage:.1f}%, Memory={total_memory_usage:.1f}%")
+                except Exception as e:
+                    logger.warning(f"Summary fallback failed: {e}")
             
             return {
                 "timestamp": datetime.now().isoformat(),

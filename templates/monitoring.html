@@ -431,7 +431,7 @@ function updateForecasts(forecast) {
     const memoryForecast = document.getElementById('memoryForecast');
     const trendAnalysis = document.getElementById('trendAnalysis');
     
-    if (forecast.cpu_forecast && forecast.cpu_forecast.next_hour_prediction) {
+    if (forecast.cpu_forecast && forecast.cpu_forecast.next_hour_prediction !== undefined && forecast.cpu_forecast.next_hour_prediction !== null) {
         cpuForecast.innerHTML = `
             <div class="d-flex justify-content-between">
                 <span>Current: ${forecast.cpu_forecast.current.toFixed(1)}%</span>
@@ -443,7 +443,7 @@ function updateForecasts(forecast) {
         `;
     }
     
-    if (forecast.memory_forecast && forecast.memory_forecast.next_hour_prediction) {
+    if (forecast.memory_forecast && forecast.memory_forecast.next_hour_prediction !== undefined && forecast.memory_forecast.next_hour_prediction !== null) {
         memoryForecast.innerHTML = `
             <div class="d-flex justify-content-between">
                 <span>Current: ${forecast.memory_forecast.current.toFixed(1)}%</span>
