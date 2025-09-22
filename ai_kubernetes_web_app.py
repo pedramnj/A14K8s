@@ -756,6 +756,11 @@ def dashboard():
         return redirect(url_for('login'))
     
     user = User.query.get(session['user_id'])
+    # Handle stale/missing user gracefully
+    if not user:
+        session.clear()
+        flash('Your session has expired. Please log in again.', 'warning')
+        return redirect(url_for('login'))
     servers = Server.query.filter_by(user_id=user.id).all()
     
     return render_template('dashboard.html', user=user, servers=servers)
@@ -1154,40 +1159,71 @@ def test_connection(server_id):
             'error': server.connection_error
         }), 500
 
-# Predictive Monitoring Routes
-if PREDICTIVE_MONITORING_AVAILABLE:
+# Predictive Monitoring Routes (always register endpoints; guard at runtime)
+if True:
     # Store AI monitoring instances per server
     ai_monitoring_instances = {}
+
+    def _patch_kubeconfig_for_container(original_path: str) -> str:
+        """Patch kubeconfig server URL if it points to 127.0.0.1 so container can reach host API.
+        Returns a path to a temp kubeconfig file with patched server URL.
+        """
+        try:
+            import os
+            import re
+            import tempfile
+            if not original_path or not os.path.exists(original_path):
+                return original_path
+            with open(original_path, 'r') as f:
+                content = f.read()
+            # Replace 127.0.0.1 with host gateway IP
+            host_gateway_ip = os.environ.get('HOST_GATEWAY_IP', '172.17.0.1')
+            patched = re.sub(r"server:\s*https://127\\.0\\.0\\.1:(\\d+)",
+                             rf"server: https://{host_gateway_ip}:\\1", content)
+            if patched != content:
+                tf = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                tf.write(patched)
+                tf.flush()
+                tf.close()
+                return tf.name
+            return original_path
+        except Exception:
+            return original_path
     
     def get_ai_monitoring(server_id):
         """Get or create AI monitoring instance for a specific server"""
+        if not PREDICTIVE_MONITORING_AVAILABLE:
+            return None
         if server_id not in ai_monitoring_instances:
             # Get server details to determine kubeconfig path
             server = Server.query.get(server_id)
             if server:
                 kubeconfig_path = None
-                # For local servers, try to use default kubeconfig
-                if server.server_type == 'local':
-                    # Try to find kubeconfig in common locations
-                    import os
-                    kubeconfig_paths = [
+                import os
+                # If a kubeconfig is stored in DB, always prefer it
+                if getattr(server, 'kubeconfig', None):
+                    try:
+                        import tempfile
+                        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                        temp_file.write(server.kubeconfig)
+                        temp_file.close()
+                        kubeconfig_path = temp_file.name
+                    except Exception:
+                        kubeconfig_path = None
+                # Otherwise, try well-known paths (inside container)
+                if kubeconfig_path is None:
+                    candidate_paths = [
+                        '/app/instance/kubeconfig_admin',
                         os.path.expanduser('~/.kube/config'),
                         '/etc/kubernetes/admin.conf',
                         '/var/lib/kubelet/kubeconfig'
                     ]
-                    for path in kubeconfig_paths:
+                    for path in candidate_paths:
                         if os.path.exists(path):
                             kubeconfig_path = path
                             break
-                # For remote servers, use the stored kubeconfig
-                elif server.server_type == 'remote' and server.kubeconfig:
-                    # Save kubeconfig to a temporary file
-                    import tempfile
-                    import os
-                    temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-                    temp_file.write(server.kubeconfig)
-                    temp_file.close()
-                    kubeconfig_path = temp_file.name
+                # Patch kubeconfig if pointing to 127.0.0.1
+                kubeconfig_path = _patch_kubeconfig_for_container(kubeconfig_path)
                 
                 print(f"🔧 Creating AI monitoring instance for server {server_id} ({server.name})")
                 print(f"🔧 Using kubeconfig: {kubeconfig_path}")
@@ -1203,6 +1239,22 @@ if PREDICTIVE_MONITORING_AVAILABLE:
             return redirect(url_for('login'))
         
         # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        user = User.query.get(session['user_id'])
+        return render_template('monitoring.html', user=user, server=server)
+
+    # Support legacy/query-param based route as well
+    @app.route('/monitoring')
+    def monitoring_dashboard_query():
+        """Predictive monitoring dashboard using ?server_id= query param"""
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+
+        server_id = request.args.get('server_id', type=int)
+        if not server_id:
+            flash('Server ID is required', 'warning')
+            return redirect(url_for('dashboard'))
+
         server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
         user = User.query.get(session['user_id'])
         return render_template('monitoring.html', user=user, server=server)
@@ -1246,6 +1298,15 @@ if PREDICTIVE_MONITORING_AVAILABLE:
                 return jsonify({'error': 'AI monitoring not available for this server'}), 500
             
             alerts = ai_monitoring.get_anomaly_alerts()
+            # Ensure at least one demo alert when in demo mode to avoid empty UI
+            if (not alerts) and ai_monitoring.get_current_analysis().get('demo_mode'):
+                from datetime import datetime
+                alerts = [{
+                    'type': 'info',
+                    'severity': 'low',
+                    'message': 'Demo mode active: no anomalies detected',
+                    'timestamp': datetime.now().isoformat()
+                }]
             return jsonify({'alerts': alerts, 'count': len(alerts)})
         except Exception as e:
             return jsonify({'error': str(e)}), 500
@@ -1349,6 +1410,39 @@ if PREDICTIVE_MONITORING_AVAILABLE:
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        # Ensure a default admin user exists for first-run access
+        try:
+            default_admin_username = os.environ.get('DEFAULT_ADMIN_USERNAME', 'admin')
+            default_admin_password = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'admin123')
+            default_admin_email = os.environ.get('DEFAULT_ADMIN_EMAIL', 'admin@local')
+
+            admin_user = User.query.filter_by(username=default_admin_username).first()
+            if not admin_user:
+                admin_user = User(username=default_admin_username, email=default_admin_email)
+                admin_user.set_password(default_admin_password)
+                db.session.add(admin_user)
+                db.session.commit()
+                print('✅ Default admin user created')
+            else:
+                print('✅ Default admin user present')
+
+            # Ensure the admin has at least one server
+            admin_server = Server.query.filter_by(user_id=admin_user.id).first()
+            if not admin_server:
+                admin_server = Server(
+                    name='Production K8s Cluster',
+                    server_type='kubernetes',
+                    connection_string='https://127.0.0.1:42019',
+                    user_id=admin_user.id,
+                    status='active'
+                )
+                db.session.add(admin_server)
+                db.session.commit()
+                print('✅ Default admin server created')
+            else:
+                print('✅ Default admin server present')
+        except Exception as e:
+            print(f'⚠️  Failed to ensure default admin: {e}')
     
     # Get configuration from environment variables
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'

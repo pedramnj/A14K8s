@@ -11,9 +11,9 @@
                     <i class="fas fa-server me-2"></i>{{ server.name }}
                 </h2>
                 <p class="text-muted">
-                    <span class="badge bg-secondary me-2">{{ server.server_type.title() }}</span>
+                    <span class="badge bg-secondary me-2">{{ (server.server_type or 'unknown')|title }}</span>
                     <span class="badge bg-{% if server.status == 'active' %}success{% elif server.status == 'inactive' %}warning{% else %}danger{% endif %}">
-                        {{ server.status.title() }}
+                        {{ (server.status or 'unknown')|title }}
                     </span>
                 </p>
             </div>
@@ -47,7 +47,7 @@
                             <tr>
                                 <td><strong>Type:</strong></td>
                                 <td>
-                                    <span class="badge bg-secondary">{{ server.server_type.title() }}</span>
+                                    <span class="badge bg-secondary">{{ (server.server_type or 'unknown')|title }}</span>
                                 </td>
                             </tr>
                             <tr>
@@ -55,7 +55,7 @@
                                 <td>
                                     <span class="badge bg-{% if server.status == 'active' %}success{% elif server.status == 'inactive' %}warning{% else %}danger{% endif %}">
                                         <i class="fas fa-{% if server.status == 'active' %}check-circle{% elif server.status == 'inactive' %}pause-circle{% else %}exclamation-circle{% endif %} me-1"></i>
-                                        {{ server.status.title() }}
+                                        {{ (server.status or 'unknown')|title }}
                                     </span>
                                 </td>
                             </tr>
@@ -171,7 +171,7 @@
                         {% endif %}
                     </div>
                     <h6>{{ server.name }}</h6>
-                    <p class="text-muted small">{{ server.server_type.title() }} Server</p>
+                    <p class="text-muted small">{{ (server.server_type or 'unknown')|title }} Server</p>
                 </div>
                 
                 <div class="row text-center">
