@@ -1,3 +1,4 @@
+from simple_kubectl_executor import kubectl_executor
 #!/usr/bin/env python3
 """
 Simplified AI4K8s Web Application - Lightweight and Efficient
@@ -851,11 +852,27 @@ def api_chat(server_id):
     if message.strip().startswith('kubectl'):
         # Direct kubectl command - use MCP bridge
         try:
-            response = requests.post(
-                'http://localhost:5001/api/chat',
-                json={'message': message},
-                timeout=10
-            )
+            # Use MCP client instead of HTTP bridge
+            result = kubectl_executor.execute_kubectl_command(message)
+            if result.get("success"):
+                response_text = result.get("result", "Command executed successfully")
+                # Create mock response object
+                class MockResponse:
+                    def __init__(self, data):
+                        self.status_code = 200
+                        self._data = data
+                    def json(self):
+                        return self._data
+                response = MockResponse({"response": response_text})
+            else:
+                # Create error response
+                class MockResponse:
+                    def __init__(self, data):
+                        self.status_code = 500
+                        self._data = data
+                    def json(self):
+                        return self._data
+                response = MockResponse({"error": result.get("error", "Command failed")})
             
             if response.status_code == 200:
                 result = response.json()
