@@ -163,6 +163,10 @@
                                             onclick="checkServerStatus('{{ server.id }}')" title="Check Status">
                                         <i class="fas fa-sync-alt"></i>
                                     </button>
+                                    <button class="btn btn-outline-danger" 
+                                            onclick="deleteServer('{{ server.id }}', '{{ server.name }}')" title="Delete Server">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
                                 </div>
                             </td>
                         </tr>
@@ -234,6 +238,51 @@ function testConnection(serverId) {
         button.innerHTML = originalHTML;
         button.disabled = false;
     });
+}
+
+function deleteServer(serverId, serverName) {
+    // Show confirmation dialog
+    if (confirm(`Are you sure you want to delete the server "${serverName}"?\n\nThis action cannot be undone.`)) {
+        // Show loading state
+        const button = event.target.closest('button');
+        const originalHTML = button.innerHTML;
+        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        button.disabled = true;
+        
+        fetch(`/api/delete_server/${serverId}`, {
+            method: 'DELETE',
+            headers: {
+                'Content-Type': 'application/json',
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                showAlert('success', `Server "${serverName}" has been deleted successfully.`);
+                // Remove the row from the table
+                const row = button.closest('tr');
+                row.style.transition = 'opacity 0.3s';
+                row.style.opacity = '0';
+                setTimeout(() => {
+                    row.remove();
+                    // Reload page to update stats
+                    location.reload();
+                }, 300);
+            } else {
+                showAlert('danger', data.message || 'Failed to delete server.');
+                // Restore button state
+                button.innerHTML = originalHTML;
+                button.disabled = false;
+            }
+        })
+        .catch(error => {
+            console.error('Error deleting server:', error);
+            showAlert('danger', 'Delete failed: ' + error.message);
+            // Restore button state
+            button.innerHTML = originalHTML;
+            button.disabled = false;
+        });
+    }
 }
 
 function showAlert(type, message) {
