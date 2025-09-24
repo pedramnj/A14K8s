@@ -1063,7 +1063,34 @@ def server_status(server_id):
         'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
     })
 
-@app.route('/api/test_connection/<int:server_id>', methods=['POST'])
+
+@app.route("/api/delete_server/<int:server_id>", methods=["DELETE"])
+def api_delete_server(server_id):
+    """Delete a server"""
+    try:
+        # Get the server
+        server = Server.query.get_or_404(server_id)
+        
+        # Check if user owns this server
+        if server.user_id != session.get("user_id"):
+            return jsonify({"success": False, "message": "Unauthorized"}), 403
+        
+        # Delete the server
+        db.session.delete(server)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Server {server.name} has been deleted successfully."
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "message": f"Failed to delete server: {str(e)}"
+        }), 500
+@app.route("/api/test_connection/<int:server_id>", methods=["POST"])
 def test_connection(server_id):
     """Test connection to a server"""
     if 'user_id' not in session:
