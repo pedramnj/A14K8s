@@ -918,7 +918,7 @@ def api_chat(server_id):
                     else:
                         result_text = str(mcp_result['result'])
                     
-                    response_text = f"{processed['explanation']}\n\n**MCP Tool Result:**\n{result_text}"
+                    response_text = processed["explanation"]
                     
                     # Store chat in database
                     chat = Chat(
