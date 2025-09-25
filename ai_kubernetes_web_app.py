@@ -26,6 +26,11 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai4k8s.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Session cookie configuration
+app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = False  # Allow JavaScript access
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests
+
 db = SQLAlchemy(app)
 
 # Context processor to make current year available in all templates
