@@ -108,6 +108,44 @@ const messageInput = document.getElementById('message-input');
 const chatForm = document.getElementById('chat-form');
 const sendButton = document.getElementById('send-button');
 
+// Load chat history when page loads
+function loadChatHistory() {
+    fetch(`/api/chat_history/${serverId}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+        .then(response => response.json())
+        .then(data => {
+            if (data.chats && data.chats.length > 0) {
+                // Clear the default welcome message
+                chatMessages.innerHTML = '';
+                
+                // Load chat history in reverse order (oldest first)
+                data.chats.reverse().forEach(chat => {
+                    // Add user message
+                    addMessage(chat.user_message, false, new Date(chat.timestamp).toLocaleTimeString());
+                    
+                    // Add AI response
+                    addMessage(chat.ai_response, true, new Date(chat.timestamp).toLocaleTimeString());
+                });
+                
+                // Scroll to bottom
+                scrollToBottom();
+            }
+        })
+        .catch(error => {
+            console.error('Error loading chat history:', error);
+        });
+}
+
+// Scroll to bottom of chat
+function scrollToBottom() {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
 function addMessage(content, isBot = true, timestamp = null) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isBot ? 'bot-message' : 'user-message'} mb-3`;
@@ -201,6 +239,9 @@ chatForm.addEventListener('submit', function(e) {
         messageInput.value = '';
     }
 });
+
+// Load chat history when page loads
+loadChatHistory();
 
 // Focus input on load
 messageInput.focus();
