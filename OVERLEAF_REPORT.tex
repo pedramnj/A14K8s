@@ -380,6 +380,23 @@ async def get_pod_top(self, pod_name: str = None, namespace: str = "default") ->
         cmd = f"kubectl top pods -n {namespace} --no-headers"
 \end{lstlisting}
 
+\textbf{Detailed Analysis}: The AI processor was calling 'pods_top' but the MCP server only had 'get_pod_top'. This mismatch meant the AI couldn't correctly retrieve metrics.
+
+\textbf{The Fix}:
+\begin{itemize}[noitemsep]
+  \item \textbf{Updated AI Processor}: Changed get_pod_top → pods_top in tool list
+  \item \textbf{Tool Mapping}: Now AI processor can find and use pods_top correctly
+  \item \textbf{Consistent Behavior}: Resource usage queries will now always use the correct tool
+\end{itemize}
+
+\textbf{What This Fixes}:
+\begin{itemize}[noitemsep]
+  \item \textbf{Resource Usage Commands}: Will now consistently use pods_top instead of pods_list
+  \item \textbf{Tool Selection}: AI will choose the right tool for the right query
+  \item \textbf{Consistent Results}: No more "doesn't show CPU and memory usage" responses
+  \item \textbf{Proper Data}: Real resource metrics instead of pod status
+\end{itemize}
+
 \textbf{Problem}: Anthropic API Rate Limiting (HTTP 529)
 \begin{itemize}[noitemsep]
   \item "Too Many Requests" errors due to automatic retries
@@ -392,6 +409,30 @@ async def get_pod_top(self, pod_name: str = None, namespace: str = "default") ->
 # Rate limiting fix in ai_processor.py
 self.anthropic = Anthropic(max_retries=0)  # Disable automatic retries
 \end{lstlisting}
+
+\textbf{Detailed Analysis}: The Anthropic client has built-in retry logic that was automatically retrying failed requests. When it gets a 529 (rate limited), it retries automatically, which makes the rate limiting worse.
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Anthropic Client Default}: max_retries=2 (automatic retries)
+  \item \textbf{Per Request}: 1 original call + 2 retries = 3 API calls per request
+  \item \textbf{Rate Limiting}: 50 requests/minute ÷ 3 calls = ~16 effective requests/minute
+  \item \textbf{Result}: Rate limiting even with 1 request per minute
+\end{itemize}
+
+\textbf{The Solution}:
+\begin{itemize}[noitemsep]
+  \item \textbf{Disabled Retries}: Set max_retries=0 in Anthropic client
+  \item \textbf{Single API Call}: Now only 1 API call per request
+  \item \textbf{Rate Limit Friendly}: 50 requests/minute with 1 call each = 50 effective requests/minute
+\end{itemize}
+
+\textbf{What This Fixes}:
+\begin{itemize}[noitemsep]
+  \item \textbf{No More Retries}: Eliminates automatic retry behavior
+  \item \textbf{Rate Limit Compliance}: Stays within 50 requests/minute limit
+  \item \textbf{Better Performance}: Faster responses (no retry delays)
+  \item \textbf{Consistent Behavior}: Predictable API usage
+\end{itemize}
 
 \textbf{Problem}: Chat History Not Persisting After Page Refresh
 \begin{itemize}[noitemsep]
@@ -2459,6 +2500,30 @@ server {
 I identified and resolved critical architecture issues with the HTTP bridge approach:
 
 \textbf{Problem}: The system was attempting to connect to localhost:5001 for direct kubectl commands, which was causing connection refused errors.
+
+\subsection{External MCP Server Access Issues}
+\textbf{Problem}: External MCP server running outside container without proper cluster access
+\begin{itemize}[noitemsep]
+  \item External MCP server running outside the container
+  \item No access to the fixed metrics-server inside the cluster
+  \item Metrics working on host but not accessible to external MCP server
+  \item External MCP server might not have the right kubeconfig or cluster access
+\end{itemize}
+
+\textbf{Solution}: Updated AI processor to use external MCP server with proper cluster access
+\begin{lstlisting}[style=bashstyle]
+# External MCP server configuration
+mcp_server_url = "http://localhost:5002/mcp"
+
+# Verify external MCP server can access cluster
+curl -s http://localhost:5002/mcp | head -5
+
+# Check if external MCP server has proper kubeconfig
+kubectl config current-context
+kubectl get pods --all-namespaces
+\end{lstlisting}
+
+\textbf{Architecture Decision}: The external MCP server was enhanced to support direct kubectl commands, replacing the separate MCP bridge. This eliminated the need for the HTTP bridge while maintaining all functionality.
 
 \textbf{Solution}: Implemented direct kubectl execution through subprocess calls:
 
