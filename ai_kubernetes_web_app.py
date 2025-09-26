@@ -49,26 +49,44 @@ class AIPoweredMCPKubernetesProcessor:
         self._initialize_ai()
     
     def _initialize_ai(self):
-        """Initialize Anthropic AI if API key is available"""
-        try:
-            from anthropic import Anthropic
-            import os
-            
-            # Try to load .env file from client directory
-            self._load_env_file()
-            
-            if os.getenv('ANTHROPIC_API_KEY'):
-                # Set the API key in environment and initialize client
+        """Initialize AI client (Groq primary, Anthropic fallback)"""
+        import os
+        
+        # Try to load .env file from client directory
+        self._load_env_file()
+        
+        # Try Groq first (free)
+        if os.getenv('GROQ_API_KEY'):
+            try:
+                import groq
+                self.anthropic = groq.Groq(api_key=os.getenv('GROQ_API_KEY'))
+                self.use_ai = True
+                self.ai_provider = "groq"
+                print("🤖 Groq AI processing enabled (free tier)")
+                return
+            except ImportError:
+                print("⚠️  Groq package not installed, trying Anthropic...")
+            except Exception as e:
+                print(f"⚠️  Groq initialization failed: {e}, trying Anthropic...")
+        
+        # Fallback to Anthropic (paid)
+        if os.getenv('ANTHROPIC_API_KEY'):
+            try:
+                from anthropic import Anthropic
                 os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY')
                 self.anthropic = Anthropic()
                 self.use_ai = True
-                print("🤖 AI-powered processing enabled")
-            else:
-                print("🔧 Regex-only processing (no ANTHROPIC_API_KEY)")
-        except ImportError:
-            print("⚠️  Anthropic package not installed, using regex-only processing")
-        except Exception as e:
-            print(f"⚠️  AI initialization failed: {e}, using regex-only processing")
+                self.ai_provider = "anthropic"
+                print("🤖 Anthropic AI processing enabled (paid)")
+                return
+            except ImportError:
+                print("⚠️  Anthropic package not installed")
+            except Exception as e:
+                print(f"⚠️  Anthropic initialization failed: {e}")
+        
+        # No AI available
+        print("🔧 Regex-only processing (no AI keys)")
+        self.ai_provider = None
     
     def _load_env_file(self):
         """Load environment variables from .env file"""
@@ -190,6 +208,172 @@ class AIPoweredMCPKubernetesProcessor:
             })
         return tools_for_ai
     
+    def _process_with_groq_nl(self, query: str, system_prompt: str) -> dict:
+        """Process query using Groq natural language approach"""
+        try:
+            # Create a system prompt for Groq to determine tool and args
+            groq_system_prompt = (
+                "You are a Kubernetes expert. Analyze the user's query and determine:\n"
+                "1. What Kubernetes operation they want to perform\n"
+                "2. What tool to use and with what parameters\n\n"
+                
+                "Available tools:\n"
+                "- pods_list: List pods (params: namespace)\n"
+                "- pods_get: Get pod details (params: name, namespace)\n"
+                "- pods_run: Create pod (params: name, image, namespace)\n"
+                "- pods_delete: Delete pod (params: name, namespace)\n"
+                "- pods_log: Get pod logs (params: name, namespace)\n"
+                "- pods_top: Get resource usage (params: pod_name, namespace)\n"
+                "- pods_exec: Execute command (params: name, command, namespace)\n\n"
+                
+                "Respond with JSON format:\n"
+                "{\n"
+                '  "tool": "tool_name",\n'
+                '  "args": {"param": "value"},\n'
+                '  "explanation": "Brief explanation"\n'
+                "}\n\n"
+                
+                "Use intelligent defaults: namespace=default, image=nginx for web pods."
+            )
+            
+            response = self.anthropic.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": groq_system_prompt},
+                    {"role": "user", "content": query}
+                ],
+                max_tokens=500,
+                temperature=0.1
+            )
+            
+            ai_response = response.choices[0].message.content
+            
+            # Try to extract JSON from response
+            import json
+            import re
+            
+            # Find JSON in the response
+            json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                tool_name = parsed.get('tool')
+                tool_args = parsed.get('args', {})
+                explanation = parsed.get('explanation', '')
+                
+                if tool_name:
+                    # Execute the tool
+                    result = self._call_mcp_tool(tool_name, tool_args)
+                    
+                    if result['success']:
+                        # Post-process the result
+                        polished_result = self._post_process_with_ai(query, tool_name, result['result'])
+                        
+                        return {
+                            'command': f'Groq: {tool_name}',
+                            'explanation': f"{explanation}\n\n{polished_result}",
+                            'ai_processed': True,
+                            'tool_results': [{'tool_name': tool_name, 'result': result}],
+                            'mcp_result': result
+                        }
+                    else:
+                        return {
+                            'command': f'Groq: {tool_name} (failed)',
+                            'explanation': f"❌ **Error:** {result['error']}",
+                            'ai_processed': True,
+                            'tool_results': [],
+                            'mcp_result': None
+                        }
+            
+            # If no JSON found, return the AI response directly
+            return {
+                'command': 'Groq: text_response',
+                'explanation': ai_response,
+                'ai_processed': True,
+                'tool_results': [],
+                'mcp_result': None
+            }
+            
+        except Exception as e:
+            # Fallback to direct response
+            return {
+                'command': 'Groq: text_response',
+                'explanation': f"Groq processing failed: {str(e)}",
+                'ai_processed': True,
+                'tool_results': [],
+                'mcp_result': None
+            }
+    
+    def _post_process_with_ai(self, user_query: str, tool_name: str, raw_result: str) -> str:
+        """Post-process MCP results with AI"""
+        try:
+            # Extract the actual content from MCP result
+            if isinstance(raw_result, dict):
+                content = raw_result.get('content', [{}])
+                if isinstance(content, list) and len(content) > 0:
+                    actual_content = content[0].get('text', '')
+                else:
+                    actual_content = str(raw_result)
+            else:
+                actual_content = str(raw_result)
+            
+            # Create a system prompt for post-processing
+            system_prompt = (
+                "You are a Kubernetes expert. Transform the raw output into a polished, "
+                "user-friendly response with emojis and clear formatting. "
+                "Focus on what the user asked for and make it easy to understand."
+            )
+            
+            message = f"""User Question: "{user_query}"
+Tool Used: {tool_name}
+Raw Output: {actual_content}
+
+Transform this into a polished response."""
+            
+            # Call AI for post-processing
+            if self.ai_provider == "groq":
+                response = self.anthropic.chat.completions.create(
+                    model="llama3-8b-8192",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message}
+                    ],
+                    max_tokens=1000,
+                    temperature=0.1
+                )
+                return response.choices[0].message.content
+            else:
+                response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": message}]
+                )
+                return response.content[0].text if response.content else actual_content
+                
+        except Exception as e:
+            print(f"⚠️  Post-processing failed: {e}")
+            return self._basic_format_response(tool_name, raw_result)
+    
+    def _basic_format_response(self, tool_name: str, raw_result: str) -> str:
+        """Basic fallback formatting when AI post-processing fails"""
+        if isinstance(raw_result, dict):
+            content = raw_result.get('content', [{}])
+            if isinstance(content, list) and len(content) > 0:
+                text_content = content[0].get('text', '')
+            else:
+                text_content = str(raw_result)
+        else:
+            text_content = str(raw_result)
+        
+        if tool_name == 'pods_list':
+            return f"📋 **Pod List Results:**\n\n{text_content}"
+        elif tool_name == 'pods_get':
+            return f"📋 **Pod Details:**\n\n{text_content}"
+        elif tool_name == 'pods_run':
+            return f"✅ **Pod Creation:**\n\n{text_content}"
+        else:
+            return f"**{tool_name} Result:**\n\n{text_content}"
+    
     def _process_with_ai(self, query: str) -> dict:
         """Process query using Anthropic AI (like the client)"""
         try:
@@ -232,14 +416,19 @@ class AIPoweredMCPKubernetesProcessor:
             
             messages = [{"role": "user", "content": query}]
             
-            # Call Anthropic AI with tools
-            response = self.anthropic.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1200,
-                system=system_prompt,
-                messages=messages,
-                tools=available_tools
-            )
+            # Call AI with tools (Groq or Anthropic)
+            if self.ai_provider == "groq":
+                # Groq doesn't support function calling, use natural language approach
+                return self._process_with_groq_nl(query, system_prompt)
+            else:
+                # Anthropic with function calling
+                response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1200,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=available_tools
+                )
             
             # Process AI response and handle tool calls
             final_text = []

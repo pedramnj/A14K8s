@@ -3,7 +3,7 @@
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-https%3A//ai4k8s.online-green)](https://ai4k8s.online)
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](https://ai4k8s.online)
 [![SSL](https://img.shields.io/badge/SSL-Let%27s%20Encrypt-blue)](https://ai4k8s.online)
-[![AI](https://img.shields.io/badge/AI-Anthropic%20Claude-purple)](https://ai4k8s.online)
+[![AI](https://img.shields.io/badge/AI-Groq%20LLM-green)](https://ai4k8s.online)
 [![Theme](https://img.shields.io/badge/Theme-Dark%20%26%20Light-orange)](https://ai4k8s.online)
 
 ## 🚀 Live Production Deployment
@@ -16,7 +16,7 @@
 
 ## 📋 Overview
 
-AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines real-time monitoring, predictive analytics, and intelligent chat capabilities. The platform enables users to interact with Kubernetes clusters using natural language through an advanced AI interface powered by Anthropic Claude, featuring a modern dark/light theme interface.
+AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines real-time monitoring, predictive analytics, and intelligent chat capabilities. The platform enables users to interact with Kubernetes clusters using natural language through an advanced AI interface powered by Groq LLM (free tier), featuring a modern dark/light theme interface.
 
 ## ✨ Key Features
 
@@ -47,7 +47,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - **SSL/TLS Encryption**: Let's Encrypt certificate for secure HTTPS access
 - **User Authentication**: Multi-user support with secure session management
 - **Password Security**: Werkzeug-based password hashing
-- **API Security**: Secure Anthropic API integration
+- **API Security**: Secure Groq API integration (free tier)
 - **Session Persistence**: Chat history and user preferences saved across sessions
 
 ### 🏗️ Production Architecture
@@ -84,7 +84,8 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - Direct kubectl execution: `simple_kubectl_executor.py`
 
 **3️⃣ AI Integration Layer:**
-- Anthropic Claude: `claude-3-5-sonnet-20241022`
+- Groq LLM: `llama3-8b-8192` (free tier: 14,400 requests/day)
+- Anthropic Claude: `claude-3-5-sonnet-20241022` (fallback)
 - Natural Language Processing
 - Context-aware responses
 - Intelligent kubectl command generation
@@ -112,7 +113,8 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - **Flask**: Web framework with session management
 - **SQLAlchemy**: Database ORM
 - **SQLite**: Database for user and server management
-- **Anthropic Claude**: AI processing engine
+- **Groq LLM**: Primary AI processing engine (free)
+- **Anthropic Claude**: Fallback AI processing engine
 - **MCP (Model Context Protocol)**: AI-tool communication
 
 ### Frontend
@@ -130,7 +132,8 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - **Kind**: Local Kubernetes cluster for testing
 
 ### AI & ML
-- **Anthropic Claude**: Natural language processing
+- **Groq LLM**: Natural language processing (free tier)
+- **Anthropic Claude**: Advanced natural language processing (fallback)
 - **Predictive Analytics**: Time series forecasting
 - **Anomaly Detection**: Machine learning algorithms
 - **Performance Optimization**: ML-driven recommendations
@@ -140,7 +143,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 ### Prerequisites
 - Docker and Docker Compose
 - Kubernetes cluster access
-- Anthropic API key
+- Groq API key (free)
 - Domain name (optional)
 
 ### Installation
@@ -154,7 +157,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 2. **Set up environment variables:**
    ```bash
    cp .env.example .env
-   # Edit .env with your Anthropic API key
+   # Edit .env with your Groq API key
    ```
 
 3. **Build and run with Docker:**
@@ -324,7 +327,7 @@ ai4k8s/
 
 ### Environment Variables
 ```bash
-ANTHROPIC_API_KEY=your-anthropic-api-key
+GROQ_API_KEY=your-groq-api-key
 FLASK_ENV=production
 SECRET_KEY=your-secret-key
 DATABASE_URL=sqlite:///instance/ai4k8s.db
@@ -339,7 +342,7 @@ services:
     ports:
       - "5003:5003"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
     volumes:
       - ./instance:/app/instance
     network_mode: host
@@ -415,7 +418,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **Anthropic**: For providing the Claude AI model
+- **Groq**: For providing the free LLM API
+- **Anthropic**: For providing the Claude AI model (fallback)
 - **Kubernetes Community**: For the excellent ecosystem
 - **Flask Community**: For the robust web framework
 - **Docker Community**: For containerization tools
@@ -484,7 +488,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ```
 User Input → Flask App → Simple Kubectl Executor → kubectl → Kubernetes API
      ↓
-AI Processing → Anthropic Claude → Natural Language Response
+AI Processing → Groq LLM → Natural Language Response
 ```
 
 ### Key Components
