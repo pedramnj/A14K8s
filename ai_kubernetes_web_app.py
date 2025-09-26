@@ -237,7 +237,7 @@ class AIPoweredMCPKubernetesProcessor:
             )
             
             response = self.anthropic.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": groq_system_prompt},
                     {"role": "user", "content": query}
@@ -332,7 +332,7 @@ Transform this into a polished response."""
             # Call AI for post-processing
             if self.ai_provider == "groq":
                 response = self.anthropic.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": message}

@@ -147,7 +147,7 @@ class EnhancedAIProcessor:
             )
             
             response = self.anthropic.chat.completions.create(
-                model="llama3-8b-8192",
+                model="llama-3.1-8b-instant",
                 messages=[
                     {"role": "system", "content": groq_system_prompt},
                     {"role": "user", "content": query}
@@ -305,7 +305,7 @@ Please transform this raw output into a polished, user-friendly response that di
             # Call AI for post-processing
             if self.ai_provider == "groq":
                 response = self.anthropic.chat.completions.create(
-                    model="llama3-8b-8192",
+                    model="llama-3.1-8b-instant",
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": message}
