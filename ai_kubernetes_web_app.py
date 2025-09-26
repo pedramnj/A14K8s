@@ -830,7 +830,14 @@ def server_detail(server_id):
         return redirect(url_for('login'))
     
     server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-    return render_template('server_detail.html', server=server)
+    
+    # Get recent chat activity
+    recent_chats = Chat.query.filter_by(
+        server_id=server_id, 
+        user_id=session['user_id']
+    ).order_by(Chat.timestamp.desc()).limit(10).all()
+    
+    return render_template('server_detail.html', server=server, recent_chats=recent_chats)
 
 @app.route('/chat/<int:server_id>')
 def chat(server_id):
