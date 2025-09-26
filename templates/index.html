@@ -3,132 +3,132 @@
 {% block title %}AI4K8s - AI-Powered Kubernetes Management{% endblock %}
 
 {% block content %}
-<div class="hero-section bg-gradient-primary text-white py-5 mb-5 rounded">
-    <div class="container text-center">
-        <h1 class="display-4 fw-bold mb-4">
-            <i class="fas fa-robot me-3"></i>AI4K8s
+<div class="d-grid" style="grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Hero Section -->
+    <div style="text-align: center; padding: 3rem 0;">
+        <h1 style="font-size: 3rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1rem; line-height: 1.2;">
+            AI-Powered Kubernetes Management
         </h1>
-        <p class="lead mb-4">AI-Powered Kubernetes Management Platform</p>
-        <p class="mb-4">Manage your Kubernetes clusters with natural language commands through our intelligent AI agent.</p>
-        
-        {% if not session.user_id %}
-        <div class="d-grid gap-2 d-md-flex justify-content-md-center">
-            <a href="{{ url_for('register') }}" class="btn btn-light btn-lg me-md-2">
-                <i class="fas fa-user-plus me-2"></i>Get Started
+        <p style="font-size: 1.25rem; color: var(--text-secondary); margin-bottom: 2rem; max-width: 600px; margin-left: auto; margin-right: auto;">
+            Streamline your Kubernetes operations with intelligent automation, real-time monitoring, and AI-driven insights.
+        </p>
+        <div class="d-flex justify-content-center gap-2">
+            {% if session.user_id %}
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                        <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Go to Dashboard
+                </a>
+            {% else %}
+                <a href="{{ url_for('register') }}" class="btn btn-primary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                        <path d="M16 21V19C16 17.9391 15.5786 16.9217 14.8284 16.1716C14.0783 15.4214 13.0609 15 12 15H5C3.93913 15 2.92172 15.4214 2.17157 16.1716C1.42143 16.9217 1 17.9391 1 19V21M12 7C12 9.20914 10.2091 11 8 11C5.79086 11 4 9.20914 4 7C4 4.79086 5.79086 3 8 3C10.2091 3 12 4.79086 12 7ZM20 7L22 9L26 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Get Started
+                </a>
+                <a href="{{ url_for('login') }}" class="btn btn-secondary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                        <path d="M15 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H15M10 17L15 12L10 7M15 12H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Sign In
+                </a>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Features Section -->
+    <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 2rem;">
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <div style="width: 4rem; height: 4rem; background: rgb(37 99 235 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem;">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="var(--primary-color)">
+                        <path d="M21 15C21 15.5304 20.7893 16.0391 20.4142 16.4142C20.0391 16.7893 19.5304 17 19 17H7L3 21V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V15Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+                <h3 style="font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem;">AI-Powered Chat</h3>
+                <p class="text-muted">Interact with your Kubernetes clusters using natural language. Ask questions, get insights, and manage resources through intelligent conversations.</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <div style="width: 4rem; height: 4rem; background: rgb(16 185 129 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem;">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="var(--success-color)">
+                        <path d="M9 19C9 20.1046 8.10457 21 7 21C5.89543 21 5 20.1046 5 19C5 17.8954 5.89543 17 7 17C8.10457 17 9 17.8954 9 19Z"/>
+                        <path d="M19 19C19 20.1046 18.1046 21 17 21C15.8954 21 15 20.1046 15 19C15 17.8954 15.8954 17 17 17C18.1046 17 19 17.8954 19 19Z"/>
+                        <path d="M9 19H15" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </div>
+                <h3 style="font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem;">Real-time Monitoring</h3>
+                <p class="text-muted">Monitor your cluster health, resource usage, and performance metrics with intelligent alerts and predictive analytics.</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <div style="width: 4rem; height: 4rem; background: rgb(14 165 233 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 1.5rem;">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="var(--accent-color)">
+                        <path d="M8 6H16V14H8V6Z"/>
+                        <path d="M16 6H20V10H16V6Z"/>
+                        <path d="M8 14H16V18H8V14Z"/>
+                        <path d="M16 14H20V18H16V14Z"/>
+                    </svg>
+                </div>
+                <h3 style="font-size: 1.25rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem;">Multi-Cluster Management</h3>
+                <p class="text-muted">Manage multiple Kubernetes clusters from a single interface with unified monitoring and intelligent automation.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Stats Section -->
+    <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <h3 style="font-size: 2.5rem; font-weight: 700; color: var(--primary-color); margin-bottom: 0.5rem;">100%</h3>
+                <p class="text-muted mb-0">Uptime</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <h3 style="font-size: 2.5rem; font-weight: 700; color: var(--success-color); margin-bottom: 0.5rem;">24/7</h3>
+                <p class="text-muted mb-0">Monitoring</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <h3 style="font-size: 2.5rem; font-weight: 700; color: var(--accent-color); margin-bottom: 0.5rem;">AI</h3>
+                <p class="text-muted mb-0">Powered</p>
+            </div>
+        </div>
+        <div class="card">
+            <div class="card-body" style="text-align: center;">
+                <h3 style="font-size: 2.5rem; font-weight: 700; color: var(--warning-color); margin-bottom: 0.5rem;">Fast</h3>
+                <p class="text-muted mb-0">Response</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- CTA Section -->
+    {% if not session.user_id %}
+    <div class="card" style="text-align: center; padding: 3rem;">
+        <h2 style="font-size: 2rem; font-weight: 700; color: var(--text-primary); margin-bottom: 1rem;">Ready to Get Started?</h2>
+        <p class="text-muted mb-3" style="font-size: 1.125rem;">Join thousands of developers who trust AI4K8s for their Kubernetes management needs.</p>
+        <div class="d-flex justify-content-center gap-2">
+            <a href="{{ url_for('register') }}" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M16 21V19C16 17.9391 15.5786 16.9217 14.8284 16.1716C14.0783 15.4214 13.0609 15 12 15H5C3.93913 15 2.92172 15.4214 2.17157 16.1716C1.42143 16.9217 1 17.9391 1 19V21M12 7C12 9.20914 10.2091 11 8 11C5.79086 11 4 9.20914 4 7C4 4.79086 5.79086 3 8 3C10.2091 3 12 4.79086 12 7ZM20 7L22 9L26 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Create Free Account
             </a>
-            <a href="{{ url_for('login') }}" class="btn btn-outline-light btn-lg">
-                <i class="fas fa-sign-in-alt me-2"></i>Login
+            <a href="{{ url_for('login') }}" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M15 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H15M10 17L15 12L10 7M15 12H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Sign In
             </a>
         </div>
-        {% else %}
-        <div class="d-grid gap-2 d-md-flex justify-content-md-center">
-            <a href="{{ url_for('dashboard') }}" class="btn btn-light btn-lg">
-                <i class="fas fa-tachometer-alt me-2"></i>Go to Dashboard
-            </a>
-        </div>
-        {% endif %}
     </div>
+    {% endif %}
 </div>
-
-<div class="row">
-    <div class="col-lg-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center">
-                <div class="feature-icon bg-primary text-white rounded-circle mx-auto mb-3">
-                    <i class="fas fa-brain fa-2x"></i>
-                </div>
-                <h5 class="card-title">AI-Powered Management</h5>
-                <p class="card-text">Interact with your Kubernetes clusters using natural language. No need to remember complex kubectl commands.</p>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-lg-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center">
-                <div class="feature-icon bg-success text-white rounded-circle mx-auto mb-3">
-                    <i class="fas fa-server fa-2x"></i>
-                </div>
-                <h5 class="card-title">Multi-Server Support</h5>
-                <p class="card-text">Manage multiple Kubernetes clusters from a single interface. Add your local, remote, or cloud-based clusters.</p>
-            </div>
-        </div>
-    </div>
-    
-    <div class="col-lg-4 mb-4">
-        <div class="card h-100 border-0 shadow-sm">
-            <div class="card-body text-center">
-                <div class="feature-icon bg-info text-white rounded-circle mx-auto mb-3">
-                    <i class="fas fa-chart-line fa-2x"></i>
-                </div>
-                <h5 class="card-title">Real-time Monitoring</h5>
-                <p class="card-text">Monitor your cluster health, view events, and get insights through our integrated monitoring dashboard.</p>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="row mt-5">
-    <div class="col-12">
-        <div class="card border-0 shadow-sm">
-            <div class="card-header bg-primary text-white">
-                <h5 class="mb-0"><i class="fas fa-cogs me-2"></i>Available Features</h5>
-            </div>
-            <div class="card-body">
-                <div class="row">
-                    <div class="col-md-6">
-                        <h6><i class="fas fa-check text-success me-2"></i>Pod Management</h6>
-                        <ul class="list-unstyled ms-4">
-                            <li>• List and view pod details</li>
-                            <li>• View pod logs and events</li>
-                            <li>• Execute commands in pods</li>
-                            <li>• Monitor resource usage</li>
-                        </ul>
-                        
-                        <h6><i class="fas fa-check text-success me-2"></i>Cluster Monitoring</h6>
-                        <ul class="list-unstyled ms-4">
-                            <li>• View cluster events</li>
-                            <li>• Monitor node status</li>
-                            <li>• Check service health</li>
-                            <li>• Real-time metrics</li>
-                        </ul>
-                    </div>
-                    <div class="col-md-6">
-                        <h6><i class="fas fa-check text-success me-2"></i>AI Chat Interface</h6>
-                        <ul class="list-unstyled ms-4">
-                            <li>• Natural language queries</li>
-                            <li>• Intelligent responses</li>
-                            <li>• Context-aware assistance</li>
-                            <li>• Command suggestions</li>
-                        </ul>
-                        
-                        <h6><i class="fas fa-check text-success me-2"></i>Security & Access</h6>
-                        <ul class="list-unstyled ms-4">
-                            <li>• User authentication</li>
-                            <li>• Secure server connections</li>
-                            <li>• RBAC integration</li>
-                            <li>• Audit logging</li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-</div>
-{% endblock %}
-
-{% block scripts %}
-<style>
-.hero-section {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.feature-icon {
-    width: 80px;
-    height: 80px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-</style>
 {% endblock %}
