@@ -4,6 +4,7 @@
 [![Status](https://img.shields.io/badge/Status-Production%20Ready-brightgreen)](https://ai4k8s.online)
 [![SSL](https://img.shields.io/badge/SSL-Let%27s%20Encrypt-blue)](https://ai4k8s.online)
 [![AI](https://img.shields.io/badge/AI-Anthropic%20Claude-purple)](https://ai4k8s.online)
+[![Theme](https://img.shields.io/badge/Theme-Dark%20%26%20Light-orange)](https://ai4k8s.online)
 
 ## 🚀 Live Production Deployment
 
@@ -15,28 +16,39 @@
 
 ## 📋 Overview
 
-AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines real-time monitoring, predictive analytics, and intelligent chat capabilities. The platform enables users to interact with Kubernetes clusters using natural language through an advanced AI interface powered by Anthropic Claude.
+AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines real-time monitoring, predictive analytics, and intelligent chat capabilities. The platform enables users to interact with Kubernetes clusters using natural language through an advanced AI interface powered by Anthropic Claude, featuring a modern dark/light theme interface.
 
 ## ✨ Key Features
 
 ### 🤖 AI-Powered Chat Interface
 - **Natural Language Processing**: Interact with Kubernetes using conversational commands
+- **Direct kubectl Commands**: Execute kubectl commands directly without HTTP bridges
 - **Intelligent Responses**: Context-aware AI that understands cluster state and provides recommendations
-- **Command Execution**: Execute kubectl commands through AI interpretation
 - **Real-time Analysis**: Get instant insights about cluster health and performance
+- **Modern UI**: Circular send button with animated AI thinking indicator
+- **Quick Actions**: Pre-configured kubectl commands for common operations
 
 ### 📊 Advanced Monitoring & Analytics
 - **Real-time Metrics**: Live CPU, memory, and resource usage monitoring
 - **Predictive Analytics**: 6-hour forecasting for resource utilization
 - **Anomaly Detection**: AI-powered identification of unusual patterns
 - **Performance Optimization**: ML-driven recommendations for cluster optimization
+- **Health Scoring**: Comprehensive cluster health assessment
 - **Multi-cluster Support**: Monitor multiple Kubernetes clusters from a single interface
+
+### 🎨 Modern User Interface
+- **Dark/Light Theme**: Beautiful theme toggle with system preference detection
+- **Responsive Design**: Mobile-first design that works on all devices
+- **Professional Styling**: Modern CSS with smooth animations and transitions
+- **Interactive Elements**: Hover effects, loading states, and visual feedback
+- **Accessibility**: Proper contrast ratios and keyboard navigation support
 
 ### 🔐 Enterprise-Grade Security
 - **SSL/TLS Encryption**: Let's Encrypt certificate for secure HTTPS access
 - **User Authentication**: Multi-user support with secure session management
 - **Password Security**: Werkzeug-based password hashing
 - **API Security**: Secure Anthropic API integration
+- **Session Persistence**: Chat history and user preferences saved across sessions
 
 ### 🏗️ Production Architecture
 - **Containerized Deployment**: Docker-based application with host networking
@@ -67,7 +79,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 **2️⃣ Application Layer:**
 - Flask Web App: `ai_kubernetes_web_app.py` (production-ready)
 - Database: SQLite (`ai4k8s.db`)
-- Templates: HTML/CSS/JS
+- Templates: Modern HTML/CSS/JS with dark theme support
 - Port: 5003 (internal)
 - Direct kubectl execution: `simple_kubectl_executor.py`
 
@@ -76,14 +88,14 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - Natural Language Processing
 - Context-aware responses
 - Intelligent kubectl command generation
-- MCP Protocol: `mcp_sync_wrapper.py` (Flask integration)
+- MCP Protocol: `kubernetes_mcp_server.py` (Model Context Protocol)
 
 **4️⃣ Kubernetes Management Layer:**
 - Direct kubectl execution (no HTTP bridge)
 - Kind Cluster: `localhost:42019`
 - Metrics Server: Installed and running
 - Workloads: nginx, redis, system pods
-- Total Pods: 13 (all healthy)
+- Total Pods: 15 (all healthy)
 - Real-time resource monitoring
 
 **5️⃣ Monitoring & Analytics Layer:**
@@ -104,10 +116,11 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - **MCP (Model Context Protocol)**: AI-tool communication
 
 ### Frontend
-- **HTML5/CSS3**: Modern responsive interface
-- **JavaScript**: Dynamic UI interactions
-- **Bootstrap**: Responsive design framework
-- **Chart.js**: Data visualization
+- **HTML5/CSS3**: Modern responsive interface with CSS variables
+- **JavaScript**: Dynamic UI interactions and theme management
+- **CSS Grid/Flexbox**: Modern layout system
+- **SVG Icons**: Scalable vector graphics for UI elements
+- **Local Storage**: Theme persistence and user preferences
 
 ### Infrastructure
 - **Docker**: Containerization
@@ -134,7 +147,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/your-username/ai4k8s.git
+   git clone https://github.com/pedramnikjooy/ai4k8s.git
    cd ai4k8s
    ```
 
@@ -181,6 +194,14 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - **Predictive Analytics**: 6-hour resource forecasts
 - **Anomaly Detection**: AI-powered pattern recognition
 - **Performance Recommendations**: ML-driven optimization suggestions
+- **Health Scoring**: Comprehensive cluster health assessment
+
+### Theme Customization
+- **Dark Theme**: Professional dark mode with blue accents
+- **Light Theme**: Clean light mode with modern styling
+- **Auto Detection**: Respects system preference
+- **Persistence**: Theme choice saved across sessions
+- **Smooth Transitions**: Animated theme switching
 
 ## 🔐 Security Features
 
@@ -228,26 +249,55 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 ```
 ai4k8s/
 ├── ai_kubernetes_web_app.py      # Main Flask application (production-ready)
-├── simple_kubectl_executor.py    # Direct kubectl execution (NEW)
-├── mcp_sync_wrapper.py           # MCP Flask integration wrapper (NEW)
+├── simple_kubectl_executor.py    # Direct kubectl execution
 ├── kubernetes_mcp_server.py      # MCP server for Kubernetes tools
-├── mcp_client.py                 # MCP client for stdio communication
-├── k8s_metrics_collector.py      # Kubernetes metrics collection
-├── predictive_monitoring.py       # AI/ML monitoring components
+├── ai_processor.py               # Enhanced AI query processing
+├── predictive_monitoring.py      # AI/ML monitoring components
 ├── ai_monitoring_integration.py  # Integration layer
-├── ai_processor.py               # AI query processing
-├── templates/                     # HTML templates
-├── static/                        # CSS/JS assets
-├── instance/                      # Database files
+├── k8s_metrics_collector.py      # Kubernetes metrics collection
+├── mcp_client.py                 # MCP client for stdio communication
+├── mcp_sync_wrapper.py           # MCP Flask integration wrapper
+├── templates/                    # Modern HTML templates
+│   ├── base.html                 # Base template with theme support
+│   ├── chat.html                 # Chat interface with AI thinking indicator
+│   ├── monitoring.html           # Advanced monitoring dashboard
+│   ├── dashboard.html            # Main dashboard
+│   ├── server_detail.html        # Server details page
+│   ├── login.html                # Authentication page
+│   ├── register.html             # User registration
+│   ├── add_server.html           # Server configuration
+│   └── index.html                # Landing page
+├── static/                       # Modern CSS/JS assets
+│   ├── css/
+│   │   └── style.css             # Modern CSS with dark theme support
+│   ├── js/
+│   │   └── app.js                # JavaScript for UI interactions
+│   ├── favicon.ico               # Favicon for browsers
+│   └── favicon.svg               # SVG favicon for modern browsers
+├── client/                       # MCP client implementation
+│   ├── ai_mcp_client.py          # AI MCP client
+│   ├── pyproject.toml            # Python project configuration
+│   └── README.md                 # Client documentation
+├── instance/                     # Database files
+│   └── ai4k8s.db                 # SQLite database
+├── netpress-integration/         # Performance testing integration
+│   ├── benchmark_runner.py       # Benchmark execution
+│   ├── mcp_agent.py              # MCP agent for testing
+│   ├── statistical-analysis/     # Statistical analysis tools
+│   └── test_results.json         # Test results
+├── thesis_reports/               # Thesis documentation
+│   ├── figures/                  # Thesis figures and charts
+│   └── thesis_comprehensive_report.md
 ├── docker-compose.yml            # Docker orchestration
-├── Dockerfile                     # Container definition
+├── Dockerfile                    # Container definition
 ├── requirements.txt              # Python dependencies
-└── .gitignore                    # Git ignore rules (NEW)
+└── .gitignore                    # Git ignore rules
 ```
 
 ### API Endpoints
 - **Web UI**: `/`, `/login`, `/dashboard`, `/monitoring`
 - **Chat API**: `/api/chat/<server_id>`
+- **Chat History**: `/api/chat_history/<server_id>`
 - **Monitoring API**: `/api/monitoring/*`
 - **Authentication**: `/login`, `/register`, `/logout`
 - **Server Management**: `/add_server`, `/server_detail`
@@ -258,6 +308,8 @@ ai4k8s/
 - **Real-time Execution**: Commands execute immediately with live results
 - **Error Handling**: Proper error reporting and timeout management
 - **Multi-user Support**: Isolated user sessions and cluster access
+- **Modern UI**: Circular send button with animated AI thinking indicator
+- **Quick Actions**: Pre-configured kubectl commands for common operations
 
 ### Available Commands
 - `kubectl get pods` - List all pods with status
@@ -377,8 +429,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [FAQ](https://ai4k8s.online/faq)
 
 ### Contact
-- **Issues**: [GitHub Issues](https://github.com/your-username/ai4k8s/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-username/ai4k8s/discussions)
+- **Issues**: [GitHub Issues](https://github.com/pedramnikjooy/ai4k8s/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/pedramnikjooy/ai4k8s/discussions)
 - **Email**: support@ai4k8s.online
 
 ---
@@ -389,29 +441,40 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **📊 Status:** Production Ready ✅
 
-**🚀 Last Updated:** September 23, 2024
+**🚀 Last Updated:** January 2025
 
-## 🔄 Recent Updates (v2.0)
+## 🔄 Recent Updates (v3.0)
 
 ### ✅ Major Improvements
+- **Modern UI/UX**: Complete redesign with dark/light theme support
+- **Enhanced Chat Interface**: Circular send button with animated AI thinking indicator
 - **Direct kubectl Execution**: Removed HTTP bridge dependency, now uses direct subprocess execution
 - **Production-Ready Chat**: Fixed all kubectl command issues with proper error handling
 - **Real-time Monitoring**: All monitoring data is now live (no demo/hardcoded data)
-- **MCP Integration**: Added Flask-compatible MCP wrapper for AI integration
+- **MCP Integration**: Enhanced Model Context Protocol integration for AI processing
 - **Container Optimization**: Improved Docker setup with proper networking and dependencies
 - **GitHub Integration**: Connected to repository with proper .gitignore and branch management
 
+### 🎨 UI/UX Enhancements
+- **Dark/Light Theme**: Beautiful theme toggle with system preference detection
+- **Modern Styling**: Professional CSS with smooth animations and transitions
+- **Responsive Design**: Mobile-first design that works on all devices
+- **Interactive Elements**: Hover effects, loading states, and visual feedback
+- **Accessibility**: Proper contrast ratios and keyboard navigation support
+- **Favicon Support**: Professional favicon for modern browsers
+
 ### 🛠️ Technical Changes
-- **New Files**: `simple_kubectl_executor.py`, `mcp_sync_wrapper.py`, `.gitignore`
+- **New Files**: `static/favicon.ico`, `static/favicon.svg`, enhanced CSS and JavaScript
 - **Architecture**: Simplified from HTTP bridge to direct kubectl execution
 - **Dependencies**: Added MCP package and Kubernetes client libraries
 - **Configuration**: Improved container networking and kubeconfig handling
 - **Backup System**: Comprehensive backup and restoration procedures
 
 ### 🎯 Current Status
-- **Chat Interface**: ✅ Fully functional with all kubectl commands
-- **Monitoring Dashboard**: ✅ Real-time data integration
+- **Chat Interface**: ✅ Fully functional with modern UI and all kubectl commands
+- **Monitoring Dashboard**: ✅ Real-time data integration with advanced analytics
 - **Authentication**: ✅ Multi-user support with secure sessions
+- **Theme System**: ✅ Dark/light theme with persistence
 - **Production Deployment**: ✅ Live at https://ai4k8s.online
 - **GitHub Integration**: ✅ Connected to vps-deployment branch
 
@@ -427,9 +490,10 @@ AI Processing → Anthropic Claude → Natural Language Response
 ### Key Components
 1. **`ai_kubernetes_web_app.py`**: Main Flask application with chat and monitoring
 2. **`simple_kubectl_executor.py`**: Direct kubectl command execution (replaces HTTP bridge)
-3. **`mcp_sync_wrapper.py`**: Flask-compatible MCP integration for AI processing
-4. **`ai_monitoring_integration.py`**: Real-time monitoring data collection
-5. **`predictive_monitoring.py`**: ML-powered analytics and forecasting
+3. **`kubernetes_mcp_server.py`**: MCP server for Kubernetes operations
+4. **`ai_processor.py`**: Enhanced AI query processing with post-processing
+5. **`ai_monitoring_integration.py`**: Real-time monitoring data collection
+6. **`predictive_monitoring.py`**: ML-powered analytics and forecasting
 
 ### Fixed Issues
 - ❌ **HTTP Bridge Errors**: Removed dependency on non-existent localhost:5001
@@ -437,3 +501,5 @@ AI Processing → Anthropic Claude → Natural Language Response
 - ❌ **Demo Data**: Replaced all hardcoded data with real Kubernetes metrics
 - ❌ **Container Networking**: Fixed kubeconfig and kubectl access in container
 - ❌ **Authentication**: Resolved session management and user access
+- ❌ **UI/UX Issues**: Modernized interface with dark theme support
+- ❌ **Chat Interface**: Enhanced with circular send button and AI thinking indicator
