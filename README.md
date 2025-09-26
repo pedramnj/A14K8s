@@ -84,7 +84,7 @@ AI4K8s is a cutting-edge AI-powered Kubernetes management platform that combines
 - Direct kubectl execution: `simple_kubectl_executor.py`
 
 **3️⃣ AI Integration Layer:**
-- Groq LLM: `llama3-8b-8192` (free tier: 14,400 requests/day)
+- Groq LLM: `llama-3.1-8b-instant` (free tier: 14,400 requests/day)
 - Anthropic Claude: `claude-3-5-sonnet-20241022` (fallback)
 - Natural Language Processing
 - Context-aware responses
