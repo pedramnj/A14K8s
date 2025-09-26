@@ -95,16 +95,31 @@ class SimpleKubectlExecutor:
         header = lines[0]
         pod_lines = lines[1:]
         
+        # Check if this is all-namespaces format (header starts with NAMESPACE)
+        has_namespace = header.split()[0].upper().startswith('NAMESPACE')
+        
         formatted_lines = []
         formatted_lines.append("📊 **Pod Resource Usage:**\n")
         
         for line in pod_lines:
             if line.strip():
                 parts = line.split()
+                # Handle both single-namespace and all-namespaces formats
                 if len(parts) >= 3:
-                    name = parts[0]
-                    cpu = parts[1]
-                    memory = parts[2]
+                    # Check if this is all-namespaces format (header has NAMESPACE column)
+                    if has_namespace:
+                        # All-namespaces format: NAMESPACE NAME CPU MEMORY
+                        if len(parts) >= 4:
+                            name = parts[1]
+                            cpu = parts[2] 
+                            memory = parts[3]
+                        else:
+                            continue
+                    else:
+                        # Single namespace format: NAME CPU MEMORY
+                        name = parts[0]
+                        cpu = parts[1]
+                        memory = parts[2]
                     
                     # Add emoji based on resource usage
                     cpu_value = int(cpu.replace('m', '')) if cpu.endswith('m') else int(cpu)
@@ -267,6 +282,9 @@ class SimpleKubectlExecutor:
             
         header = lines[0]
         pod_lines = lines[1:]
+        
+        # Check if this is all-namespaces format (header starts with NAMESPACE)
+        has_namespace = header.split()[0].upper().startswith('NAMESPACE')
         
         formatted_lines = []
         formatted_lines.append("📋 **Pods:**\n")
