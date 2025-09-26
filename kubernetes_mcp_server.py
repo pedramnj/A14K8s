@@ -294,6 +294,9 @@ class KubernetesMCP:
         try:
             if pod_name:
                 cmd = f"kubectl top pod {pod_name} -n {namespace} --no-headers"
+            elif namespace == "all" or namespace == "--all-namespaces":
+                # Support all-namespaces request
+                cmd = "kubectl top pods --all-namespaces --no-headers"
             else:
                 cmd = f"kubectl top pods -n {namespace} --no-headers"
             

@@ -31,7 +31,7 @@ class EnhancedAIProcessor:
             
             if os.getenv('ANTHROPIC_API_KEY'):
                 os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY')
-                self.anthropic = Anthropic()
+                self.anthropic = Anthropic(max_retries=0)
                 self.use_ai = True
                 print("🤖 Enhanced AI-powered processing enabled")
             else:
@@ -364,7 +364,7 @@ Please transform this raw output into a polished, user-friendly response that di
         # Fallback to basic response
         return {
             'command': 'fallback',
-            'explanation': 'AI processing is not available. Please check your Anthropic API key.',
+            'explanation': 'AI processing is temporarily unavailable due to rate limits. Please wait a moment and try again.',
             'ai_processed': False,
             'tool_results': [],
             'mcp_result': None

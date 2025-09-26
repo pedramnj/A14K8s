@@ -102,7 +102,9 @@
 
 {% block scripts %}
 <script>
+console.log('🔥 Script block started');
 const serverId = {{ server.id }};
+console.log('🔥 Server ID set to:', serverId);
 const chatMessages = document.getElementById('chat-messages');
 const messageInput = document.getElementById('message-input');
 const chatForm = document.getElementById('chat-form');
@@ -110,6 +112,7 @@ const sendButton = document.getElementById('send-button');
 
 // Load chat history when page loads
 function loadChatHistory() {
+    console.log('🔄 Loading chat history for server:', serverId);
     fetch(`/api/chat_history/${serverId}`, {
         method: 'GET',
         credentials: 'same-origin',
@@ -117,9 +120,14 @@ function loadChatHistory() {
             'Content-Type': 'application/json',
         }
     })
-        .then(response => response.json())
+        .then(response => {
+            console.log('📡 Chat history response status:', response.status);
+            return response.json();
+        })
         .then(data => {
+            console.log('📊 Chat history data:', data);
             if (data.chats && data.chats.length > 0) {
+                console.log('✅ Found', data.chats.length, 'chat messages');
                 // Clear the default welcome message
                 chatMessages.innerHTML = '';
                 
@@ -134,10 +142,12 @@ function loadChatHistory() {
                 
                 // Scroll to bottom
                 scrollToBottom();
+            } else {
+                console.log('ℹ️ No chat history found');
             }
         })
         .catch(error => {
-            console.error('Error loading chat history:', error);
+            console.error('❌ Error loading chat history:', error);
         });
 }
 
@@ -240,8 +250,18 @@ chatForm.addEventListener('submit', function(e) {
     }
 });
 
-// Load chat history when page loads
-loadChatHistory();
+// Test if JavaScript is working
+try {
+    console.log('🚀 Chat page JavaScript loaded');
+    console.log('🔧 Server ID:', serverId);
+    console.log('🔧 Chat messages element:', chatMessages);
+    
+    // Load chat history when page loads
+    console.log('📞 Calling loadChatHistory()...');
+    loadChatHistory();
+} catch (error) {
+    console.error('❌ JavaScript error:', error);
+}
 
 // Focus input on load
 messageInput.focus();
