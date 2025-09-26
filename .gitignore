@@ -51,3 +51,8 @@ Thumbs.db
 
 # Docker
 .dockerignore
+__pycache__/
+*.backup
+*.bak_*
+*_backup.html
+*.backup_*
