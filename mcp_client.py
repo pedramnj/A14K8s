@@ -3,41 +3,37 @@ import asyncio
 import json
 import subprocess
 import sys
+import requests
 from typing import Optional, Dict, Any
 from contextlib import AsyncExitStack
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-
 class MCPKubernetesClient:
     def __init__(self):
-        self.session: Optional[ClientSession] = None
-        self.exit_stack = AsyncExitStack()
         self.available_tools = {}
-        self.server_process = None
+        self.server_url = "http://172.18.0.1:5002"
+        self.endpoint = "/mcp"
         
-    async def connect_to_server(self, server_script_path: str):
+    async def connect_to_server(self, server_script_path: str = None):
         try:
-            server_params = StdioServerParameters(
-                command='python3',
-                args=[server_script_path],
-                env=None
+            # Test connection to HTTP MCP server
+            response = requests.post(
+                f"{self.server_url}{self.endpoint}",
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                timeout=5
             )
             
-            stdio_transport = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
-            self.stdio, self.write = stdio_transport
-            self.session = await self.exit_stack.enter_async_context(
-                ClientSession(self.stdio, self.write)
-            )
-            
-            await self.session.initialize()
-            
-            response = await self.session.list_tools()
-            self.available_tools = {tool.name: tool for tool in response.tools}
-            print(f'✅ Connected to MCP server with {len(self.available_tools)} tools')
-            return True
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data and 'tools' in data['result']:
+                    self.available_tools = {tool['name']: tool for tool in data['result']['tools']}
+                    print(f'✅ Connected to MCP server with {len(self.available_tools)} tools')
+                    return True
+                else:
+                    print(f'⚠️  Invalid response format: {data}')
+                    return False
+            else:
+                print(f'⚠️  HTTP {response.status_code}: {response.text}')
+                return False
             
         except Exception as e:
             print(f'⚠️  Error connecting to MCP server: {e}')
@@ -45,19 +41,41 @@ class MCPKubernetesClient:
     
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            if not self.session:
+            if not self.available_tools:
                 return {'error': 'Not connected to MCP server'}
                 
-            result = await self.session.call_tool(tool_name, arguments)
-            return {
-                'success': True,
-                'result': result.content
-            }
+            # Call tool via HTTP
+            response = requests.post(
+                f"{self.server_url}{self.endpoint}",
+                json={
+                    "jsonrpc": "2.0", 
+                    "id": 1, 
+                    "method": "tools/call", 
+                    "params": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    }
+                },
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'result' in data:
+                    return {
+                        'success': True,
+                        'result': data['result']
+                    }
+                else:
+                    return {'error': data.get('error', 'Unknown error')}
+            else:
+                return {'error': f"HTTP {response.status_code}: {response.text}"}
+                
         except Exception as e:
             return {'error': str(e)}
     
     async def cleanup(self):
-        await self.exit_stack.aclose()
+        pass  # No cleanup needed for HTTP client
 
 # Global MCP client instance
 mcp_client = None
@@ -66,7 +84,7 @@ async def get_mcp_client():
     global mcp_client
     if mcp_client is None:
         mcp_client = MCPKubernetesClient()
-        await mcp_client.connect_to_server('kubernetes_mcp_server.py')
+        await mcp_client.connect_to_server()
     return mcp_client
 
 async def call_mcp_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:

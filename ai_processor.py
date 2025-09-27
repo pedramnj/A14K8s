@@ -7,12 +7,14 @@ Implements polished responses by passing MCP results through AI.
 import json
 import re
 import requests
+import asyncio
 from typing import Dict, List, Any, Optional
+from mcp_client import call_mcp_tool
 
 class EnhancedAIProcessor:
     """Enhanced AI processor with post-processing for polished responses"""
     
-    def __init__(self, mcp_server_url="http://localhost:5002/mcp"):
+    def __init__(self, mcp_server_url="http://172.18.0.1:5002/message"):
         self.mcp_server_url = mcp_server_url
         self.available_tools = None
         self.use_ai = False
@@ -89,19 +91,21 @@ class EnhancedAIProcessor:
     def _load_tools(self):
         """Load available MCP tools from the server"""
         try:
-            response = requests.post(
-                self.mcp_server_url,
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-                timeout=5
-            )
-            if response.status_code == 200:
-                data = response.json()
-                self.available_tools = data.get('result', {}).get('tools', [])
+            # Use the proper MCP client to get tools
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            from mcp_client import get_mcp_client
+            client = loop.run_until_complete(get_mcp_client())
+            if client and client.available_tools:
+                self.available_tools = list(client.available_tools.values())
                 print(f"✅ Loaded {len(self.available_tools)} MCP tools")
             else:
-                print(f"⚠️  Failed to load MCP tools: {response.status_code}")
+                print("⚠️  No MCP tools available")
+                self.available_tools = []
+            loop.close()
         except Exception as e:
             print(f"⚠️  Error loading MCP tools: {e}")
+            self.available_tools = []
     
     def _get_mcp_tools_for_ai(self) -> List[Dict]:
         """Convert MCP tools to Anthropic format"""
@@ -216,34 +220,21 @@ class EnhancedAIProcessor:
     def _call_mcp_tool(self, tool_name: str, args: Dict) -> Dict:
         """Call MCP tool and return result"""
         try:
-            # Create tool call request
-            tool_call = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": args
-                }
-            }
+            # Use the proper MCP client
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(call_mcp_tool(tool_name, args))
+            loop.close()
             
-            response = requests.post(
-                self.mcp_server_url,
-                json=tool_call,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                result = data.get('result', {})
+            if 'error' in result:
                 return {
-                    'success': True,
-                    'result': result
+                    'success': False,
+                    'error': result['error']
                 }
             else:
                 return {
-                    'success': False,
-                    'error': f"HTTP {response.status_code}: {response.text}"
+                    'success': True,
+                    'result': result.get('result', result)
                 }
         except Exception as e:
             return {
