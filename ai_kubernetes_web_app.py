@@ -12,6 +12,8 @@ import os
 import json
 import requests
 import uuid
+import asyncio
+from mcp_client import call_mcp_tool
 
 # Import predictive monitoring components
 try:
@@ -41,7 +43,7 @@ def inject_current_year():
 # AI-Powered MCP-based Natural Language Processor
 class AIPoweredMCPKubernetesProcessor:
     def __init__(self):
-        self.mcp_server_url = "http://localhost:5002/mcp"
+        self.mcp_server_url = "http://172.18.0.1:5002/message"
         self.available_tools = None
         self.use_ai = False
         self.anthropic = None
@@ -118,18 +120,18 @@ class AIPoweredMCPKubernetesProcessor:
     def _load_tools(self):
         """Load available MCP tools from the server"""
         try:
-            response = requests.post(
-                self.mcp_server_url,
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-                timeout=5
-            )
-            if response.status_code == 200:
-                result = response.json()
-                self.available_tools = {tool['name']: tool for tool in result['result']['tools']}
+            # Use the proper MCP client to get tools
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            from mcp_client import get_mcp_client
+            client = loop.run_until_complete(get_mcp_client())
+            if client and client.available_tools:
+                self.available_tools = client.available_tools
                 print(f"✅ Loaded {len(self.available_tools)} MCP tools")
             else:
-                print(f"⚠️  Failed to load MCP tools: {response.status_code}")
+                print("⚠️  No MCP tools available")
                 self.available_tools = {}
+            loop.close()
         except Exception as e:
             print(f"⚠️  Error loading MCP tools: {e}")
             self.available_tools = {}
@@ -137,46 +139,26 @@ class AIPoweredMCPKubernetesProcessor:
     def _call_mcp_tool(self, tool_name: str, arguments: dict = None) -> dict:
         """Call an MCP tool with the given arguments"""
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments or {}
-                }
-            }
+            # Use the proper MCP client
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(call_mcp_tool(tool_name, arguments or {}))
+            loop.close()
             
-            response = requests.post(
-                self.mcp_server_url,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'result' in result:
-                    return {
-                        'success': True,
-                        'result': result['result'],
-                        'tool': tool_name,
-                        'arguments': arguments
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': result.get('error', 'Unknown error'),
-                        'tool': tool_name,
-                        'arguments': arguments
-                    }
-            else:
+            if 'error' in result:
                 return {
                     'success': False,
-                    'error': f"HTTP {response.status_code}",
+                    'error': result['error'],
                     'tool': tool_name,
                     'arguments': arguments
                 }
-                
+            else:
+                return {
+                    'success': True,
+                    'result': result.get('result', result),
+                    'tool': tool_name,
+                    'arguments': arguments
+                }
         except Exception as e:
             return {
                 'success': False,
@@ -1051,50 +1033,76 @@ def api_chat(server_id):
     
     # Check if it's a direct kubectl command
     if message.strip().startswith('kubectl'):
-        # Direct kubectl command - use MCP bridge
+        # Direct kubectl command - use MCP tools
         try:
-            # Use MCP client instead of HTTP bridge
-            result = kubectl_executor.execute_kubectl_command(message)
-            if result.get("success"):
-                response_text = result.get("result", "Command executed successfully")
-                # Create mock response object
-                class MockResponse:
-                    def __init__(self, data):
-                        self.status_code = 200
-                        self._data = data
-                    def json(self):
-                        return self._data
-                response = MockResponse({"response": response_text})
-            else:
-                # Create error response
-                class MockResponse:
-                    def __init__(self, data):
-                        self.status_code = 500
-                        self._data = data
-                    def json(self):
-                        return self._data
-                response = MockResponse({"error": result.get("error", "Command failed")})
+            # Parse kubectl command to determine which MCP tool to use
+            parts = message.strip().split()
+            if len(parts) < 2:
+                return jsonify({'error': 'Invalid kubectl command'}), 400
             
-            if response.status_code == 200:
-                result = response.json()
+            command = parts[1]  # get, create, delete, etc.
+            
+            # Map kubectl commands to MCP tools
+            if command == 'get':
+                if 'pods' in message:
+                    # Use pods_list MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('pods_list', {}))
+                    loop.close()
+                elif 'namespaces' in message:
+                    # Use namespaces_list MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('namespaces_list', {}))
+                    loop.close()
+                else:
+                    # Generic resource list
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('resources_list', {
+                        'apiVersion': 'v1',
+                        'kind': 'Pod'  # Default to Pod for now
+                    }))
+                    loop.close()
+            elif command == 'top':
+                if 'pods' in message:
+                    # Use pods_top MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('pods_top', {}))
+                    loop.close()
+                else:
+                    return jsonify({'error': 'Unsupported kubectl top command'}), 400
+            else:
+                return jsonify({'error': f'Unsupported kubectl command: {command}'}), 400
+            
+            if result.get('success'):
+                # Format the result for display
+                if 'result' in result and 'content' in result['result']:
+                    content = result['result']['content'][0]['text'] if result['result']['content'] else 'No output'
+                else:
+                    content = str(result.get('result', 'Command executed successfully'))
                 
                 # Store kubectl command in database
                 chat = Chat(
                     user_id=session['user_id'],
                     server_id=server_id,
                     user_message=message,
-                    ai_response=result.get('response', ''),
-                    mcp_tool_used='kubectl_direct',
-                    processing_method='Direct',
-                    mcp_success=result.get('status') == 'success'
+                    ai_response=content,
+                    mcp_tool_used=f'kubectl_{command}',
+                    processing_method='MCP',
+                    mcp_success=True
                 )
                 db.session.add(chat)
                 db.session.commit()
                 
-                result['chat_id'] = chat.id
-                return jsonify(result)
+                return jsonify({
+                    'response': content,
+                    'chat_id': chat.id
+                })
             else:
-                return jsonify({'error': 'MCP bridge error'}), 500
+                return jsonify({'error': result.get('error', 'Command failed')}), 500
                 
         except Exception as e:
             return jsonify({'error': str(e)}), 500
