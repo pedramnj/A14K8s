@@ -67,6 +67,7 @@
                 <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get events')">Get Events</button>
                 <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get nodes')">Get Nodes</button>
                 <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get namespaces')">Get Namespaces</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get services')">Get Services</button>
             </div>
             
             <!-- Chat Input Form -->
@@ -152,13 +153,20 @@ function addMessage(content, isBot = true, timestamp = null) {
     const messageContent = document.createElement('div');
     messageContent.className = 'message-content';
     
-    // Format the content (preserve line breaks and basic formatting)
-    const formattedContent = content
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/\n/g, '<br>');
-    
-    messageContent.innerHTML = formattedContent;
+    // Check if content looks like kubectl output
+    if (content.includes('NAMESPACE') || content.includes('NAME') && content.includes('STATUS')) {
+        // This looks like kubectl output, apply simple styling
+        const styledContent = formatKubectlOutput(content);
+        messageContent.innerHTML = styledContent;
+    } else {
+        // Format the content (preserve line breaks and basic formatting)
+        const formattedContent = content
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            .replace(/\n/g, '<br>');
+        
+        messageContent.innerHTML = formattedContent;
+    }
     messageDiv.appendChild(messageContent);
     
     if (timestamp) {
@@ -226,6 +234,46 @@ chatForm.addEventListener('submit', function(e) {
         messageInput.style.height = 'auto';
     }
 });
+
+// Simple kubectl output formatting function
+function formatKubectlOutput(content) {
+    const lines = content.split('\n');
+    let formatted = '<div class="kubectl-output">';
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i === 0 && (line.includes('NAMESPACE') || line.includes('NAME'))) {
+            // Header row
+            formatted += '<div class="header-row">' + escapeHtml(line) + '</div>';
+        } else if (line.trim()) {
+            // Data rows - add simple styling
+            let styledLine = escapeHtml(line);
+            
+            // Color status indicators
+            styledLine = styledLine.replace(/\bRunning\b/g, '<span class="status-running">Running</span>');
+            styledLine = styledLine.replace(/\bPending\b/g, '<span class="status-pending">Pending</span>');
+            styledLine = styledLine.replace(/\bError\b/g, '<span class="status-error">Error</span>');
+            
+            // Color namespaces
+            styledLine = styledLine.replace(/\bdefault\b/g, '<span class="namespace-default">default</span>');
+            styledLine = styledLine.replace(/\bkube-system\b/g, '<span class="namespace-kube-system">kube-system</span>');
+            
+            formatted += styledLine + '<br>';
+        } else {
+            formatted += '<br>';
+        }
+    }
+    
+    formatted += '</div>';
+    return formatted;
+}
+
+// Escape HTML function
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 
 // Load chat history when page loads
 loadChatHistory();

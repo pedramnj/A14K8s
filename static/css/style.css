@@ -850,6 +850,355 @@ main {
     border-color: var(--border);
 }
 
+/* Kubectl Response Styling */
+.kubectl-response {
+    margin: 1rem 0;
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    background: var(--surface);
+    border: 1px solid var(--border);
+}
+
+.kubectl-header {
+    background: var(--surface-hover);
+    padding: 1rem 1.5rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.kubectl-message {
+    padding: 1.5rem;
+    color: var(--text-secondary);
+    font-style: italic;
+    text-align: center;
+}
+
+.kubectl-table-container {
+    overflow-x: auto;
+    background: var(--surface);
+}
+
+.kubectl-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+
+.kubectl-table th {
+    background: var(--surface-hover);
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-primary);
+    border-bottom: 2px solid var(--border);
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.kubectl-table td {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    vertical-align: middle;
+}
+
+.kubectl-table tbody tr:hover {
+    background: var(--surface-hover);
+}
+
+.kubectl-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Namespace sections */
+.namespace-section {
+    margin-bottom: 1.5rem;
+}
+
+.namespace-header {
+    background: var(--primary-color);
+    color: white;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+    border-radius: var(--radius);
+}
+
+/* Status styling */
+.status-running {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+.status-pending {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
+.status-error {
+    color: var(--error-color);
+    font-weight: 500;
+}
+
+.status-not-ready {
+    color: var(--error-color);
+    font-weight: 500;
+}
+
+.status-warning {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
+.status-active {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+/* Usage level styling */
+.high-usage {
+    color: var(--error-color);
+    font-weight: 600;
+}
+
+.medium-usage {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
+.low-usage {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+.unknown-usage {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+/* Event type styling */
+.event-warning {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
+.event-normal {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+.event-info {
+    color: var(--accent-color);
+    font-weight: 500;
+}
+
+/* Role styling */
+.role-control-plane {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.role-master {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.role-worker {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+/* Namespace type styling */
+.namespace-default {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.namespace-system {
+    color: var(--warning-color);
+    font-weight: 600;
+}
+
+.namespace-kube {
+    color: var(--accent-color);
+    font-weight: 600;
+}
+
+.namespace-user {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* Service type styling */
+.service-cluster {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.service-node {
+    color: var(--accent-color);
+    font-weight: 500;
+}
+
+.service-lb {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.service-other {
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+/* Cell styling */
+.pod-name-cell,
+.node-name-cell,
+.service-name-cell,
+.namespace-name-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    font-weight: 500;
+}
+
+.resource-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.ip-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.age-cell {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.ports-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.message-cell {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.time-cell {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+.reason-cell {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.object-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.version-cell {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.ready-cell,
+.restarts-cell {
+    text-align: center;
+    font-weight: 500;
+}
+
+/* Responsive kubectl tables */
+@media (max-width: 768px) {
+    .kubectl-table-container {
+        font-size: 0.8rem;
+    }
+    
+    .kubectl-table th,
+    .kubectl-table td {
+        padding: 0.5rem 0.75rem;
+    }
+    
+    .kubectl-header {
+        padding: 0.75rem 1rem;
+        font-size: 1rem;
+    }
+    
+    .message-cell {
+        max-width: 150px;
+    }
+}
+
+/* Kubectl Output Styling - Simple Improvements */
+.kubectl-output {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin: 0.5rem 0;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    color: var(--text-secondary);
+    box-shadow: var(--shadow);
+}
+
+.kubectl-output .header-row {
+    font-weight: 600;
+    color: var(--text-primary);
+    background: var(--surface-hover);
+    padding: 0.5rem;
+    margin: -1rem -1rem 1rem -1rem;
+    border-radius: var(--radius) var(--radius) 0 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.kubectl-output .status-running {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+.kubectl-output .status-pending {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
+.kubectl-output .status-error {
+    color: var(--error-color);
+    font-weight: 500;
+}
+
+.kubectl-output .namespace-default {
+    color: var(--primary-color);
+    font-weight: 500;
+}
+
+.kubectl-output .namespace-kube-system {
+    color: var(--warning-color);
+    font-weight: 500;
+}
+
 /* Responsive spacing */
 @media (max-width: 768px) {
     .container {
