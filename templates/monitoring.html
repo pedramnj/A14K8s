@@ -125,6 +125,21 @@
                 </div>
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">🤖 RAG-Enhanced AI Recommendations</h3>
+                <small class="text-muted">Intelligent recommendations based on Kubernetes best practices</small>
+            </div>
+            <div class="card-body">
+                <div id="rag-recommendations-content">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Loading RAG recommendations...
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Anomaly Alerts -->
@@ -368,6 +383,7 @@ function loadRecommendations() {
             return response.json();
         })
         .then(data => {
+            // Load regular recommendations
             const recommendationsContent = document.getElementById('recommendations-content');
             if (data.recommendations && data.recommendations.length > 0) {
                 recommendationsContent.innerHTML = data.recommendations.map(rec => `
@@ -383,6 +399,33 @@ function loadRecommendations() {
                 recommendationsContent.innerHTML = `
                     <div class="text-center text-muted">
                         <p>No recommendations available at this time.</p>
+                    </div>
+                `;
+            }
+
+            // Load RAG-enhanced recommendations
+            const ragRecommendationsContent = document.getElementById('rag-recommendations-content');
+            if (data.rag_recommendations && data.rag_recommendations.length > 0) {
+                ragRecommendationsContent.innerHTML = data.rag_recommendations.map(rec => `
+                    <div class="card" style="margin-bottom: 1rem; border-left: 4px solid var(--primary-color);">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <h5 style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem; text-decoration: none;">${rec.action || 'RAG Recommendation'}</h5>
+                                <span class="badge badge-${rec.priority === 'high' ? 'error' : rec.priority === 'medium' ? 'warning' : rec.priority === 'critical' ? 'error' : 'info'}" style="text-decoration: none;">${rec.priority || 'medium'} priority</span>
+                            </div>
+                            <p class="text-muted mb-2" style="text-decoration: none;">${rec.message || rec.details?.recommendation || 'No description available'}</p>
+                            ${rec.details?.rag_context ? `
+                                <div class="alert alert-info" style="margin-top: 0.5rem; padding: 0.5rem; font-size: 0.875rem;">
+                                    <strong>🤖 AI Context:</strong> ${rec.details.rag_context}
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                `).join('');
+            } else {
+                ragRecommendationsContent.innerHTML = `
+                    <div class="text-center text-muted">
+                        <p>No RAG recommendations available at this time.</p>
                     </div>
                 `;
             }
