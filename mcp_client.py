@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 class MCPKubernetesClient:
     def __init__(self):
         self.available_tools = {}
-        self.server_url = "http://172.18.0.1:5002"
+        self.server_url = "http://127.0.0.1:5002"
         self.endpoint = "/mcp"
         
     async def connect_to_server(self, server_script_path: str = None):

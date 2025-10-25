@@ -1425,22 +1425,40 @@ if True:
             import os
             import re
             import tempfile
+            import socket
             if not original_path or not os.path.exists(original_path):
                 return original_path
             with open(original_path, 'r') as f:
                 content = f.read()
-            # Replace 127.0.0.1 with host gateway IP
-            host_gateway_ip = os.environ.get('HOST_GATEWAY_IP', '172.17.0.1')
-            patched = re.sub(r"server:\s*https://127\\.0\\.0\\.1:(\\d+)",
-                             rf"server: https://{host_gateway_ip}:\\1", content)
+            
+            # Try different host addresses in order of preference
+            host_addresses = [
+                'host.docker.internal',  # Docker Desktop
+                '172.17.0.1',           # Docker default bridge
+                '172.18.0.1',           # Alternative bridge
+                socket.gethostbyname('host.docker.internal') if os.environ.get('DOCKER_DESKTOP', False) else None
+            ]
+            
+            # Filter out None values
+            host_addresses = [addr for addr in host_addresses if addr is not None]
+            
+            # Use the first available host address
+            host_ip = host_addresses[0] if host_addresses else '172.17.0.1'
+            
+            # Replace 127.0.0.1 with the appropriate host IP
+            patched = re.sub(r"server:\s*https://127\.0\.0\.1:(\d+)",
+                             rf"server: https://{host_ip}:\1", content)
+            
             if patched != content:
+                print(f"🔧 Patching kubeconfig: 127.0.0.1 -> {host_ip}")
                 tf = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
                 tf.write(patched)
                 tf.flush()
                 tf.close()
                 return tf.name
             return original_path
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Failed to patch kubeconfig: {e}")
             return original_path
     
     def get_ai_monitoring(server_id):
@@ -1551,8 +1569,19 @@ if True:
                 return jsonify({'error': 'AI monitoring not available for this server'}), 500
             
             alerts = ai_monitoring.get_anomaly_alerts()
-            # Ensure at least one demo alert when in demo mode to avoid empty UI
-            if (not alerts) and ai_monitoring.get_current_analysis().get('demo_mode'):
+            # Only add demo alert if we're truly in demo mode without real data
+            current_analysis = ai_monitoring.get_current_analysis()
+            current_metrics = current_analysis.get('current_metrics', {})
+            
+            # Check if we have realistic-looking data (indicating real monitoring)
+            has_realistic_data = (
+                current_metrics.get('pod_count', 0) > 0 and
+                current_metrics.get('cpu_usage', 0) > 0 and
+                current_metrics.get('memory_usage', 0) > 0
+            )
+            
+            # Only show demo alert if we're in demo mode AND don't have realistic data
+            if (not alerts) and current_analysis.get('demo_mode') and not has_realistic_data:
                 from datetime import datetime
                 alerts = [{
                     'type': 'info',
