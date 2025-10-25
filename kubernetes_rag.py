@@ -314,6 +314,161 @@ spec:
 6. Use secrets for sensitive data
 7. Enable RBAC""",
                 "description": "Security hardening for Kubernetes pods"
+            },
+            
+            # Monitoring Best Practices
+            "monitoring_cpu_optimization": {
+                "type": "monitoring_guidance",
+                "category": "monitoring",
+                "keywords": ["cpu", "optimization", "scaling", "performance"],
+                "content": """CPU Monitoring and Optimization:
+
+1. CPU Usage Thresholds:
+   - < 30%: Underutilized - consider scaling down to save costs
+   - 30-70%: Healthy range - optimal performance
+   - 70-80%: Warning - monitor closely, prepare to scale
+   - > 80%: Critical - scale immediately or risk performance issues
+
+2. Scaling Strategies:
+   - Horizontal: Add more pods (recommended for stateless apps)
+   - Vertical: Increase CPU limits (for stateful apps)
+   - Auto-scaling: Use HPA with CPU metrics
+
+3. Cost Optimization:
+   - CPU < 30% consistently: Scale down by 30-50%
+   - CPU spikes: Check for resource limits, not just usage
+   - Burst capacity: Set limits 2-3x requests
+
+4. Common Issues:
+   - CPU throttling: Increase limits
+   - Uneven distribution: Check node affinity
+   - Memory pressure: Can cause CPU issues""",
+                "description": "CPU monitoring and optimization strategies"
+            },
+            
+            "monitoring_memory_management": {
+                "type": "monitoring_guidance",
+                "category": "monitoring",
+                "keywords": ["memory", "oom", "leaks", "optimization"],
+                "content": """Memory Monitoring and Management:
+
+1. Memory Usage Thresholds:
+   - < 50%: Healthy - good headroom
+   - 50-80%: Warning - monitor for trends
+   - 80-90%: Critical - high risk of OOM kills
+   - > 90%: Emergency - immediate action required
+
+2. Memory Issues:
+   - OOM Kills: Pod killed due to memory limit exceeded
+   - Memory Leaks: Gradual increase over time
+   - Swap Usage: Indicates memory pressure
+
+3. Optimization Strategies:
+   - Set memory requests = limits (prevent OOM)
+   - Monitor restart counts (indicates memory issues)
+   - Use memory profiling tools
+   - Check for memory leaks in applications
+
+4. Scaling Decisions:
+   - Memory > 80%: Scale up or optimize code
+   - Memory < 30%: Consider scaling down
+   - Uneven usage: Check resource distribution""",
+                "description": "Memory monitoring and optimization strategies"
+            },
+            
+            "monitoring_pod_health": {
+                "type": "monitoring_guidance",
+                "category": "monitoring",
+                "keywords": ["pods", "health", "restarts", "status"],
+                "content": """Pod Health Monitoring:
+
+1. Pod Status Indicators:
+   - Running: Healthy and ready
+   - Pending: Waiting for resources or scheduling
+   - Failed: Pod failed to start or crashed
+   - Unknown: Status unclear
+
+2. Restart Analysis:
+   - 0-2 restarts: Normal (startup issues)
+   - 3-10 restarts: Warning (application issues)
+   - > 10 restarts: Critical (configuration or code issues)
+
+3. Health Checks:
+   - Liveness Probe: Pod alive (failed = restart)
+   - Readiness Probe: Pod ready (failed = remove from service)
+   - Startup Probe: Initial startup (for slow apps)
+
+4. Troubleshooting:
+   - Check pod logs: kubectl logs <pod-name>
+   - Describe pod: kubectl describe pod <pod-name>
+   - Check events: kubectl get events
+   - Verify resource limits and requests""",
+                "description": "Pod health monitoring and troubleshooting"
+            },
+            
+            "monitoring_scaling_recommendations": {
+                "type": "monitoring_guidance",
+                "category": "monitoring",
+                "keywords": ["scaling", "recommendations", "hpa", "autoscaling"],
+                "content": """Intelligent Scaling Recommendations:
+
+1. CPU-Based Scaling:
+   - CPU > 80% for 5+ minutes: Scale up by 50%
+   - CPU < 30% for 10+ minutes: Scale down by 30%
+   - CPU spikes: Investigate before scaling
+
+2. Memory-Based Scaling:
+   - Memory > 85%: Scale up immediately
+   - Memory < 40%: Consider scaling down
+   - Memory leaks: Fix code, don't just scale
+
+3. Pod Count Optimization:
+   - Too many pods: Resource fragmentation
+   - Too few pods: Single point of failure
+   - Optimal: 3-5 pods per service
+
+4. HPA Configuration:
+   - Target CPU: 70% (industry standard)
+   - Target Memory: 80% (higher than CPU)
+   - Scale up: Aggressive (0s stabilization)
+   - Scale down: Conservative (300s stabilization)
+
+5. Cost-Benefit Analysis:
+   - Scale up cost: More resources
+   - Scale down benefit: Cost savings
+   - Balance: Performance vs cost""",
+                "description": "Intelligent scaling recommendations based on metrics"
+            },
+            
+            "monitoring_anomaly_detection": {
+                "type": "monitoring_guidance",
+                "category": "monitoring",
+                "keywords": ["anomaly", "detection", "alerts", "patterns"],
+                "content": """Anomaly Detection and Alerting:
+
+1. Normal Patterns:
+   - CPU: Gradual changes, predictable cycles
+   - Memory: Steady usage, occasional spikes
+   - Pods: Stable count, occasional restarts
+
+2. Anomaly Indicators:
+   - Sudden CPU spikes: Possible attacks or bugs
+   - Memory leaks: Gradual increase over time
+   - Pod restart storms: Configuration issues
+   - Resource exhaustion: Scaling problems
+
+3. Alert Thresholds:
+   - CPU > 90% for 2 minutes: Critical
+   - Memory > 85% for 5 minutes: Warning
+   - Pod restarts > 5 in 10 minutes: Critical
+   - Resource requests > 80%: Warning
+
+4. Response Actions:
+   - Immediate: Scale up resources
+   - Short-term: Investigate root cause
+   - Long-term: Optimize application
+   - Preventive: Set up monitoring dashboards""",
+                "description": "Anomaly detection and alerting strategies"
             }
         }
     
@@ -406,6 +561,69 @@ INSTRUCTIONS:
 Generate the manifest now:
 """
         return rag_prompt
+    
+    def get_monitoring_recommendations(
+        self, 
+        metrics: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Get intelligent monitoring recommendations using RAG
+        """
+        
+        # Build query based on current metrics
+        query_parts = []
+        if metrics.get('cpu_usage'):
+            query_parts.append(f"cpu {metrics['cpu_usage']}%")
+        if metrics.get('memory_usage'):
+            query_parts.append(f"memory {metrics['memory_usage']}%")
+        if metrics.get('pod_count'):
+            query_parts.append(f"{metrics['pod_count']} pods")
+        
+        query = " ".join(query_parts)
+        
+        # Retrieve relevant monitoring guidance
+        relevant_docs = self.retrieve_relevant_context(
+            query, 
+            category="monitoring",
+            n_results=3
+        )
+        
+        # Build monitoring-specific prompt
+        context_parts = []
+        for doc in relevant_docs:
+            context_parts.append(f"""
+=== {doc['type'].upper()}: {doc['id']} ===
+{doc['content']}
+""")
+        
+        monitoring_prompt = f"""You are a Kubernetes monitoring expert. Analyze the current cluster metrics and provide intelligent recommendations.
+
+CURRENT CLUSTER METRICS:
+- CPU Usage: {metrics.get('cpu_usage', 'N/A')}%
+- Memory Usage: {metrics.get('memory_usage', 'N/A')}%
+- Pod Count: {metrics.get('pod_count', 'N/A')}
+- Health Score: {metrics.get('health_score', 'N/A')}%
+
+RELEVANT MONITORING KNOWLEDGE:
+{''.join(context_parts)}
+
+INSTRUCTIONS:
+1. Analyze the current metrics against best practices
+2. Provide specific, actionable recommendations
+3. Include priority levels (low, medium, high, critical)
+4. Suggest concrete actions (scale up/down, investigate, optimize)
+5. Consider cost implications
+6. Provide reasoning for each recommendation
+
+Generate intelligent recommendations:
+"""
+        
+        return {
+            "query": query,
+            "relevant_docs": relevant_docs,
+            "prompt": monitoring_prompt,
+            "metrics": metrics
+        }
     
     def learn_from_manifest(self, manifest: str, metadata: Dict[str, Any]):
         """Learn from user-created or cluster manifests"""
