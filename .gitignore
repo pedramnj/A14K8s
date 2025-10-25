@@ -1,0 +1,92 @@
+<<<<<<< HEAD
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git
+.mypy_cache
+.pytest_cache
+.hypothesis
+.DS_Store
+*.sqlite
+*.db
+instance/
+*.out
+*.pid
+/tmp/
+
+=======
+# Backup files - exclude all backup variations
+*_backup*.py
+*_BACKUP*.py
+*_final*.py
+*_working*.py
+*_clean*.py
+*_fixed*.py
+*_original*.py
+*_simple*.py
+*_broken*.py
+*_mcp*.py
+*_stdio*.py
+
+# Temporary and fix files
+*.tmp
+*.temp
+*_fix.py
+*_test.py
+
+# Database and sensitive config files
+instance/
+kube/
+.env
+.env.backup
+admin.conf
+*.conf
+
+# Backup directories
+backups/
+*_BACKUP_*/
+
+# PKI and certificates
+pki/
+*.pem
+*.key
+*.crt
+
+# Logs
+*.log
+logs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+__pycache__/
+*.backup
+*.bak_*
+*_backup.html
+*.backup_*
+>>>>>>> f8761c7f31a8236a97b4c215bb91d4a42db292fb
+miniconda.sh
+*.sh

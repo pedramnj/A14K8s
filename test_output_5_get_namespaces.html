@@ -1,0 +1,47 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kubectl Formatting Test - get namespaces</title>
+    <link rel="stylesheet" href="static/css/style.css">
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 2rem;
+            background: #f8fafc;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-title {
+            background: #1e293b;
+            color: white;
+            padding: 1rem;
+            border-radius: 0.5rem 0.5rem 0 0;
+            margin: 0;
+        }
+        .test-content {
+            background: white;
+            padding: 1rem;
+            border: 1px solid #e2e8f0;
+            border-top: none;
+            border-radius: 0 0 0.5rem 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h2 class="test-title">Command: get namespaces</h2>
+        <div class="test-content">
+            NAME                 STATUS   AGE
+default              Active   2d22h
+kube-system          Active   2d22h
+kube-public          Active   2d22h
+kube-node-lease      Active   2d22h
+local-path-storage   Active   2d22h
+web                  Active   2d22h
+        </div>
+    </div>
+</body>
+</html>

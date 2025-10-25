@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block title %}Add Cluster - AI4K8s{% endblock %}
+
+{% block content %}
+<div style="max-width: 600px; margin: 0 auto;">
+    <div class="d-flex align-items-center mb-4">
+        <a href="{{ url_for('index') }}" class="btn btn-secondary" style="margin-right: 1rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                <path d="M19 12H5M12 19L5 12L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Back
+        </a>
+        <div>
+            <h1 style="font-size: 2rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">Add New Cluster</h1>
+            <p class="text-muted mb-0">Connect your Kubernetes cluster to AI4K8s for intelligent management</p>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Cluster Configuration</h3>
+            <p class="text-muted mb-0">Provide the details of your Kubernetes cluster</p>
+        </div>
+        
+        <div class="card-body">
+            <form method="POST">
+                <div class="form-group">
+                    <label for="name" class="form-label">Cluster Name</label>
+                    <input type="text" id="name" name="name" class="form-control" placeholder="e.g., Production Cluster, Development Environment" required>
+                    <small class="text-muted">A friendly name to identify this cluster</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="endpoint" class="form-label">Kubernetes Endpoint</label>
+                    <input type="url" id="endpoint" name="endpoint" class="form-control" placeholder="https://your-cluster.example.com:6443" required>
+                    <small class="text-muted">The API server endpoint URL for your cluster</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="namespace" class="form-label">Default Namespace</label>
+                    <input type="text" id="namespace" name="namespace" class="form-control" placeholder="default" value="default">
+                    <small class="text-muted">The default namespace to use for operations</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="description" class="form-label">Description (Optional)</label>
+                    <textarea id="description" name="description" class="form-control" rows="3" placeholder="Describe this cluster's purpose, environment, or any relevant details..."></textarea>
+                </div>
+                
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                            <path d="M12 4V20M4 12H20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                        Add Cluster
+                    </button>
+                    <a href="{{ url_for('index') }}" class="btn btn-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Help Section -->
+    <div class="card mt-4">
+        <div class="card-header">
+            <h4 style="font-size: 1.125rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Need Help?</h4>
+            <p class="text-muted mb-0">Common cluster configuration scenarios</p>
+        </div>
+        
+        <div class="card-body">
+            <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem;">
+                <div>
+                    <h5 style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Local Development</h5>
+                    <p class="text-muted" style="font-size: 0.875rem; margin-bottom: 0.5rem;">For local clusters like minikube, kind, or k3s:</p>
+                    <code style="background: var(--surface-hover); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem;">https://localhost:6443</code>
+                </div>
+                
+                <div>
+                    <h5 style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">Cloud Providers</h5>
+                    <p class="text-muted" style="font-size: 0.875rem; margin-bottom: 0.5rem;">For managed Kubernetes services:</p>
+                    <code style="background: var(--surface-hover); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem;">https://your-cluster.eks.amazonaws.com</code>
+                </div>
+                
+                <div>
+                    <h5 style="font-size: 1rem; font-weight: 600; color: var(--text-primary); margin-bottom: 0.5rem;">On-Premises</h5>
+                    <p class="text-muted" style="font-size: 0.875rem; margin-bottom: 0.5rem;">For self-hosted clusters:</p>
+                    <code style="background: var(--surface-hover); padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.8rem;">https://k8s.company.com:6443</code>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

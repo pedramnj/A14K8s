@@ -1,0 +1,83 @@
+Collecting numpy
+  Downloading numpy-2.0.2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (60 kB)
+Collecting pandas
+  Downloading pandas-2.3.3-cp39-cp39-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl.metadata (91 kB)
+Collecting scikit-learn
+  Downloading scikit_learn-1.6.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (18 kB)
+Collecting kubernetes
+  Downloading kubernetes-34.1.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Collecting python-dateutil>=2.8.2 (from pandas)
+  Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting pytz>=2020.1 (from pandas)
+  Downloading pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting tzdata>=2022.7 (from pandas)
+  Downloading tzdata-2025.2-py2.py3-none-any.whl.metadata (1.4 kB)
+Collecting scipy>=1.6.0 (from scikit-learn)
+  Downloading scipy-1.13.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (60 kB)
+Collecting joblib>=1.2.0 (from scikit-learn)
+  Downloading joblib-1.5.2-py3-none-any.whl.metadata (5.6 kB)
+Collecting threadpoolctl>=3.1.0 (from scikit-learn)
+  Downloading threadpoolctl-3.6.0-py3-none-any.whl.metadata (13 kB)
+Requirement already satisfied: certifi>=14.05.14 in ./venv/lib/python3.9/site-packages (from kubernetes) (2025.10.5)
+Collecting six>=1.9.0 (from kubernetes)
+  Downloading six-1.17.0-py2.py3-none-any.whl.metadata (1.7 kB)
+Collecting pyyaml>=5.4.1 (from kubernetes)
+  Downloading pyyaml-6.0.3-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (2.4 kB)
+Collecting google-auth>=1.0.1 (from kubernetes)
+  Downloading google_auth-2.41.1-py2.py3-none-any.whl.metadata (6.6 kB)
+Collecting websocket-client!=0.40.0,!=0.41.*,!=0.42.*,>=0.32.0 (from kubernetes)
+  Downloading websocket_client-1.9.0-py3-none-any.whl.metadata (8.3 kB)
+Requirement already satisfied: requests in ./venv/lib/python3.9/site-packages (from kubernetes) (2.31.0)
+Collecting requests-oauthlib (from kubernetes)
+  Downloading requests_oauthlib-2.0.0-py2.py3-none-any.whl.metadata (11 kB)
+Collecting urllib3<2.4.0,>=1.24.2 (from kubernetes)
+  Downloading urllib3-2.3.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting durationpy>=0.7 (from kubernetes)
+  Downloading durationpy-0.10-py3-none-any.whl.metadata (340 bytes)
+Collecting cachetools<7.0,>=2.0.0 (from google-auth>=1.0.1->kubernetes)
+  Downloading cachetools-6.2.1-py3-none-any.whl.metadata (5.5 kB)
+Collecting pyasn1-modules>=0.2.1 (from google-auth>=1.0.1->kubernetes)
+  Downloading pyasn1_modules-0.4.2-py3-none-any.whl.metadata (3.5 kB)
+Collecting rsa<5,>=3.1.4 (from google-auth>=1.0.1->kubernetes)
+  Downloading rsa-4.9.1-py3-none-any.whl.metadata (5.6 kB)
+Collecting pyasn1>=0.1.3 (from rsa<5,>=3.1.4->google-auth>=1.0.1->kubernetes)
+  Downloading pyasn1-0.6.1-py3-none-any.whl.metadata (8.4 kB)
+Requirement already satisfied: charset-normalizer<4,>=2 in ./venv/lib/python3.9/site-packages (from requests->kubernetes) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in ./venv/lib/python3.9/site-packages (from requests->kubernetes) (3.11)
+Collecting oauthlib>=3.0.0 (from requests-oauthlib->kubernetes)
+  Downloading oauthlib-3.3.1-py3-none-any.whl.metadata (7.9 kB)
+Downloading numpy-2.0.2-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (19.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 19.5/19.5 MB 216.8 MB/s  0:00:00
+Downloading pandas-2.3.3-cp39-cp39-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl (12.8 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 12.8/12.8 MB 221.8 MB/s  0:00:00
+Downloading scikit_learn-1.6.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.5 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 13.5/13.5 MB 222.3 MB/s  0:00:00
+Downloading kubernetes-34.1.0-py2.py3-none-any.whl (2.0 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.0/2.0 MB 136.4 MB/s  0:00:00
+Downloading urllib3-2.3.0-py3-none-any.whl (128 kB)
+Downloading durationpy-0.10-py3-none-any.whl (3.9 kB)
+Downloading google_auth-2.41.1-py2.py3-none-any.whl (221 kB)
+Downloading cachetools-6.2.1-py3-none-any.whl (11 kB)
+Downloading rsa-4.9.1-py3-none-any.whl (34 kB)
+Downloading joblib-1.5.2-py3-none-any.whl (308 kB)
+Downloading pyasn1-0.6.1-py3-none-any.whl (83 kB)
+Downloading pyasn1_modules-0.4.2-py3-none-any.whl (181 kB)
+Downloading python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Downloading pytz-2025.2-py2.py3-none-any.whl (509 kB)
+Downloading pyyaml-6.0.3-cp39-cp39-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (750 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 750.8/750.8 kB 55.1 MB/s  0:00:00
+Downloading scipy-1.13.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (38.6 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 38.6/38.6 MB 260.3 MB/s  0:00:00
+Downloading six-1.17.0-py2.py3-none-any.whl (11 kB)
+Downloading threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
+Downloading tzdata-2025.2-py2.py3-none-any.whl (347 kB)
+Downloading websocket_client-1.9.0-py3-none-any.whl (82 kB)
+Downloading requests_oauthlib-2.0.0-py2.py3-none-any.whl (24 kB)
+Downloading oauthlib-3.3.1-py3-none-any.whl (160 kB)
+Installing collected packages: pytz, durationpy, websocket-client, urllib3, tzdata, threadpoolctl, six, pyyaml, pyasn1, oauthlib, numpy, joblib, cachetools, scipy, rsa, python-dateutil, pyasn1-modules, scikit-learn, requests-oauthlib, pandas, google-auth, kubernetes
+  Attempting uninstall: urllib3
+    Found existing installation: urllib3 2.5.0
+    Uninstalling urllib3-2.5.0:
+      Successfully uninstalled urllib3-2.5.0
+
+Successfully installed cachetools-6.2.1 durationpy-0.10 google-auth-2.41.1 joblib-1.5.2 kubernetes-34.1.0 numpy-2.0.2 oauthlib-3.3.1 pandas-2.3.3 pyasn1-0.6.1 pyasn1-modules-0.4.2 python-dateutil-2.9.0.post0 pytz-2025.2 pyyaml-6.0.3 requests-oauthlib-2.0.0 rsa-4.9.1 scikit-learn-1.6.1 scipy-1.13.1 six-1.17.0 threadpoolctl-3.6.0 tzdata-2025.2 urllib3-2.3.0 websocket-client-1.9.0

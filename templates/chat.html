@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+
+{% block title %}AI Chat - {{ server.name }} - AI4K8s{% endblock %}
+
+{% block content %}
+<div class="d-grid" style="grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1 style="font-size: 2rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">AI Assistant</h1>
+            <p class="text-muted">Chat with your AI-powered Kubernetes assistant for {{ server.name }}</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{{ url_for('server_detail', server_id=server.id) }}" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M15 12C15 13.6569 13.6569 15 12 15C10.3431 15 9 13.6569 9 12C9 10.3431 10.3431 9 12 9C13.6569 9 15 10.3431 15 12Z"/>
+                    <path d="M2.458 12C3.732 7.943 7.523 5 12 5C16.478 5 20.268 7.943 21.542 12C20.268 16.057 16.478 19 12 19C7.523 19 3.732 16.057 2.458 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Cluster Details
+            </a>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Dashboard
+            </a>
+        </div>
+    </div>
+
+    <!-- Chat Container -->
+    <div class="chat-container">
+        <!-- Chat Messages -->
+        <div id="chat-messages" class="chat-messages">
+            <div class="message bot">
+                <div class="message-avatar">AI</div>
+                <div class="message-content">
+                    <p>Hello! I'm your Kubernetes AI assistant. I can help you manage your <strong>{{ server.name }}</strong> cluster.</p>
+                    <p>You can use direct kubectl commands or natural language. Try:</p>
+                    <ul style="margin: 0.5rem 0; padding-left: 1.5rem;">
+                        <li><code>kubectl get pods</code> - List all pods</li>
+                        <li><code>kubectl top pods</code> - Show resource usage</li>
+                        <li><code>kubectl get events</code> - View recent events</li>
+                        <li>"Show me all pods" - Natural language queries</li>
+                    </ul>
+                </div>
+                <div class="message-time">Just now</div>
+            </div>
+        </div>
+
+        <!-- AI Thinking Indicator -->
+        <div id="ai-thinking" class="ai-thinking" style="display: none;">
+            <div class="ai-thinking-content">
+                <div class="ai-thinking-dots">
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                    <span class="dot"></span>
+                </div>
+                <span class="ai-thinking-text">AI is thinking</span>
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="chat-input">
+            <div class="quick-actions">
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get pods')">Get Pods</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl top pods')">Top Pods</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get events')">Get Events</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get nodes')">Get Nodes</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get namespaces')">Get Namespaces</button>
+                <button class="quick-action-btn" onclick="sendQuickMessage('kubectl get services')">Get Services</button>
+            </div>
+            
+            <!-- Chat Input Form -->
+            <form id="chat-form" class="chat-form">
+                <textarea 
+                    id="message-input" 
+                    class="chat-input-field" 
+                    placeholder="Ask me anything about your Kubernetes cluster..."
+                    rows="1"
+                    style="min-height: 2.5rem; max-height: 6rem; resize: none;"
+                ></textarea>
+                <button type="submit" id="send-button" class="chat-send-btn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M22 2L11 13M22 2L15 22L11 13M22 2L2 9L11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+const serverId = {{ server.id }};
+const chatMessages = document.getElementById('chat-messages');
+const messageInput = document.getElementById('message-input');
+const chatForm = document.getElementById('chat-form');
+const sendButton = document.getElementById('send-button');
+const aiThinking = document.getElementById('ai-thinking');
+
+// Auto-resize textarea
+messageInput.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 6 * 16) + 'px';
+});
+
+// Load chat history when page loads
+function loadChatHistory() {
+    fetch(`/api/chat_history/${serverId}`, {
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.chats && data.chats.length > 0) {
+            // Clear the default welcome message
+            chatMessages.innerHTML = '';
+            
+            // Load chat history in reverse order (oldest first)
+            data.chats.reverse().forEach(chat => {
+                // Add user message
+                addMessage(chat.user_message, false, new Date(chat.timestamp).toLocaleTimeString());
+                
+                // Add AI response
+                addMessage(chat.ai_response, true, new Date(chat.timestamp).toLocaleTimeString());
+            });
+            
+            // Scroll to bottom
+            scrollToBottom();
+        }
+    })
+    .catch(error => {
+        console.error('Error loading chat history:', error);
+    });
+}
+
+// Scroll to bottom of chat
+function scrollToBottom() {
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function addMessage(content, isBot = true, timestamp = null) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${isBot ? 'bot' : 'user'}`;
+    
+    const avatar = document.createElement('div');
+    avatar.className = 'message-avatar';
+    avatar.textContent = isBot ? 'AI' : 'You';
+    messageDiv.appendChild(avatar);
+    
+    const messageContent = document.createElement('div');
+    messageContent.className = 'message-content';
+    
+    // Check if content looks like kubectl output
+    if (content.includes('NAMESPACE') || content.includes('NAME') && content.includes('STATUS')) {
+        // This looks like kubectl output, apply simple styling
+        const styledContent = formatKubectlOutput(content);
+        messageContent.innerHTML = styledContent;
+    } else {
+        // Format the content (preserve line breaks and basic formatting)
+        const formattedContent = content
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            .replace(/\n/g, '<br>');
+        
+        messageContent.innerHTML = formattedContent;
+    }
+    messageDiv.appendChild(messageContent);
+    
+    if (timestamp) {
+        const timeDiv = document.createElement('div');
+        timeDiv.className = 'message-time';
+        timeDiv.textContent = timestamp;
+        messageDiv.appendChild(timeDiv);
+    }
+    
+    chatMessages.appendChild(messageDiv);
+    scrollToBottom();
+}
+
+function sendMessage(message) {
+    if (!message.trim()) return;
+    
+    // Add user message
+    addMessage(message, false, new Date().toLocaleTimeString());
+    
+    // Show AI thinking indicator
+    aiThinking.style.display = 'block';
+    messageInput.disabled = true;
+    sendButton.disabled = true;
+    sendButton.style.opacity = '0.5';
+    
+    // Send to server
+    fetch(`/api/chat/${serverId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ message: message })
+    })
+    .then(response => response.json())
+    .then(data => {
+        // Add AI response
+        addMessage(data.response || 'Sorry, I encountered an error processing your request.', true, new Date().toLocaleTimeString());
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        addMessage('Sorry, I encountered an error processing your request. Please try again.', true, new Date().toLocaleTimeString());
+    })
+    .finally(() => {
+        // Hide AI thinking indicator and re-enable input
+        aiThinking.style.display = 'none';
+        messageInput.disabled = false;
+        sendButton.disabled = false;
+        sendButton.style.opacity = '1';
+        messageInput.focus();
+    });
+}
+
+function sendQuickMessage(message) {
+    sendMessage(message);
+}
+
+// Event listeners
+chatForm.addEventListener('submit', function(e) {
+    e.preventDefault();
+    const message = messageInput.value.trim();
+    if (message) {
+        sendMessage(message);
+        messageInput.value = '';
+        messageInput.style.height = 'auto';
+    }
+});
+
+// Simple kubectl output formatting function
+function formatKubectlOutput(content) {
+    const lines = content.split('\n');
+    let formatted = '<div class="kubectl-output">';
+    
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (i === 0 && (line.includes('NAMESPACE') || line.includes('NAME'))) {
+            // Header row
+            formatted += '<div class="header-row">' + escapeHtml(line) + '</div>';
+        } else if (line.trim()) {
+            // Data rows - add simple styling
+            let styledLine = escapeHtml(line);
+            
+            // Color status indicators
+            styledLine = styledLine.replace(/\bRunning\b/g, '<span class="status-running">Running</span>');
+            styledLine = styledLine.replace(/\bPending\b/g, '<span class="status-pending">Pending</span>');
+            styledLine = styledLine.replace(/\bError\b/g, '<span class="status-error">Error</span>');
+            
+            // Color namespaces
+            styledLine = styledLine.replace(/\bdefault\b/g, '<span class="namespace-default">default</span>');
+            styledLine = styledLine.replace(/\bkube-system\b/g, '<span class="namespace-kube-system">kube-system</span>');
+            
+            formatted += styledLine + '<br>';
+        } else {
+            formatted += '<br>';
+        }
+    }
+    
+    formatted += '</div>';
+    return formatted;
+}
+
+// Escape HTML function
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Load chat history when page loads
+loadChatHistory();
+
+// Focus input on load
+messageInput.focus();
+</script>
+{% endblock %}

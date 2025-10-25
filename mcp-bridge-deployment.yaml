@@ -1,0 +1,530 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-bridge
+  namespace: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-bridge
+  template:
+    metadata:
+      labels:
+        app: mcp-bridge
+    spec:
+      serviceAccountName: mcp-bridge-sa
+      containers:
+      - name: mcp-bridge
+        image: python:3.11-slim
+        command: ["sh", "-c", "pip install kubernetes flask && python3 /tmp/bridge.py"]
+        env:
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: anthropic-secret
+              key: api-key
+        volumeMounts:
+        - name: bridge-script
+          mountPath: /tmp/bridge.py
+          subPath: bridge.py
+        ports:
+        - containerPort: 5001
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5001
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: bridge-script
+        configMap:
+          name: mcp-bridge-script
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-bridge
+  namespace: web
+spec:
+  selector:
+    app: mcp-bridge
+  ports:
+  - port: 5001
+    targetPort: 5001
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-bridge-script
+  namespace: web
+data:
+  bridge.py: |
+    #!/usr/bin/env python3
+    """
+    MCP Bridge that executes Kubernetes operations
+    """
+
+    import json
+    import logging
+    from typing import Any, Dict, List, Optional
+    from kubernetes import client, config
+    from kubernetes.client.rest import ApiException
+    from flask import Flask, request, jsonify
+
+    # Configure logging
+    logging.basicConfig(level=logging.INFO)
+    logger = logging.getLogger(__name__)
+
+    app = Flask(__name__)
+
+    class KubernetesBridge:
+        """Kubernetes operations bridge"""
+        
+        def __init__(self):
+            self.k8s_client = None
+            self.apps_client = None
+            self.connected = False
+            self._init_k8s_client()
+        
+        def _init_k8s_client(self):
+            """Initialize Kubernetes client"""
+            try:
+                config.load_incluster_config()
+                logger.info("Using in-cluster Kubernetes config")
+            except:
+                try:
+                    config.load_kube_config()
+                    logger.info("Using kubeconfig")
+                except Exception as e:
+                    logger.error(f"Failed to load Kubernetes config: {e}")
+                    return
+            
+            try:
+                self.k8s_client = client.CoreV1Api()
+                self.apps_client = client.AppsV1Api()
+                self.connected = True
+                logger.info("Kubernetes API client initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize Kubernetes client: {e}")
+        
+        def get_pods(self, namespace: str = "default") -> Dict[str, Any]:
+            """Get pods in namespace"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                pods = self.k8s_client.list_namespaced_pod(namespace=namespace)
+                pod_list = []
+                
+                for pod in pods.items:
+                    pod_info = {
+                        "name": pod.metadata.name,
+                        "namespace": pod.metadata.namespace,
+                        "status": pod.status.phase,
+                        "ready": self._get_ready_status(pod),
+                        "restarts": self._get_restart_count(pod),
+                        "age": self._get_pod_age(pod),
+                        "node": pod.spec.node_name,
+                        "ip": pod.status.pod_ip
+                    }
+                    pod_list.append(pod_info)
+                
+                return {
+                    "pods": pod_list,
+                    "total": len(pod_list),
+                    "namespace": namespace
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def get_pod(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+            """Get specific pod by name"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                pod = self.k8s_client.read_namespaced_pod(name=name, namespace=namespace)
+                return {
+                    "pods": [{
+                        "name": pod.metadata.name,
+                        "namespace": pod.metadata.namespace,
+                        "status": pod.status.phase,
+                        "ready": self._get_ready_status(pod),
+                        "restarts": self._get_restart_count(pod),
+                        "age": self._get_pod_age(pod),
+                        "node": pod.spec.node_name,
+                        "ip": pod.status.pod_ip
+                    }],
+                    "total": 1
+                }
+            except ApiException as e:
+                if e.status == 404:
+                    return {"error": f"Pod {name} not found in namespace {namespace}"}
+                return {"error": f"API error: {e.reason}"}
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def get_pod_logs(self, name: str, namespace: str = "default", lines: int = 100) -> Dict[str, Any]:
+            """Get pod logs"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                logs = self.k8s_client.read_namespaced_pod_log(
+                    name=name,
+                    namespace=namespace,
+                    tail_lines=lines
+                )
+                
+                return {
+                    "pod": name,
+                    "namespace": namespace,
+                    "logs": logs,
+                    "lines_requested": lines,
+                    "lines_returned": len(logs.splitlines()) if logs else 0
+                }
+            except ApiException as e:
+                if e.status == 404:
+                    return {"error": f"Pod {name} not found in namespace {namespace}"}
+                return {"error": f"API error: {e.reason}"}
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def delete_pod(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+            """Delete pod"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                self.k8s_client.delete_namespaced_pod(name=name, namespace=namespace)
+                return {
+                    "action": "deleted",
+                    "pod": name,
+                    "namespace": namespace,
+                    "status": "success"
+                }
+            except ApiException as e:
+                if e.status == 404:
+                    return {"error": f"Pod {name} not found in namespace {namespace}"}
+                return {"error": f"API error: {e.reason}"}
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def get_pod_top(self, name: str = None, namespace: str = "default") -> Dict[str, Any]:
+            """Get pod resource usage"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                if name:
+                    pod = self.k8s_client.read_namespaced_pod(name=name, namespace=namespace)
+                    pods = [pod]
+                else:
+                    pods = self.k8s_client.list_namespaced_pod(namespace=namespace).items
+                
+                pod_metrics = []
+                for pod in pods:
+                    cpu_request = "0m"
+                    memory_request = "0Mi"
+                    cpu_limit = "0m"
+                    memory_limit = "0Mi"
+                    
+                    if pod.spec.containers:
+                        container = pod.spec.containers[0]
+                        if container.resources:
+                            if container.resources.requests:
+                                cpu_request = container.resources.requests.get('cpu', '0m')
+                                memory_request = container.resources.requests.get('memory', '0Mi')
+                            if container.resources.limits:
+                                cpu_limit = container.resources.limits.get('cpu', '0m')
+                                memory_limit = container.resources.limits.get('memory', '0Mi')
+                    
+                    pod_metrics.append({
+                        "name": pod.metadata.name,
+                        "namespace": pod.metadata.namespace,
+                        "status": pod.status.phase,
+                        "cpu_request": cpu_request,
+                        "memory_request": memory_request,
+                        "cpu_limit": cpu_limit,
+                        "memory_limit": memory_limit,
+                        "note": "Real-time metrics require metrics-server. Showing resource requests/limits instead."
+                    })
+                
+                return {
+                    "namespace": namespace,
+                    "pod_name": name,
+                    "metrics": pod_metrics,
+                    "total_pods": len(pod_metrics),
+                    "note": "Showing resource requests/limits. For real-time CPU/memory usage, install metrics-server."
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def exec_into_pod(self, name: str, namespace: str, command: str, container: str = None) -> Dict[str, Any]:
+            """Execute command in pod"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                from kubernetes.stream import stream
+                
+                exec_command = ['/bin/sh', '-c', command]
+                
+                resp = stream(
+                    self.k8s_client.connect_get_namespaced_pod_exec,
+                    name,
+                    namespace,
+                    command=exec_command,
+                    container=container,
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False
+                )
+                
+                return {
+                    "pod": name,
+                    "namespace": namespace,
+                    "container": container,
+                    "command": command,
+                    "output": resp,
+                    "success": True
+                }
+            except Exception as e:
+                return {
+                    "error": f"Failed to exec into pod: {str(e)}",
+                    "pod": name,
+                    "namespace": namespace,
+                    "command": command,
+                    "success": False
+                }
+        
+        def run_container_in_pod(self, image: str, name: str = None, namespace: str = "default", 
+                               command: str = None, args: list = None) -> Dict[str, Any]:
+            """Run container in pod"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                import uuid
+                from kubernetes.client import V1Pod, V1PodSpec, V1Container, V1ObjectMeta
+                
+                if not name:
+                    name = f"run-{image.split('/')[-1].split(':')[0]}-{str(uuid.uuid4())[:8]}"
+                
+                container_spec = V1Container(
+                    name=name,
+                    image=image,
+                    command=[command] if command else None,
+                    args=args
+                )
+                
+                pod_spec = V1PodSpec(
+                    containers=[container_spec],
+                    restart_policy="Never"
+                )
+                
+                pod_metadata = V1ObjectMeta(
+                    name=name,
+                    namespace=namespace,
+                    labels={
+                        "app": "run-container",
+                        "image": image.split('/')[-1].split(':')[0]
+                    }
+                )
+                
+                pod = V1Pod(
+                    metadata=pod_metadata,
+                    spec=pod_spec
+                )
+                
+                created_pod = self.k8s_client.create_namespaced_pod(
+                    namespace=namespace,
+                    body=pod
+                )
+                
+                return {
+                    "action": "created",
+                    "pod_name": name,
+                    "namespace": namespace,
+                    "image": image,
+                    "command": command,
+                    "args": args,
+                    "status": "success",
+                    "pod_uid": created_pod.metadata.uid
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def _get_ready_status(self, pod) -> str:
+            """Get pod ready status"""
+            if not pod.status.container_statuses:
+                return "0/0"
+            
+            ready_count = sum(1 for cs in pod.status.container_statuses if cs.ready)
+            total_count = len(pod.status.container_statuses)
+            return f"{ready_count}/{total_count}"
+        
+        def _get_restart_count(self, pod) -> int:
+            """Get pod restart count"""
+            if not pod.status.container_statuses:
+                return 0
+            
+            return sum(cs.restart_count for cs in pod.status.container_statuses)
+        
+        def get_events(self, namespace: str = "default") -> Dict[str, Any]:
+            """Get Kubernetes events"""
+            if not self.connected:
+                return {"error": "Kubernetes client not available"}
+            
+            try:
+                events = self.k8s_client.list_namespaced_event(namespace=namespace)
+                event_list = []
+                
+                for event in events.items:
+                    event_info = {
+                        "name": event.metadata.name,
+                        "namespace": event.metadata.namespace,
+                        "type": event.type,
+                        "reason": event.reason,
+                        "message": event.message,
+                        "source": f"{event.source.component}" if event.source and event.source.component else "Unknown",
+                        "count": event.count,
+                        "first_timestamp": event.first_timestamp.isoformat() if event.first_timestamp else None,
+                        "last_timestamp": event.last_timestamp.isoformat() if event.last_timestamp else None,
+                        "involved_object": {
+                            "kind": event.involved_object.kind,
+                            "name": event.involved_object.name,
+                            "namespace": event.involved_object.namespace
+                        } if event.involved_object else None
+                    }
+                    event_list.append(event_info)
+                
+                # Sort events by last timestamp (most recent first)
+                event_list.sort(key=lambda x: x["last_timestamp"] or "", reverse=True)
+                
+                return {
+                    "events": event_list,
+                    "total": len(event_list),
+                    "namespace": namespace
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def _get_pod_age(self, pod) -> str:
+            """Get pod age"""
+            try:
+                from datetime import datetime
+                creation_timestamp = pod.metadata.creation_timestamp
+                now = datetime.now(creation_timestamp.tzinfo)
+                age = now - creation_timestamp
+                
+                if age.days > 0:
+                    return f"{age.days}d"
+                elif age.seconds > 3600:
+                    hours = age.seconds // 3600
+                    return f"{hours}h"
+                elif age.seconds > 60:
+                    minutes = age.seconds // 60
+                    return f"{minutes}m"
+                else:
+                    return f"{age.seconds}s"
+            except Exception:
+                return "Unknown"
+
+    # Initialize the Kubernetes bridge
+    k8s_bridge = KubernetesBridge()
+
+    @app.route('/health', methods=['GET'])
+    def health():
+        return jsonify({"status": "healthy"})
+
+    @app.route('/api/chat', methods=['POST'])
+    def chat():
+        try:
+            data = request.get_json()
+            message = data.get('message', '')
+            
+            logger.info(f"Received message: {message}")
+            
+            # Direct command execution - no AI involved
+            if message.startswith('kubectl get pods'):
+                result = k8s_bridge.get_pods("default")
+            elif message.startswith('kubectl get pod '):
+                pod_name = message.split()[-1]
+                result = k8s_bridge.get_pod(pod_name, "default")
+            elif message.startswith('kubectl logs '):
+                pod_name = message.split()[-1]
+                result = k8s_bridge.get_pod_logs(pod_name, "default")
+            elif message.startswith('kubectl delete pod '):
+                pod_name = message.split()[-1]
+                result = k8s_bridge.delete_pod(pod_name, "default")
+            elif message.startswith('kubectl top pods'):
+                result = k8s_bridge.get_pod_top(None, "default")
+            elif message.startswith('kubectl top pod '):
+                pod_name = message.split()[-1]
+                result = k8s_bridge.get_pod_top(pod_name, "default")
+            elif message.startswith('kubectl exec '):
+                # Parse exec command: kubectl exec pod-name -- command
+                parts = message.split()
+                if len(parts) >= 5 and '--' in parts:
+                    pod_name = parts[2]
+                    command = ' '.join(parts[parts.index('--') + 1:])
+                    result = k8s_bridge.exec_into_pod(pod_name, "default", command)
+                else:
+                    result = {"error": "Invalid exec command format"}
+            elif message.startswith('kubectl run '):
+                # Parse run command: kubectl run pod-name --image=image
+                parts = message.split()
+                if len(parts) >= 4:
+                    pod_name = parts[2]
+                    image = parts[3].split('=')[1] if '=' in parts[3] else parts[3]
+                    result = k8s_bridge.run_container_in_pod(image, pod_name, "default")
+                else:
+                    result = {"error": "Invalid run command format"}
+            elif message.startswith('kubectl get events'):
+                # Parse events command: kubectl get events [-n namespace]
+                namespace = "default"
+                if '-n' in message:
+                    parts = message.split()
+                    if '-n' in parts:
+                        ns_idx = parts.index('-n')
+                        if ns_idx + 1 < len(parts):
+                            namespace = parts[ns_idx + 1]
+                result = k8s_bridge.get_events(namespace)
+            else:
+                result = {"error": "Command not supported"}
+            
+            logger.info(f"Command result: {result}")
+            
+            return jsonify({
+                "response": json.dumps(result, indent=2),
+                "status": "success"
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in chat endpoint: {e}")
+            return jsonify({
+                "response": f"Error: {str(e)}",
+                "status": "error"
+            })
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=5001, debug=True)

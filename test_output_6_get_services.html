@@ -1,0 +1,43 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Kubectl Formatting Test - get services</title>
+    <link rel="stylesheet" href="static/css/style.css">
+    <style>
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 2rem;
+            background: #f8fafc;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .test-title {
+            background: #1e293b;
+            color: white;
+            padding: 1rem;
+            border-radius: 0.5rem 0.5rem 0 0;
+            margin: 0;
+        }
+        .test-content {
+            background: white;
+            padding: 1rem;
+            border: 1px solid #e2e8f0;
+            border-top: none;
+            border-radius: 0 0 0.5rem 0.5rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h2 class="test-title">Command: get services</h2>
+        <div class="test-content">
+            NAME         TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+kubernetes   ClusterIP   10.96.0.1    <none>        443/TCP   2d22h
+nginx        ClusterIP   10.96.0.100  <none>        80/TCP    2d22h
+        </div>
+    </div>
+</body>
+</html>
