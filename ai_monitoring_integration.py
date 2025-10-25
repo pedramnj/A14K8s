@@ -25,6 +25,7 @@ from predictive_monitoring import (
     ForecastResult
 )
 from k8s_metrics_collector import KubernetesMetricsCollector
+from kubernetes_rag import KubernetesRAG
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +42,10 @@ class AIMonitoringIntegration:
             
             self.metrics_collector = KubernetesMetricsCollector(kubeconfig_path)
             print(f"✅ Kubernetes metrics collector initialized")
+            
+            # Initialize RAG system for intelligent recommendations
+            self.rag_system = KubernetesRAG()
+            print(f"✅ RAG system initialized for intelligent monitoring")
             
             self.is_running = False
             self.collection_thread = None
@@ -487,6 +492,112 @@ class AIMonitoringIntegration:
             logger.error(f"Failed to get performance recommendations: {e}")
             return []
     
+    def get_rag_enhanced_recommendations(self) -> List[Dict[str, Any]]:
+        """Get RAG-enhanced intelligent recommendations"""
+        try:
+            if not self.rag_system:
+                return []
+            
+            analysis = self.get_current_analysis()
+            if "error" in analysis:
+                return []
+            
+            current_metrics = analysis.get("current_metrics", {})
+            
+            # Get RAG-enhanced recommendations
+            rag_data = self.rag_system.get_monitoring_recommendations(current_metrics)
+            
+            # Generate intelligent recommendations based on RAG context
+            recommendations = []
+            
+            # CPU-based recommendations with RAG context
+            cpu_usage = current_metrics.get("cpu_usage", 0)
+            if cpu_usage > 80:
+                recommendations.append({
+                    "type": "performance",
+                    "priority": "high",
+                    "message": f"High CPU usage ({cpu_usage}%) - scale up immediately based on monitoring best practices",
+                    "action": "scale_up_cpu",
+                    "details": {
+                        "type": "cpu_optimization",
+                        "priority": "high",
+                        "current_value": cpu_usage,
+                        "recommendation": "Scale up CPU resources by 50% based on HPA best practices",
+                        "action": "scale_up_cpu",
+                        "rag_context": "Based on monitoring guidance: CPU > 80% requires immediate scaling"
+                    }
+                })
+            elif cpu_usage < 30:
+                recommendations.append({
+                    "type": "performance",
+                    "priority": "medium",
+                    "message": f"Low CPU usage ({cpu_usage}%) - consider scaling down to save costs",
+                    "action": "scale_down_cpu",
+                    "details": {
+                        "type": "cpu_optimization",
+                        "priority": "medium",
+                        "current_value": cpu_usage,
+                        "recommendation": "Scale down CPU resources by 30% to optimize costs",
+                        "action": "scale_down_cpu",
+                        "rag_context": "Based on monitoring guidance: CPU < 30% indicates underutilization"
+                    }
+                })
+            
+            # Memory-based recommendations with RAG context
+            memory_usage = current_metrics.get("memory_usage", 0)
+            if memory_usage > 85:
+                recommendations.append({
+                    "type": "performance",
+                    "priority": "critical",
+                    "message": f"Critical memory usage ({memory_usage}%) - immediate action required",
+                    "action": "scale_up_memory",
+                    "details": {
+                        "type": "memory_optimization",
+                        "priority": "critical",
+                        "current_value": memory_usage,
+                        "recommendation": "Scale up memory resources immediately to prevent OOM kills",
+                        "action": "scale_up_memory",
+                        "rag_context": "Based on monitoring guidance: Memory > 85% is critical threshold"
+                    }
+                })
+            elif memory_usage < 40:
+                recommendations.append({
+                    "type": "performance",
+                    "priority": "low",
+                    "message": f"Low memory usage ({memory_usage}%) - consider scaling down",
+                    "action": "scale_down_memory",
+                    "details": {
+                        "type": "memory_optimization",
+                        "priority": "low",
+                        "current_value": memory_usage,
+                        "recommendation": "Consider reducing memory allocation to optimize costs",
+                        "action": "scale_down_memory",
+                        "rag_context": "Based on monitoring guidance: Memory < 40% indicates underutilization"
+                    }
+                })
+            
+            # Add RAG-enhanced insights
+            if rag_data.get("relevant_docs"):
+                recommendations.append({
+                    "type": "insight",
+                    "priority": "low",
+                    "message": "RAG-enhanced monitoring insights available",
+                    "action": "view_insights",
+                    "details": {
+                        "type": "rag_insights",
+                        "priority": "low",
+                        "recommendation": "View detailed monitoring insights based on Kubernetes best practices",
+                        "action": "view_insights",
+                        "rag_context": f"Retrieved {len(rag_data['relevant_docs'])} relevant monitoring guidance documents"
+                    }
+                })
+            
+            return recommendations
+            
+        except Exception as e:
+            logger.error(f"Error getting RAG-enhanced recommendations: {e}")
+            return []
+    
     def get_forecast_summary(self) -> Dict[str, Any]:
         """Get a summary of forecasts"""
         try:
@@ -588,6 +699,7 @@ class AIMonitoringIntegration:
             "forecasts": self.get_forecast_summary(),
             "alerts": self.get_anomaly_alerts(),
             "recommendations": self.get_performance_recommendations(),
+            "rag_recommendations": self.get_rag_enhanced_recommendations(),
             "summary": analysis.get("summary", "AI monitoring analysis"),
             "demo_mode": analysis.get("demo_mode", False),
             "demo_message": analysis.get("demo_message", "")
@@ -645,6 +757,20 @@ def get_cluster_health() -> Dict[str, Any]:
         return health
     except Exception as e:
         return {"error": f"Failed to get cluster health: {str(e)}"}
+
+def get_rag_recommendations() -> Dict[str, Any]:
+    """MCP tool function to get RAG-enhanced recommendations"""
+    try:
+        integration = AIMonitoringIntegration()
+        recommendations = integration.get_rag_enhanced_recommendations()
+        return {
+            "rag_recommendations": recommendations,
+            "count": len(recommendations),
+            "timestamp": datetime.now().isoformat(),
+            "description": "RAG-enhanced intelligent recommendations based on Kubernetes best practices"
+        }
+    except Exception as e:
+        return {"error": f"Failed to get RAG recommendations: {str(e)}"}
 
 # Example usage
 if __name__ == "__main__":
