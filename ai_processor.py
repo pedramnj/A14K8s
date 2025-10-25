@@ -114,7 +114,7 @@ class EnhancedAIProcessor:
         
         tools = []
         for tool in self.available_tools:
-            if tool.get('name') in ['pods_list', 'pods_get', 'pods_run', 'pods_delete', 'pods_log', 'pods_top', 'pods_exec', 'resources_create_or_update']:
+            if tool.get('name') in ['get_pods', 'get_pod_logs', 'get_pod_top', 'exec_into_pod', 'run_container_in_pod', 'execute_kubectl', 'get_cluster_info', 'get_services', 'get_deployments', 'get_docker_containers']:
                 tools.append({
                     "name": tool['name'],
                     "description": tool.get('description', ''),
