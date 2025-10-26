@@ -456,7 +456,10 @@ class KubernetesMetricsCollector:
             # Calculate aggregated values
             total_cpu_usage = sum(node.cpu_usage_percent for node in node_metrics) / len(node_metrics) if node_metrics else 0
             total_memory_usage = sum(node.memory_usage_percent for node in node_metrics) / len(node_metrics) if node_metrics else 0
-            total_pod_count = sum(node.pod_count for node in node_metrics)
+            # Use cluster_info pod_count instead of summing node counts to get all pods (including pending)
+            total_pod_count = cluster_info.get("pod_count", 0)
+            # Calculate running pods count from node metrics
+            running_pod_count = sum(node.pod_count for node in node_metrics)
             
             # Debug logging
             logger.info(f"📊 Collected metrics: CPU={total_cpu_usage:.1f}%, Memory={total_memory_usage:.1f}%, Pods={total_pod_count}")
@@ -578,6 +581,7 @@ class KubernetesMetricsCollector:
                     "network_io_mbps": network_io,
                     "disk_io_mbps": disk_io,
                     "pod_count": total_pod_count,
+                    "running_pod_count": running_pod_count,
                     "node_count": cluster_info.get("node_count", 0)
                 },
                 "node_metrics": [

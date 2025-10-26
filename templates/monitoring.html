@@ -128,7 +128,7 @@
 
         <div class="card">
             <div class="card-header">
-                <h3 class="card-title">🤖 RAG-Enhanced AI Recommendations</h3>
+                <h3 class="card-title">RAG-Enhanced AI Recommendations</h3>
                 <small class="text-muted">Intelligent recommendations based on Kubernetes best practices</small>
             </div>
             <div class="card-body">
@@ -305,8 +305,9 @@ function loadInsights() {
             if (data.current_metrics) {
                 // Use fallback pod count if API returns 0 (known issue with pod counting)
                 const podCount = data.current_metrics.pod_count || 15; // Fallback to 15 pods
+                const runningPodCount = data.current_metrics.running_pod_count || podCount; // Use running_pod_count if available
                 document.getElementById('total-pods').textContent = podCount;
-                document.getElementById('running-pods').textContent = podCount;
+                document.getElementById('running-pods').textContent = runningPodCount;
             } else if (data.pods) {
                 document.getElementById('total-pods').textContent = data.pods.total || 15;
                 document.getElementById('running-pods').textContent = data.pods.running || 15;
@@ -416,7 +417,7 @@ function loadRecommendations() {
                             <p class="text-muted mb-2" style="text-decoration: none;">${rec.message || rec.details?.recommendation || 'No description available'}</p>
                             ${rec.details?.rag_context ? `
                                 <div class="alert alert-info" style="margin-top: 0.5rem; padding: 0.5rem; font-size: 0.875rem;">
-                                    <strong>🤖 AI Context:</strong> ${rec.details.rag_context}
+                                    <strong>AI Context:</strong> ${rec.details.rag_context}
                                 </div>
                             ` : ''}
                         </div>
