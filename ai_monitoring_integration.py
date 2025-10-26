@@ -159,7 +159,8 @@ class AIMonitoringIntegration:
                     network_io=agg_metrics["network_io_mbps"],
                     disk_io=agg_metrics["disk_io_mbps"],
                     pod_count=agg_metrics["pod_count"],
-                    node_count=agg_metrics["node_count"]
+                    node_count=agg_metrics["node_count"],
+                    running_pod_count=agg_metrics.get("running_pod_count", agg_metrics["pod_count"])
                 )
                 
                 self.monitoring_system.add_metrics(resource_metrics)
@@ -339,6 +340,7 @@ class AIMonitoringIntegration:
                 "network_io": metrics.network_io,
                 "disk_io": metrics.disk_io,
                 "pod_count": metrics.pod_count,
+                "running_pod_count": metrics.running_pod_count,
                 "node_count": metrics.node_count
             },
             "health_score": {
