@@ -1,3 +1,4 @@
+from simple_kubectl_executor import kubectl_executor
 #!/usr/bin/env python3
 """
 Simplified AI4K8s Web Application - Lightweight and Efficient
@@ -7,10 +8,14 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
+from typing import Any, List, Dict
 import os
 import json
+import time
 import requests
 import uuid
+import asyncio
+from mcp_client import call_mcp_tool
 
 # Import predictive monitoring components
 try:
@@ -25,6 +30,11 @@ app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai4k8s.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+# Session cookie configuration
+app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = False  # Allow JavaScript access
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests
+
 db = SQLAlchemy(app)
 
 # Context processor to make current year available in all templates
@@ -35,7 +45,7 @@ def inject_current_year():
 # AI-Powered MCP-based Natural Language Processor
 class AIPoweredMCPKubernetesProcessor:
     def __init__(self):
-        self.mcp_server_url = "http://localhost:5002/mcp"
+        self.mcp_server_url = "http://172.18.0.1:5002/message"
         self.available_tools = None
         self.use_ai = False
         self.anthropic = None
@@ -43,26 +53,44 @@ class AIPoweredMCPKubernetesProcessor:
         self._initialize_ai()
     
     def _initialize_ai(self):
-        """Initialize Anthropic AI if API key is available"""
-        try:
-            from anthropic import Anthropic
-            import os
-            
-            # Try to load .env file from client directory
-            self._load_env_file()
-            
-            if os.getenv('ANTHROPIC_API_KEY'):
-                # Set the API key in environment and initialize client
+        """Initialize AI client (Groq primary, Anthropic fallback)"""
+        import os
+        
+        # Try to load .env file from client directory
+        self._load_env_file()
+        
+        # Try Groq first (free)
+        if os.getenv('GROQ_API_KEY'):
+            try:
+                import groq
+                self.anthropic = groq.Groq(api_key=os.getenv('GROQ_API_KEY'))
+                self.use_ai = True
+                self.ai_provider = "groq"
+                print("🤖 Groq AI processing enabled (free tier)")
+                return
+            except ImportError:
+                print("⚠️  Groq package not installed, trying Anthropic...")
+            except Exception as e:
+                print(f"⚠️  Groq initialization failed: {e}, trying Anthropic...")
+        
+        # Fallback to Anthropic (paid)
+        if os.getenv('ANTHROPIC_API_KEY'):
+            try:
+                from anthropic import Anthropic
                 os.environ['ANTHROPIC_API_KEY'] = os.getenv('ANTHROPIC_API_KEY')
                 self.anthropic = Anthropic()
                 self.use_ai = True
-                print("🤖 AI-powered processing enabled")
-            else:
-                print("🔧 Regex-only processing (no ANTHROPIC_API_KEY)")
-        except ImportError:
-            print("⚠️  Anthropic package not installed, using regex-only processing")
-        except Exception as e:
-            print(f"⚠️  AI initialization failed: {e}, using regex-only processing")
+                self.ai_provider = "anthropic"
+                print("🤖 Anthropic AI processing enabled (paid)")
+                return
+            except ImportError:
+                print("⚠️  Anthropic package not installed")
+            except Exception as e:
+                print(f"⚠️  Anthropic initialization failed: {e}")
+        
+        # No AI available
+        print("🔧 Regex-only processing (no AI keys)")
+        self.ai_provider = None
     
     def _load_env_file(self):
         """Load environment variables from .env file"""
@@ -94,18 +122,18 @@ class AIPoweredMCPKubernetesProcessor:
     def _load_tools(self):
         """Load available MCP tools from the server"""
         try:
-            response = requests.post(
-                self.mcp_server_url,
-                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-                timeout=5
-            )
-            if response.status_code == 200:
-                result = response.json()
-                self.available_tools = {tool['name']: tool for tool in result['result']['tools']}
+            # Use the proper MCP client to get tools
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            from mcp_client import get_mcp_client
+            client = loop.run_until_complete(get_mcp_client())
+            if client and client.available_tools:
+                self.available_tools = client.available_tools
                 print(f"✅ Loaded {len(self.available_tools)} MCP tools")
             else:
-                print(f"⚠️  Failed to load MCP tools: {response.status_code}")
+                print("⚠️  No MCP tools available")
                 self.available_tools = {}
+            loop.close()
         except Exception as e:
             print(f"⚠️  Error loading MCP tools: {e}")
             self.available_tools = {}
@@ -113,46 +141,26 @@ class AIPoweredMCPKubernetesProcessor:
     def _call_mcp_tool(self, tool_name: str, arguments: dict = None) -> dict:
         """Call an MCP tool with the given arguments"""
         try:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {
-                    "name": tool_name,
-                    "arguments": arguments or {}
-                }
-            }
+            # Use the proper MCP client
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            result = loop.run_until_complete(call_mcp_tool(tool_name, arguments or {}))
+            loop.close()
             
-            response = requests.post(
-                self.mcp_server_url,
-                json=payload,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                result = response.json()
-                if 'result' in result:
-                    return {
-                        'success': True,
-                        'result': result['result'],
-                        'tool': tool_name,
-                        'arguments': arguments
-                    }
-                else:
-                    return {
-                        'success': False,
-                        'error': result.get('error', 'Unknown error'),
-                        'tool': tool_name,
-                        'arguments': arguments
-                    }
-            else:
+            if 'error' in result:
                 return {
                     'success': False,
-                    'error': f"HTTP {response.status_code}",
+                    'error': result['error'],
                     'tool': tool_name,
                     'arguments': arguments
                 }
-                
+            else:
+                return {
+                    'success': True,
+                    'result': result.get('result', result),
+                    'tool': tool_name,
+                    'arguments': arguments
+                }
         except Exception as e:
             return {
                 'success': False,
@@ -183,6 +191,172 @@ class AIPoweredMCPKubernetesProcessor:
                 "input_schema": tool_schema
             })
         return tools_for_ai
+    
+    def _process_with_groq_nl(self, query: str, system_prompt: str) -> dict:
+        """Process query using Groq natural language approach"""
+        try:
+            # Create a system prompt for Groq to determine tool and args
+            groq_system_prompt = (
+                "You are a Kubernetes expert. Analyze the user's query and determine:\n"
+                "1. What Kubernetes operation they want to perform\n"
+                "2. What tool to use and with what parameters\n\n"
+                
+                "Available tools:\n"
+                "- pods_list: List pods (params: namespace)\n"
+                "- pods_get: Get pod details (params: name, namespace)\n"
+                "- pods_run: Create pod (params: name, image, namespace)\n"
+                "- pods_delete: Delete pod (params: name, namespace)\n"
+                "- pods_log: Get pod logs (params: name, namespace)\n"
+                "- pods_top: Get resource usage (params: pod_name, namespace)\n"
+                "- pods_exec: Execute command (params: name, command, namespace)\n\n"
+                
+                "Respond with JSON format:\n"
+                "{\n"
+                '  "tool": "tool_name",\n'
+                '  "args": {"param": "value"},\n'
+                '  "explanation": "Brief explanation"\n'
+                "}\n\n"
+                
+                "Use intelligent defaults: namespace=default, image=nginx for web pods."
+            )
+            
+            response = self.anthropic.chat.completions.create(
+                model="llama-3.1-8b-instant",
+                messages=[
+                    {"role": "system", "content": groq_system_prompt},
+                    {"role": "user", "content": query}
+                ],
+                max_tokens=500,
+                temperature=0.1
+            )
+            
+            ai_response = response.choices[0].message.content
+            
+            # Try to extract JSON from response
+            import json
+            import re
+            
+            # Find JSON in the response
+            json_match = re.search(r'\{.*\}', ai_response, re.DOTALL)
+            if json_match:
+                parsed = json.loads(json_match.group())
+                tool_name = parsed.get('tool')
+                tool_args = parsed.get('args', {})
+                explanation = parsed.get('explanation', '')
+                
+                if tool_name:
+                    # Execute the tool
+                    result = self._call_mcp_tool(tool_name, tool_args)
+                    
+                    if result['success']:
+                        # Post-process the result
+                        polished_result = self._post_process_with_ai(query, tool_name, result['result'])
+                        
+                        return {
+                            'command': f'Groq: {tool_name}',
+                            'explanation': f"{explanation}\n\n{polished_result}",
+                            'ai_processed': True,
+                            'tool_results': [{'tool_name': tool_name, 'result': result}],
+                            'mcp_result': result
+                        }
+                    else:
+                        return {
+                            'command': f'Groq: {tool_name} (failed)',
+                            'explanation': f"❌ **Error:** {result['error']}",
+                            'ai_processed': True,
+                            'tool_results': [],
+                            'mcp_result': None
+                        }
+            
+            # If no JSON found, return the AI response directly
+            return {
+                'command': 'Groq: text_response',
+                'explanation': ai_response,
+                'ai_processed': True,
+                'tool_results': [],
+                'mcp_result': None
+            }
+            
+        except Exception as e:
+            # Fallback to direct response
+            return {
+                'command': 'Groq: text_response',
+                'explanation': f"Groq processing failed: {str(e)}",
+                'ai_processed': True,
+                'tool_results': [],
+                'mcp_result': None
+            }
+    
+    def _post_process_with_ai(self, user_query: str, tool_name: str, raw_result: str) -> str:
+        """Post-process MCP results with AI"""
+        try:
+            # Extract the actual content from MCP result
+            if isinstance(raw_result, dict):
+                content = raw_result.get('content', [{}])
+                if isinstance(content, list) and len(content) > 0:
+                    actual_content = content[0].get('text', '')
+                else:
+                    actual_content = str(raw_result)
+            else:
+                actual_content = str(raw_result)
+            
+            # Create a system prompt for post-processing
+            system_prompt = (
+                "You are a Kubernetes expert. Transform the raw output into a polished, "
+                "user-friendly response with emojis and clear formatting. "
+                "Focus on what the user asked for and make it easy to understand."
+            )
+            
+            message = f"""User Question: "{user_query}"
+Tool Used: {tool_name}
+Raw Output: {actual_content}
+
+Transform this into a polished response."""
+            
+            # Call AI for post-processing
+            if self.ai_provider == "groq":
+                response = self.anthropic.chat.completions.create(
+                    model="llama-3.1-8b-instant",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": message}
+                    ],
+                    max_tokens=1000,
+                    temperature=0.1
+                )
+                return response.choices[0].message.content
+            else:
+                response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1000,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": message}]
+                )
+                return response.content[0].text if response.content else actual_content
+                
+        except Exception as e:
+            print(f"⚠️  Post-processing failed: {e}")
+            return self._basic_format_response(tool_name, raw_result)
+    
+    def _basic_format_response(self, tool_name: str, raw_result: str) -> str:
+        """Basic fallback formatting when AI post-processing fails"""
+        if isinstance(raw_result, dict):
+            content = raw_result.get('content', [{}])
+            if isinstance(content, list) and len(content) > 0:
+                text_content = content[0].get('text', '')
+            else:
+                text_content = str(raw_result)
+        else:
+            text_content = str(raw_result)
+        
+        if tool_name == 'pods_list':
+            return f"📋 **Pod List Results:**\n\n{text_content}"
+        elif tool_name == 'pods_get':
+            return f"📋 **Pod Details:**\n\n{text_content}"
+        elif tool_name == 'pods_run':
+            return f"✅ **Pod Creation:**\n\n{text_content}"
+        else:
+            return f"**{tool_name} Result:**\n\n{text_content}"
     
     def _process_with_ai(self, query: str) -> dict:
         """Process query using Anthropic AI (like the client)"""
@@ -226,14 +400,19 @@ class AIPoweredMCPKubernetesProcessor:
             
             messages = [{"role": "user", "content": query}]
             
-            # Call Anthropic AI with tools
-            response = self.anthropic.messages.create(
-                model="claude-3-5-sonnet-20241022",
-                max_tokens=1200,
-                system=system_prompt,
-                messages=messages,
-                tools=available_tools
-            )
+            # Call AI with tools (Groq or Anthropic)
+            if self.ai_provider == "groq":
+                # Groq doesn't support function calling, use natural language approach
+                return self._process_with_groq_nl(query, system_prompt)
+            else:
+                # Anthropic with function calling
+                response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1200,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=available_tools
+                )
             
             # Process AI response and handle tool calls
             final_text = []
@@ -756,6 +935,11 @@ def dashboard():
         return redirect(url_for('login'))
     
     user = User.query.get(session['user_id'])
+    # Handle stale/missing user gracefully
+    if not user:
+        session.clear()
+        flash('Your session has expired. Please log in again.', 'warning')
+        return redirect(url_for('login'))
     servers = Server.query.filter_by(user_id=user.id).all()
     
     return render_template('dashboard.html', user=user, servers=servers)
@@ -819,7 +1003,14 @@ def server_detail(server_id):
         return redirect(url_for('login'))
     
     server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-    return render_template('server_detail.html', server=server)
+    
+    # Get recent chat activity
+    recent_chats = Chat.query.filter_by(
+        server_id=server_id, 
+        user_id=session['user_id']
+    ).order_by(Chat.timestamp.desc()).limit(10).all()
+    
+    return render_template('server_detail.html', server=server, recent_chats=recent_chats)
 
 @app.route('/chat/<int:server_id>')
 def chat(server_id):
@@ -844,34 +1035,76 @@ def api_chat(server_id):
     
     # Check if it's a direct kubectl command
     if message.strip().startswith('kubectl'):
-        # Direct kubectl command - use MCP bridge
+        # Direct kubectl command - use MCP tools
         try:
-            response = requests.post(
-                'http://localhost:5001/api/chat',
-                json={'message': message},
-                timeout=10
-            )
+            # Parse kubectl command to determine which MCP tool to use
+            parts = message.strip().split()
+            if len(parts) < 2:
+                return jsonify({'error': 'Invalid kubectl command'}), 400
             
-            if response.status_code == 200:
-                result = response.json()
+            command = parts[1]  # get, create, delete, etc.
+            
+            # Map kubectl commands to MCP tools
+            if command == 'get':
+                if 'pods' in message:
+                    # Use pods_list MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('pods_list', {}))
+                    loop.close()
+                elif 'namespaces' in message:
+                    # Use namespaces_list MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('namespaces_list', {}))
+                    loop.close()
+                else:
+                    # Generic resource list
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('resources_list', {
+                        'apiVersion': 'v1',
+                        'kind': 'Pod'  # Default to Pod for now
+                    }))
+                    loop.close()
+            elif command == 'top':
+                if 'pods' in message:
+                    # Use pods_top MCP tool
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    result = loop.run_until_complete(call_mcp_tool('pods_top', {}))
+                    loop.close()
+                else:
+                    return jsonify({'error': 'Unsupported kubectl top command'}), 400
+            else:
+                return jsonify({'error': f'Unsupported kubectl command: {command}'}), 400
+            
+            if result.get('success'):
+                # Format the result for display
+                if 'result' in result and 'content' in result['result']:
+                    content = result['result']['content'][0]['text'] if result['result']['content'] else 'No output'
+                else:
+                    content = str(result.get('result', 'Command executed successfully'))
                 
                 # Store kubectl command in database
                 chat = Chat(
                     user_id=session['user_id'],
                     server_id=server_id,
                     user_message=message,
-                    ai_response=result.get('response', ''),
-                    mcp_tool_used='kubectl_direct',
-                    processing_method='Direct',
-                    mcp_success=result.get('status') == 'success'
+                    ai_response=content,
+                    mcp_tool_used=f'kubectl_{command}',
+                    processing_method='MCP',
+                    mcp_success=True
                 )
                 db.session.add(chat)
                 db.session.commit()
                 
-                result['chat_id'] = chat.id
-                return jsonify(result)
+                return jsonify({
+                    'response': content,
+                    'chat_id': chat.id
+                })
             else:
-                return jsonify({'error': 'MCP bridge error'}), 500
+                return jsonify({'error': result.get('error', 'Command failed')}), 500
                 
         except Exception as e:
             return jsonify({'error': str(e)}), 500
@@ -896,7 +1129,7 @@ def api_chat(server_id):
                     else:
                         result_text = str(mcp_result['result'])
                     
-                    response_text = f"{processed['explanation']}\n\n**MCP Tool Result:**\n{result_text}"
+                    response_text = processed["explanation"]
                     
                     # Store chat in database
                     chat = Chat(
@@ -1041,7 +1274,34 @@ def server_status(server_id):
         'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
     })
 
-@app.route('/api/test_connection/<int:server_id>', methods=['POST'])
+
+@app.route("/api/delete_server/<int:server_id>", methods=["DELETE"])
+def api_delete_server(server_id):
+    """Delete a server"""
+    try:
+        # Get the server
+        server = Server.query.get_or_404(server_id)
+        
+        # Check if user owns this server
+        if server.user_id != session.get("user_id"):
+            return jsonify({"success": False, "message": "Unauthorized"}), 403
+        
+        # Delete the server
+        db.session.delete(server)
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Server {server.name} has been deleted successfully."
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "message": f"Failed to delete server: {str(e)}"
+        }), 500
+@app.route("/api/test_connection/<int:server_id>", methods=["POST"])
 def test_connection(server_id):
     """Test connection to a server"""
     if 'user_id' not in session:
@@ -1154,40 +1414,89 @@ def test_connection(server_id):
             'error': server.connection_error
         }), 500
 
-# Predictive Monitoring Routes
-if PREDICTIVE_MONITORING_AVAILABLE:
+# Predictive Monitoring Routes (always register endpoints; guard at runtime)
+if True:
     # Store AI monitoring instances per server
     ai_monitoring_instances = {}
+
+    def _patch_kubeconfig_for_container(original_path: str) -> str:
+        """Patch kubeconfig server URL if it points to 127.0.0.1 so container can reach host API.
+        Returns a path to a temp kubeconfig file with patched server URL.
+        """
+        try:
+            import os
+            import re
+            import tempfile
+            import socket
+            if not original_path or not os.path.exists(original_path):
+                return original_path
+            with open(original_path, 'r') as f:
+                content = f.read()
+            
+            # Try different host addresses in order of preference
+            host_addresses = [
+                'host.docker.internal',  # Docker Desktop
+                '172.17.0.1',           # Docker default bridge
+                '172.18.0.1',           # Alternative bridge
+                socket.gethostbyname('host.docker.internal') if os.environ.get('DOCKER_DESKTOP', False) else None
+            ]
+            
+            # Filter out None values
+            host_addresses = [addr for addr in host_addresses if addr is not None]
+            
+            # Use the first available host address
+            host_ip = host_addresses[0] if host_addresses else '172.17.0.1'
+            
+            # Replace 127.0.0.1 with the appropriate host IP
+            patched = re.sub(r"server:\s*https://127\.0\.0\.1:(\d+)",
+                             rf"server: https://{host_ip}:\1", content)
+            
+            if patched != content:
+                print(f"🔧 Patching kubeconfig: 127.0.0.1 -> {host_ip}")
+                tf = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                tf.write(patched)
+                tf.flush()
+                tf.close()
+                return tf.name
+            return original_path
+        except Exception as e:
+            print(f"⚠️ Failed to patch kubeconfig: {e}")
+            return original_path
     
     def get_ai_monitoring(server_id):
         """Get or create AI monitoring instance for a specific server"""
+        if not PREDICTIVE_MONITORING_AVAILABLE:
+            return None
         if server_id not in ai_monitoring_instances:
             # Get server details to determine kubeconfig path
             server = Server.query.get(server_id)
             if server:
                 kubeconfig_path = None
-                # For local servers, try to use default kubeconfig
-                if server.server_type == 'local':
-                    # Try to find kubeconfig in common locations
-                    import os
-                    kubeconfig_paths = [
+                import os
+                # If a kubeconfig is stored in DB, always prefer it
+                if getattr(server, 'kubeconfig', None):
+                    try:
+                        import tempfile
+                        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                        temp_file.write(server.kubeconfig)
+                        temp_file.close()
+                        kubeconfig_path = temp_file.name
+                    except Exception:
+                        kubeconfig_path = None
+                # Otherwise, try well-known paths (inside container)
+                if kubeconfig_path is None:
+                    candidate_paths = [
+                        '/app/instance/kubeconfig_admin',
                         os.path.expanduser('~/.kube/config'),
                         '/etc/kubernetes/admin.conf',
                         '/var/lib/kubelet/kubeconfig'
                     ]
-                    for path in kubeconfig_paths:
+                    for path in candidate_paths:
                         if os.path.exists(path):
                             kubeconfig_path = path
                             break
-                # For remote servers, use the stored kubeconfig
-                elif server.server_type == 'remote' and server.kubeconfig:
-                    # Save kubeconfig to a temporary file
-                    import tempfile
-                    import os
-                    temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
-                    temp_file.write(server.kubeconfig)
-                    temp_file.close()
-                    kubeconfig_path = temp_file.name
+                # Patch kubeconfig if pointing to 127.0.0.1
+                kubeconfig_path = _patch_kubeconfig_for_container(kubeconfig_path)
                 
                 print(f"🔧 Creating AI monitoring instance for server {server_id} ({server.name})")
                 print(f"🔧 Using kubeconfig: {kubeconfig_path}")
@@ -1203,6 +1512,22 @@ if PREDICTIVE_MONITORING_AVAILABLE:
             return redirect(url_for('login'))
         
         # Verify server belongs to user
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        user = User.query.get(session['user_id'])
+        return render_template('monitoring.html', user=user, server=server)
+
+    # Support legacy/query-param based route as well
+    @app.route('/monitoring')
+    def monitoring_dashboard_query():
+        """Predictive monitoring dashboard using ?server_id= query param"""
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+
+        server_id = request.args.get('server_id', type=int)
+        if not server_id:
+            flash('Server ID is required', 'warning')
+            return redirect(url_for('dashboard'))
+
         server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
         user = User.query.get(session['user_id'])
         return render_template('monitoring.html', user=user, server=server)
@@ -1246,9 +1571,34 @@ if PREDICTIVE_MONITORING_AVAILABLE:
                 return jsonify({'error': 'AI monitoring not available for this server'}), 500
             
             alerts = ai_monitoring.get_anomaly_alerts()
+            # Only add demo alert if we're truly in demo mode without real data
+            current_analysis = ai_monitoring.get_current_analysis()
+            current_metrics = current_analysis.get('current_metrics', {})
+            
+            # Check if we have realistic-looking data (indicating real monitoring)
+            has_realistic_data = (
+                current_metrics.get('pod_count', 0) > 0 and
+                current_metrics.get('cpu_usage', 0) > 0 and
+                current_metrics.get('memory_usage', 0) > 0
+            )
+            
+            # Only show demo alert if we're in demo mode AND don't have realistic data
+            if (not alerts) and current_analysis.get('demo_mode') and not has_realistic_data:
+                from datetime import datetime
+                alerts = [{
+                    'type': 'info',
+                    'severity': 'low',
+                    'message': 'Demo mode active: no anomalies detected',
+                    'timestamp': datetime.now().isoformat()
+                }]
             return jsonify({'alerts': alerts, 'count': len(alerts)})
         except Exception as e:
-            return jsonify({'error': str(e)}), 500
+            app.logger.exception("Failed to fetch alerts for server %s", server_id)
+            return jsonify({
+                'alerts': [],
+                'count': 0,
+                'error': str(e)
+            }), 200
     
     @app.route('/api/monitoring/recommendations/<int:server_id>')
     def get_monitoring_recommendations(server_id):
@@ -1287,6 +1637,183 @@ if PREDICTIVE_MONITORING_AVAILABLE:
             return jsonify(forecast)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/monitoring/trends/<int:server_id>')
+    def get_monitoring_trends(server_id):
+        """Get 24h trends for specific server."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            trends = ai_monitoring.get_trends_24h()
+            return jsonify(trends)
+        except Exception as exc:
+            app.logger.exception("Failed to fetch trends for server %s", server_id)
+            return jsonify({'cpu': [], 'memory': [], 'error': str(exc)}), 200
+
+    @app.route('/api/monitoring/events/<int:server_id>')
+    def get_monitoring_events(server_id):
+        """Return recent Kubernetes events for the cluster."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['kubectl', 'get', 'events', '--all-namespaces', '-o', 'json'],
+                capture_output=True, text=True, check=False
+            )
+            if result.returncode != 0:
+                return jsonify({'events': [], 'count': 0, 'error': result.stderr.strip()}), 200
+            data = json.loads(result.stdout or '{}')
+            items = data.get('items', [])
+            events = []
+            for ev in items:
+                involved = ev.get('involvedObject', {})
+                meta = ev.get('metadata', {})
+                last_ts = ev.get('lastTimestamp') or ev.get('eventTime') or meta.get('creationTimestamp')
+                events.append({
+                    'namespace': involved.get('namespace') or meta.get('namespace') or '',
+                    'type': ev.get('type', 'Normal'),
+                    'reason': ev.get('reason', ''),
+                    'message': ev.get('message', ''),
+                    'source': (ev.get('source') or {}).get('component', ''),
+                    'count': ev.get('count', 1),
+                    'timestamp': last_ts,
+                    'involved_object': {
+                        'kind': involved.get('kind', ''),
+                        'name': involved.get('name', ''),
+                        'namespace': involved.get('namespace', '')
+                    }
+                })
+            events.sort(key=lambda item: item.get('timestamp') or '', reverse=True)
+            return jsonify({'events': events[:30], 'count': min(len(events), 30)})
+        except Exception as exc:
+            app.logger.exception("Failed to fetch events for server %s", server_id)
+            return jsonify({'events': [], 'count': 0, 'error': str(exc)}), 200
+
+    @app.route('/api/monitoring/llm_recommendations/<int:server_id>')
+    def get_monitoring_llm_recommendations(server_id):
+        """LLM or fallback recommendations for specific server."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            recommendations = ai_monitoring.get_llm_recommendations()
+            return jsonify({
+                'llm_recommendations': recommendations,
+                'count': len(recommendations)
+            })
+        except Exception as exc:
+            app.logger.exception("Failed to fetch LLM recommendations for server %s", server_id)
+            return jsonify({'llm_recommendations': [], 'count': 0, 'error': str(exc)}), 200
+    
+    @app.route('/benchmark')
+    def benchmark_page():
+        """Render benchmark dashboard."""
+        if 'user_id' not in session:
+            flash('Please log in to access benchmarks.', 'warning')
+            return redirect(url_for('login'))
+
+        user = User.query.get(session['user_id'])
+        if not user:
+            session.clear()
+            flash('Your session has expired. Please log in again.', 'warning')
+            return redirect(url_for('login'))
+
+        servers = Server.query.filter_by(user_id=user.id).all()
+        return render_template('benchmark.html', user=user, servers=servers)
+
+    @app.route('/api/benchmark/<int:server_id>', methods=['POST'])
+    def run_benchmark(server_id):
+        """Execute a lightweight benchmark comparing RAG vs LLM latency."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+
+        try:
+            iterations = request.json.get('iterations', 5) if request.is_json else 5
+            iterations = max(1, min(int(iterations), 20))
+
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+
+            # Warm-up
+            for _ in range(2):
+                try:
+                    ai_monitoring.get_current_analysis()
+                    ai_monitoring.get_llm_recommendations()
+                except Exception:
+                    pass
+                time.sleep(0.2)
+
+            rag_times, rag_sizes, rag_items = [], [], []
+            llm_times, llm_sizes, llm_items = [], [], []
+
+            def safe_dump(payload: Any) -> bytes:
+                try:
+                    return json.dumps(payload, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)).encode('utf-8')
+                except TypeError:
+                    return json.dumps(payload, default=str).encode('utf-8')
+
+            for _ in range(iterations):
+                start = time.time()
+                analysis = ai_monitoring.get_current_analysis()
+                rag_times.append(time.time() - start)
+                rag_data = safe_dump(analysis)
+                rag_sizes.append(len(rag_data))
+                rag_items.append(len(analysis.get('rag_recommendations', [])))
+                time.sleep(0.1)
+
+                start = time.time()
+                llm_recs = ai_monitoring.get_llm_recommendations()
+                llm_times.append(time.time() - start)
+                llm_data = safe_dump({'llm_recommendations': llm_recs})
+                llm_sizes.append(len(llm_data))
+                llm_items.append(len(llm_recs))
+                time.sleep(0.1)
+
+            def summarize(values: List[float]) -> Dict[str, float]:
+                if not values:
+                    return {'avg': 0, 'min': 0, 'max': 0, 'p50': 0, 'p95': 0}
+                sorted_vals = sorted(values)
+                return {
+                    'avg': sum(values) / len(values),
+                    'min': min(values),
+                    'max': max(values),
+                    'p50': sorted_vals[len(sorted_vals)//2],
+                    'p95': sorted_vals[int(len(sorted_vals)*0.95)] if len(sorted_vals) > 1 else sorted_vals[0]
+                }
+
+            return jsonify({
+                'server_id': server_id,
+                'iterations': iterations,
+                'timestamp': datetime.utcnow().isoformat(),
+                'rag': {
+                    'latency': summarize(rag_times),
+                    'payload_size': summarize(rag_sizes),
+                    'item_count': summarize(rag_items),
+                },
+                'llm': {
+                    'latency': summarize(llm_times),
+                    'payload_size': summarize(llm_sizes),
+                    'item_count': summarize(llm_items),
+                }
+            })
+        except Exception as exc:
+            app.logger.exception("Benchmark failed for server %s", server_id)
+            return jsonify({'error': str(exc)}), 500
     
     @app.route('/api/monitoring/health/<int:server_id>')
     def get_monitoring_health(server_id):
@@ -1349,6 +1876,39 @@ if PREDICTIVE_MONITORING_AVAILABLE:
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        # Ensure a default admin user exists for first-run access
+        try:
+            default_admin_username = os.environ.get('DEFAULT_ADMIN_USERNAME', 'admin')
+            default_admin_password = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'admin123')
+            default_admin_email = os.environ.get('DEFAULT_ADMIN_EMAIL', 'admin@local')
+
+            admin_user = User.query.filter_by(username=default_admin_username).first()
+            if not admin_user:
+                admin_user = User(username=default_admin_username, email=default_admin_email)
+                admin_user.set_password(default_admin_password)
+                db.session.add(admin_user)
+                db.session.commit()
+                print('✅ Default admin user created')
+            else:
+                print('✅ Default admin user present')
+
+            # Ensure the admin has at least one server
+            admin_server = Server.query.filter_by(user_id=admin_user.id).first()
+            if not admin_server:
+                admin_server = Server(
+                    name='Production K8s Cluster',
+                    server_type='kubernetes',
+                    connection_string='https://127.0.0.1:42019',
+                    user_id=admin_user.id,
+                    status='active'
+                )
+                db.session.add(admin_server)
+                db.session.commit()
+                print('✅ Default admin server created')
+            else:
+                print('✅ Default admin server present')
+        except Exception as e:
+            print(f'⚠️  Failed to ensure default admin: {e}')
     
     # Get configuration from environment variables
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
