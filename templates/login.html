@@ -3,46 +3,36 @@
 {% block title %}Login - AI4K8s{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-    <div class="col-md-6 col-lg-4">
-        <div class="card border-0 shadow">
-            <div class="card-body p-5">
-                <div class="text-center mb-4">
-                    <i class="fas fa-robot fa-3x text-primary mb-3"></i>
-                    <h3 class="fw-bold">Welcome Back</h3>
-                    <p class="text-muted">Sign in to your AI4K8s account</p>
+<div style="max-width: 400px; margin: 0 auto;">
+    <div class="card">
+        <div class="card-header" style="text-align: center;">
+            <h2 style="font-size: 1.75rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">Welcome Back</h2>
+            <p class="text-muted mb-0">Sign in to your AI4K8s account</p>
+        </div>
+        
+        <div class="card-body">
+            <form method="POST">
+                <div class="form-group">
+                    <label for="username" class="form-label">Username</label>
+                    <input type="text" id="username" name="username" class="form-control" placeholder="Enter your username" required>
                 </div>
                 
-                <form method="POST">
-                    <div class="mb-3">
-                        <label for="username" class="form-label">Username</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="fas fa-user"></i></span>
-                            <input type="text" class="form-control" id="username" name="username" required>
-                        </div>
-                    </div>
-                    
-                    <div class="mb-4">
-                        <label for="password" class="form-label">Password</label>
-                        <div class="input-group">
-                            <span class="input-group-text"><i class="fas fa-lock"></i></span>
-                            <input type="password" class="form-control" id="password" name="password" required>
-                        </div>
-                    </div>
-                    
-                    <div class="d-grid">
-                        <button type="submit" class="btn btn-primary btn-lg">
-                            <i class="fas fa-sign-in-alt me-2"></i>Sign In
-                        </button>
-                    </div>
-                </form>
-                
-                <div class="text-center mt-4">
-                    <p class="text-muted">Don't have an account? 
-                        <a href="{{ url_for('register') }}" class="text-decoration-none">Sign up here</a>
-                    </p>
+                <div class="form-group">
+                    <label for="password" class="form-label">Password</label>
+                    <input type="password" id="password" name="password" class="form-control" placeholder="Enter your password" required>
                 </div>
-            </div>
+                
+                <button type="submit" class="btn btn-primary w-100">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                        <path d="M15 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H15M10 17L15 12L10 7M15 12H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    Sign In
+                </button>
+            </form>
+        </div>
+        
+        <div class="card-footer" style="text-align: center;">
+            <p class="text-muted mb-0">Don't have an account? <a href="{{ url_for('register') }}" style="color: var(--primary-color); text-decoration: none; font-weight: 500;">Create one</a></p>
         </div>
     </div>
 </div>

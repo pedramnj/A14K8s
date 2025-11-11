@@ -40,6 +40,7 @@ class ResourceMetrics:
     disk_io: float
     pod_count: int
     node_count: int
+    running_pod_count: int = 0
     namespace: str = "default"
 
 @dataclass
@@ -652,6 +653,7 @@ class PredictiveMonitoringSystem:
                 "network_io": current_metrics.network_io,
                 "disk_io": current_metrics.disk_io,
                 "pod_count": current_metrics.pod_count,
+                "running_pod_count": current_metrics.running_pod_count,
                 "node_count": current_metrics.node_count
             },
             "forecasts": {

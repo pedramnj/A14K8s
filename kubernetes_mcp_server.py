@@ -12,8 +12,14 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence
 from datetime import datetime
 
-import mcp.server.stdio
-import mcp.types as types
+try:  # pragma: no cover - optional dependency
+    import mcp.server  # type: ignore
+    import mcp.server.stdio  # type: ignore
+    import mcp.types as types  # type: ignore
+    MCP_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    MCP_AVAILABLE = False
+    types = None  # type: ignore
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -294,6 +300,9 @@ class KubernetesMCP:
         try:
             if pod_name:
                 cmd = f"kubectl top pod {pod_name} -n {namespace} --no-headers"
+            elif namespace == "all" or namespace == "--all-namespaces":
+                # Support all-namespaces request
+                cmd = "kubectl top pods --all-namespaces --no-headers"
             else:
                 cmd = f"kubectl top pods -n {namespace} --no-headers"
             
@@ -425,283 +434,243 @@ class KubernetesMCP:
 # Initialize the Kubernetes MCP instance
 k8s_mcp = KubernetesMCP()
 
-# Create the MCP server
-server = mcp.server.Server("kubernetes-monitor")
+if MCP_AVAILABLE:
+    server = mcp.server.Server("kubernetes-monitor")  # type: ignore
 
-@server.list_tools()
-async def handle_list_tools() -> List[types.Tool]:
-    """List available tools"""
-    return [
-        types.Tool(
-            name="get_cluster_info",
-            description="Get basic information about the Kubernetes cluster including version, nodes, and status",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="get_pods",
-            description="Get pods in a specific namespace with their status, readiness, and restart counts",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    }
+    @server.list_tools()
+    async def handle_list_tools() -> List[types.Tool]:
+        """List available tools"""
+        return [
+            types.Tool(
+                name="get_cluster_info",
+                description="Get basic information about the Kubernetes cluster including version, nodes, and status",
+                inputSchema={"type": "object", "properties": {}, "required": []},
+            ),
+            types.Tool(
+                name="get_pods",
+                description="Get pods in a specific namespace with their status, readiness, and restart counts",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        }
+                    },
+                    "required": [],
                 },
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="get_services",
-            description="Get services in a specific namespace with their types, IPs, and ports",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    }
+            ),
+            types.Tool(
+                name="get_services",
+                description="Get services in a specific namespace with their types, IPs, and ports",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        }
+                    },
+                    "required": [],
                 },
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="get_deployments",
-            description="Get deployments in a specific namespace with replica counts and status",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    }
+            ),
+            types.Tool(
+                name="get_deployments",
+                description="Get deployments in a specific namespace with replica counts and status",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        }
+                    },
+                    "required": [],
                 },
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="get_pod_logs",
-            description="Get logs from a specific pod",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "pod_name": {
-                        "type": "string",
-                        "description": "Name of the pod"
+            ),
+            types.Tool(
+                name="get_pod_logs",
+                description="Get logs from a specific pod",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pod_name": {"type": "string", "description": "Name of the pod"},
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        },
+                        "lines": {
+                            "type": "integer",
+                            "description": "Number of log lines to retrieve (default: 100)",
+                            "default": 100,
+                        },
                     },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    },
-                    "lines": {
-                        "type": "integer",
-                        "description": "Number of log lines to retrieve (default: 100)",
-                        "default": 100
-                    }
+                    "required": ["pod_name"],
                 },
-                "required": ["pod_name"]
-            }
-        ),
-        types.Tool(
-            name="execute_kubectl",
-            description="Execute a kubectl command and return the results",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "kubectl command to execute (without 'kubectl' prefix)"
-                    }
+            ),
+            types.Tool(
+                name="execute_kubectl",
+                description="Execute a kubectl command and return the results",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "kubectl command to execute (without 'kubectl' prefix)",
+                        }
+                    },
+                    "required": ["command"],
                 },
-                "required": ["command"]
-            }
-        ),
-        types.Tool(
-            name="get_docker_containers",
-            description="Get information about Docker containers running on the system",
-            inputSchema={
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="get_pod_top",
-            description="Get resource usage (CPU and memory) for pods",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "pod_name": {
-                        "type": "string",
-                        "description": "Name of the pod (optional, if not provided returns all pods)"
+            ),
+            types.Tool(
+                name="get_docker_containers",
+                description="Get information about Docker containers running on the system",
+                inputSchema={"type": "object", "properties": {}, "required": []},
+            ),
+            types.Tool(
+                name="get_pod_top",
+                description="Get resource usage (CPU and memory) for pods",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pod_name": {
+                            "type": "string",
+                            "description": "Name of the pod (optional, if not provided returns all pods)",
+                        },
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        },
                     },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    }
+                    "required": [],
                 },
-                "required": []
-            }
-        ),
-        types.Tool(
-            name="exec_into_pod",
-            description="Execute a command in a pod",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "pod_name": {
-                        "type": "string",
-                        "description": "Name of the pod"
+            ),
+            types.Tool(
+                name="exec_into_pod",
+                description="Execute a command in a pod",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "pod_name": {"type": "string", "description": "Name of the pod"},
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "Command to execute in the pod",
+                        },
+                        "container": {
+                            "type": "string",
+                            "description": "Container name (optional, for multi-container pods)",
+                        },
                     },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    },
-                    "command": {
-                        "type": "string",
-                        "description": "Command to execute in the pod"
-                    },
-                    "container": {
-                        "type": "string",
-                        "description": "Container name (optional, for multi-container pods)"
-                    }
+                    "required": ["pod_name", "command"],
                 },
-                "required": ["pod_name", "command"]
-            }
-        ),
-        types.Tool(
-            name="run_container_in_pod",
-            description="Run a container image in a new pod",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "image": {
-                        "type": "string",
-                        "description": "Container image to run"
+            ),
+            types.Tool(
+                name="run_container_in_pod",
+                description="Run a container image in a new pod",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "image": {"type": "string", "description": "Container image to run"},
+                        "name": {
+                            "type": "string",
+                            "description": "Name for the pod (optional, will be generated if not provided)",
+                        },
+                        "namespace": {
+                            "type": "string",
+                            "description": "Kubernetes namespace (default: 'default')",
+                            "default": "default",
+                        },
+                        "command": {
+                            "type": "string",
+                            "description": "Command to run in the container (optional)",
+                        },
+                        "args": {
+                            "type": "array",
+                            "description": "Arguments for the command (optional)",
+                            "items": {"type": "string"},
+                        },
                     },
-                    "name": {
-                        "type": "string",
-                        "description": "Name for the pod (optional, will be generated if not provided)"
-                    },
-                    "namespace": {
-                        "type": "string",
-                        "description": "Kubernetes namespace (default: 'default')",
-                        "default": "default"
-                    },
-                    "command": {
-                        "type": "string",
-                        "description": "Command to run in the container (optional)"
-                    },
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Arguments for the command (optional)"
-                    }
+                    "required": ["image"],
                 },
-                "required": ["image"]
-            }
-        )
-    ]
+            ),
+        ]
 
-@server.call_tool()
-async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
-    """Handle tool calls"""
-    try:
-        if name == "get_cluster_info":
-            result = await k8s_mcp.get_cluster_info()
-        elif name == "get_pods":
-            result = await k8s_mcp.get_pods(arguments.get("namespace", "default"))
-        elif name == "get_services":
-            result = await k8s_mcp.get_services(arguments.get("namespace", "default"))
-        elif name == "get_deployments":
-            result = await k8s_mcp.get_deployments(arguments.get("namespace", "default"))
-        elif name == "get_pod_logs":
-            result = await k8s_mcp.get_pod_logs(
-                arguments["pod_name"],
-                arguments.get("namespace", "default"),
-                arguments.get("lines", 100)
-            )
-        elif name == "execute_kubectl":
-            result = await k8s_mcp.execute_kubectl_command(arguments["command"])
-        elif name == "get_docker_containers":
-            result = await k8s_mcp.get_docker_containers()
-        elif name == "get_pod_top":
-            result = await k8s_mcp.get_pod_top(
-                arguments.get("pod_name"),
-                arguments.get("namespace", "default")
-            )
-        elif name == "exec_into_pod":
-            result = await k8s_mcp.exec_into_pod(
-                arguments["pod_name"],
-                arguments.get("namespace", "default"),
-                arguments["command"],
-                arguments.get("container")
-            )
-        elif name == "run_container_in_pod":
-            result = await k8s_mcp.run_container_in_pod(
-                arguments["image"],
-                arguments.get("name"),
-                arguments.get("namespace", "default"),
-                arguments.get("command"),
-                arguments.get("args")
-            )
-        else:
-            result = {"error": f"Unknown tool: {name}"}
-        
-        return [types.TextContent(
-            type="text",
-            text=json.dumps(result, indent=2)
-        )]
-    except Exception as e:
-        return [types.TextContent(
-            type="text",
-            text=json.dumps({"error": str(e)}, indent=2)
-        )]
+    @server.call_tool()
+    async def handle_call_tool(name: str, arguments: Dict[str, Any]) -> List[types.TextContent]:
+        """Handle tool calls"""
+        try:
+            if name == "get_cluster_info":
+                result = await k8s_mcp.get_cluster_info()
+            elif name == "get_pods":
+                result = await k8s_mcp.get_pods(arguments.get("namespace", "default"))
+            elif name == "get_services":
+                result = await k8s_mcp.get_services(arguments.get("namespace", "default"))
+            elif name == "get_deployments":
+                result = await k8s_mcp.get_deployments(arguments.get("namespace", "default"))
+            elif name == "get_pod_logs":
+                result = await k8s_mcp.get_pod_logs(
+                    arguments["pod_name"], arguments.get("namespace", "default"), arguments.get("lines", 100)
+                )
+            elif name == "execute_kubectl":
+                result = await k8s_mcp.execute_kubectl_command(arguments["command"])
+            elif name == "get_docker_containers":
+                result = await k8s_mcp.get_docker_containers()
+            elif name == "get_pod_top":
+                result = await k8s_mcp.get_pod_top(arguments.get("pod_name"), arguments.get("namespace", "default"))
+            elif name == "exec_into_pod":
+                result = await k8s_mcp.exec_into_pod(
+                    arguments["pod_name"], arguments.get("namespace", "default"), arguments["command"], arguments.get("container")
+                )
+            elif name == "run_container_in_pod":
+                result = await k8s_mcp.run_container_in_pod(
+                    arguments["image"], arguments.get("name"), arguments.get("namespace", "default"), arguments.get("command"), arguments.get("args")
+                )
+            else:
+                result = {"error": f"Unknown tool: {name}"}
 
-@server.list_resources()
-async def handle_list_resources() -> List[types.Resource]:
-    """List available resources"""
-    return [
-        types.Resource(
-            uri="kubernetes://cluster/info",
-            name="Cluster Information",
-            description="Basic information about the Kubernetes cluster",
-            mimeType="application/json"
-        ),
-        types.Resource(
-            uri="kubernetes://pods/default",
-            name="Default Namespace Pods",
-            description="Pods in the default namespace",
-            mimeType="application/json"
-        ),
-        types.Resource(
-            uri="kubernetes://services/default",
-            name="Default Namespace Services",
-            description="Services in the default namespace",
-            mimeType="application/json"
-        ),
-        types.Resource(
-            uri="kubernetes://deployments/default",
-            name="Default Namespace Deployments",
-            description="Deployments in the default namespace",
-            mimeType="application/json"
-        )
-    ]
+            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+        except Exception as e:
+            return [types.TextContent(type="text", text=json.dumps({"error": str(e)}, indent=2))]
 
-@server.read_resource()
-async def handle_read_resource(uri: str) -> str:
-    """Read a resource"""
-    try:
+    @server.list_resources()
+    async def handle_list_resources() -> List[types.Resource]:
+        """List available resources"""
+        return [
+            types.Resource(
+                uri="kubernetes://cluster/info",
+                name="Cluster Info",
+                description="Basic information about the Kubernetes cluster",
+            ),
+            types.Resource(
+                uri="kubernetes://pods/default",
+                name="Pods (default namespace)",
+                description="Current pods in the default namespace",
+            ),
+            types.Resource(
+                uri="kubernetes://services/default",
+                name="Services (default namespace)",
+                description="Current services in the default namespace",
+            ),
+            types.Resource(
+                uri="kubernetes://deployments/default",
+                name="Deployments (default namespace)",
+                description="Current deployments in the default namespace",
+            ),
+        ]
+
+    @server.read_resource()
+    async def handle_read_resource(uri: str) -> List[types.TextContent]:
+        """Read a resource"""
         if uri == "kubernetes://cluster/info":
             result = await k8s_mcp.get_cluster_info()
         elif uri == "kubernetes://pods/default":
@@ -712,21 +681,16 @@ async def handle_read_resource(uri: str) -> str:
             result = await k8s_mcp.get_deployments("default")
         else:
             result = {"error": f"Unknown resource: {uri}"}
-        
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return json.dumps({"error": str(e)}, indent=2)
 
-async def main():
-    """Main entry point"""
-    from mcp.server.stdio import stdio_server
-    
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
+        return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+
+    async def main():
+        await server.run_stdio_server()
+else:
+    server = None
+
+    async def main():
+        raise RuntimeError("MCP stdio server is not available (requires Python >= 3.10)")
 
 if __name__ == "__main__":
     asyncio.run(main())
