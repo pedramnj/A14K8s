@@ -42,7 +42,10 @@ class MCPKubernetesClient:
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         try:
             if not self.available_tools:
-                return {'error': 'Not connected to MCP server'}
+                # Attempt a lazy reconnection before giving up
+                connected = await self.connect_to_server()
+                if not connected or not self.available_tools:
+                    return {'error': 'Not connected to MCP server'}
                 
             # Call tool via HTTP
             response = requests.post(
