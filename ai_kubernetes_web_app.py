@@ -8,7 +8,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 import os
 import json
 import time
@@ -168,6 +168,62 @@ class AIPoweredMCPKubernetesProcessor:
                 'tool': tool_name,
                 'arguments': arguments
             }
+    
+    def _format_mcp_result(self, tool_identifier: str, result: Any) -> Optional[str]:
+        """Format raw MCP results into a friendly summary."""
+        if isinstance(result, dict) and 'error' in result:
+            error_msg = result.get('error', 'Unknown MCP error')
+            if 'kubectl not available' in error_msg:
+                return (
+                    "⚠️ The Kubernetes CLI (`kubectl`) was not reachable inside the MCP service.\n"
+                    "Make sure the service has access to `kubectl` and the cluster credentials."
+                )
+            return f"⚠️ MCP tool reported an error: {error_msg}"
+        
+        if not isinstance(result, dict):
+            return None
+        
+        identifier = (tool_identifier or "").lower()
+        
+        if 'pods_list' in identifier and 'pods' in result:
+            pods = result.get('pods', [])
+            total = len(pods)
+            running = sum(1 for pod in pods if pod.get('status') == 'Running')
+            pending = sum(1 for pod in pods if pod.get('status') == 'Pending')
+            failed = sum(1 for pod in pods if pod.get('status') not in ('Running', 'Pending'))
+            top_pods = pods[:10]
+            
+            lines = [
+                f"📦 **Pods Summary**",
+                f"- Total pods: {total}",
+                f"- Running: {running}",
+                f"- Pending: {pending}",
+                f"- Other states: {failed}"
+            ]
+            if top_pods:
+                lines.append("\nFirst few pods:")
+                for pod in top_pods:
+                    lines.append(
+                        f"• `{pod.get('name')}` — {pod.get('status')} "
+                        f"(Ready {pod.get('ready')}, Namespace {pod.get('namespace')})"
+                    )
+            if total > 10:
+                lines.append(f"\n…and {total - 10} more pods.")
+            return "\n".join(lines)
+        
+        if 'pods_get' in identifier:
+            return json.dumps(result, indent=2)
+        
+        if 'pods_log' in identifier and isinstance(result, dict):
+            logs = result.get('logs', '')
+            if not logs:
+                return "ℹ️ Pod logs were empty."
+            snippet = logs.splitlines()
+            if len(snippet) > 20:
+                snippet = snippet[:20] + ["… (truncated)"]
+            return "📝 **Latest logs:**\n" + "\n".join(snippet)
+        
+        return None
     
     def _get_mcp_tools_for_ai(self):
         """Get MCP tools formatted for AI context"""
@@ -1130,6 +1186,24 @@ def api_chat(server_id):
                         result_text = str(mcp_result['result'])
                     
                     response_text = processed["explanation"]
+                    polished_text = None
+                    if processor.use_ai:
+                        try:
+                            polished_text = processor._post_process_with_ai(
+                                message,
+                                processed['command'],
+                                mcp_result['result']
+                            )
+                        except Exception as polish_exc:  # pylint: disable=unused-variable
+                            polished_text = None
+                    if polished_text:
+                        response_text = polished_text
+                    else:
+                        formatted = processor._format_mcp_result(processed['command'], mcp_result['result'])
+                        if formatted:
+                            response_text = f"{processed['explanation']}\n\n{formatted}"
+                        elif result_text.strip():
+                            response_text = f"{processed['explanation']}\n\n{result_text}"
                     
                     # Store chat in database
                     chat = Chat(
