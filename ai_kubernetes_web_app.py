@@ -8,13 +8,13 @@ from flask import Flask, render_template, request, redirect, url_for, flash, ses
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
-from typing import Any, List, Dict, Optional
 import os
 import json
-import time
 import requests
 import uuid
 import asyncio
+import time
+from typing import Any, List, Dict, Optional
 from mcp_client import call_mcp_tool
 
 # Import predictive monitoring components
@@ -51,18 +51,6 @@ class AIPoweredMCPKubernetesProcessor:
         self.anthropic = None
         self._load_tools()
         self._initialize_ai()
-        # Tools that must remain deterministic; skip AI post-processing
-        self.ai_skip_tools = {
-            "pods_list",
-            "pods_top",
-            "cluster_resources",
-            "pods_run",
-            "pods_delete",
-            "pods_get",
-            "resources_list",
-            "namespaces_list",
-            "events_list",
-        }
     
     def _initialize_ai(self):
         """Initialize AI client (Groq primary, Anthropic fallback)"""
@@ -180,165 +168,6 @@ class AIPoweredMCPKubernetesProcessor:
                 'tool': tool_name,
                 'arguments': arguments
             }
-    
-    def _format_mcp_result(self, tool_identifier: str, result: Any) -> Optional[str]:
-        """Format raw MCP results into a friendly summary."""
-        if isinstance(result, dict) and 'error' in result:
-            error_msg = result.get('error', 'Unknown MCP error')
-            if 'kubectl not available' in error_msg:
-                return (
-                    "⚠️ The Kubernetes CLI (`kubectl`) was not reachable inside the MCP service.\n"
-                    "Make sure the service has access to `kubectl` and the cluster credentials."
-                )
-            return f"⚠️ MCP tool reported an error: {error_msg}"
-        
-        if not isinstance(result, dict):
-            return None
-        
-        identifier = (tool_identifier or "").lower()
-        
-        if 'pods_list' in identifier and 'pods' in result:
-            pods = result.get('pods', [])
-            total = len(pods)
-            running = sum(1 for pod in pods if pod.get('status') == 'Running')
-            pending = sum(1 for pod in pods if pod.get('status') == 'Pending')
-            failed = sum(1 for pod in pods if pod.get('status') not in ('Running', 'Pending'))
-            top_pods = pods[:10]
-            
-            lines = [
-                f"📦 **Pods Summary**",
-                f"- Total pods: {total}",
-                f"- Running: {running}",
-                f"- Pending: {pending}",
-                f"- Other states: {failed}"
-            ]
-            if top_pods:
-                lines.append("\nFirst few pods:")
-                for pod in top_pods:
-                    lines.append(
-                        f"• `{pod.get('name')}` — {pod.get('status')} "
-                        f"(Ready {pod.get('ready')}, Namespace {pod.get('namespace')})"
-                    )
-            if total > 10:
-                lines.append(f"\n…and {total - 10} more pods.")
-            return "\n".join(lines)
-        
-        if 'pods_get' in identifier:
-            return json.dumps(result, indent=2)
-        
-        if 'pods_log' in identifier and isinstance(result, dict):
-            logs = result.get('logs', '')
-            if not logs:
-                return "ℹ️ Pod logs were empty."
-            snippet = logs.splitlines()
-            if len(snippet) > 20:
-                snippet = snippet[:20] + ["… (truncated)"]
-            return "📝 **Latest logs:**\n" + "\n".join(snippet)
-        
-        if 'pods_top' in identifier and isinstance(result, dict):
-            metrics = result.get('metrics', [])
-            if not metrics:
-                return "ℹ️ No pod usage metrics were returned (metrics-server may be unavailable)."
-            cpu_vals = []
-            mem_vals = []
-            rows = []
-            for item in metrics[:10]:
-                name = item.get('name', 'unknown')
-                cpu_raw = item.get('cpu', '0m')
-                mem_raw = item.get('memory', '0Mi')
-                rows.append(f"• `{name}` — CPU {cpu_raw}, Memory {mem_raw}")
-                try:
-                    cpu_val = cpu_raw
-                    if isinstance(cpu_raw, str) and cpu_raw.endswith('m'):
-                        cpu_vals.append(int(cpu_raw[:-1]) / 1000)
-                    else:
-                        cpu_vals.append(float(cpu_raw))
-                except Exception:
-                    pass
-                try:
-                    if isinstance(mem_raw, str) and mem_raw.endswith('Mi'):
-                        mem_vals.append(int(mem_raw[:-2]))
-                    else:
-                        mem_vals.append(float(mem_raw))
-                except Exception:
-                    pass
-            summary_lines = ["📈 **Top Pod Resource Usage**"]
-            if rows:
-                summary_lines.append("\n".join(rows))
-            if cpu_vals:
-                summary_lines.append(f"\nAverage CPU: {sum(cpu_vals)/len(cpu_vals):.2f} cores")
-            if mem_vals:
-                summary_lines.append(f"Average Memory: {sum(mem_vals)/len(mem_vals):.0f} Mi")
-            return "\n".join(summary_lines)
-        
-        if 'pods_run' in identifier and isinstance(result, dict):
-            status = result.get('status', 'unknown')
-            pod_name = result.get('pod_name', result.get('name', 'unknown'))
-            namespace = result.get('namespace', 'default')
-            image = result.get('image', 'nginx')
-            return (
-                f"✅ Pod `{pod_name}` created in namespace `{namespace}` using image `{image}` "
-                f"(status: {status})."
-            )
-        
-        if 'pods_delete' in identifier and isinstance(result, dict):
-            name = result.get('name', 'unknown')
-            namespace = result.get('namespace', 'default')
-            message = result.get('message') or ''
-            return f"🗑️ Pod `{name}` in namespace `{namespace}` deleted. {message}"
-        
-        return None
-    
-    def _build_cluster_resource_summary(self) -> Dict[str, Any]:
-        """Gather cluster wide resource information using MCP tools."""
-        pods_info = self._call_mcp_tool('pods_list', {'namespace': 'all'})
-        nodes_info = self._call_mcp_tool('resources_list', {'apiVersion': 'v1', 'kind': 'Node'})
-        services_info = self._call_mcp_tool('resources_list', {'apiVersion': 'v1', 'kind': 'Service'})
-        deployments_info = self._call_mcp_tool('resources_list', {'apiVersion': 'apps/v1', 'kind': 'Deployment'})
-        summary_parts = []
-        success = True
-        
-        if pods_info.get('success'):
-            pods_data = pods_info['result']
-            pods = pods_data.get('pods', [])
-            running = sum(1 for pod in pods if pod.get('status') == 'Running')
-            pending = sum(1 for pod in pods if pod.get('status') == 'Pending')
-            summary_parts.append(
-                f"📦 Pods: {pods_data.get('pod_count', len(pods))} total "
-                f"(Running {running}, Pending {pending})"
-            )
-        else:
-            success = False
-            summary_parts.append(f"Pods: {pods_info.get('error', 'Unavailable')}")
-        
-        if nodes_info.get('success'):
-            nodes = nodes_info['result'].get('items', [])
-            ready = sum(
-                1 for node in nodes
-                if any(
-                    cond.get('type') == 'Ready' and cond.get('status') == 'True'
-                    for cond in node.get('status', {}).get('conditions', [])
-                )
-            )
-            summary_parts.append(f"🖥️ Nodes: {len(nodes)} total (Ready {ready})")
-        else:
-            success = False
-            summary_parts.append(f"Nodes: {nodes_info.get('error', 'Unavailable')}")
-        
-        if services_info.get('success'):
-            summary_parts.append(f"🛠️ Services: {services_info['result'].get('count', 0)} total")
-        else:
-            success = False
-            summary_parts.append(f"Services: {services_info.get('error', 'Unavailable')}")
-        
-        if deployments_info.get('success'):
-            summary_parts.append(f"🚀 Deployments: {deployments_info['result'].get('count', 0)} total")
-        else:
-            success = False
-            summary_parts.append(f"Deployments: {deployments_info.get('error', 'Unavailable')}")
-        
-        details = "\n".join(summary_parts)
-        return {"success": success, "summary": details}
     
     def _get_mcp_tools_for_ai(self):
         """Get MCP tools formatted for AI context"""
@@ -463,23 +292,19 @@ class AIPoweredMCPKubernetesProcessor:
         try:
             # Extract the actual content from MCP result
             if isinstance(raw_result, dict):
-                content = raw_result.get('content')
-                if isinstance(content, list) and content and isinstance(content[0], dict):
-                    actual_content = content[0].get('text', json.dumps(raw_result, default=str))
+                content = raw_result.get('content', [{}])
+                if isinstance(content, list) and len(content) > 0:
+                    actual_content = content[0].get('text', '')
                 else:
-                    actual_content = json.dumps(raw_result, indent=2, default=str)
+                    actual_content = str(raw_result)
             else:
                 actual_content = str(raw_result)
             
             # Create a system prompt for post-processing
             system_prompt = (
                 "You are a Kubernetes expert. Transform the raw output into a polished, "
-                "user-friendly response with emojis and clear formatting.\n"
-                "IMPORTANT:\n"
-                "  • Base every statement strictly on the RAW OUTPUT data provided.\n"
-                "  • Do not invent or guess values that are not present.\n"
-                "  • If data is missing, state that it is unavailable instead of estimating.\n"
-                "  • Summaries or counts must be derived from the actual data."
+                "user-friendly response with emojis and clear formatting. "
+                "Focus on what the user asked for and make it easy to understand."
             )
             
             message = f"""User Question: "{user_query}"
@@ -719,7 +544,7 @@ Transform this into a polished response."""
         
         # 5. ENHANCED POD LISTING
         if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower or 'running' in query_lower):
-            result = self._call_mcp_tool('pods_list', {'namespace': 'all'})
+            result = self._call_mcp_tool('pods_list', {})
             return {
                 'command': 'Regex: pods_list',
                 'explanation': f"I'll show you all pods using MCP tools",
@@ -794,34 +619,6 @@ Transform this into a polished response."""
                 'mcp_result': result
             }
         
-        elif 'cluster' in query_lower and ('resource' in query_lower or 'status' in query_lower or 'health' in query_lower):
-            cluster_summary = self._build_cluster_resource_summary()
-            explanation = (
-                "Here's a quick cluster resource overview based on current Kubernetes metrics."
-            )
-            if not cluster_summary["success"]:
-                explanation += " Some sections could not be retrieved completely."
-            return {
-                'command': 'Regex: cluster_resources',
-                'explanation': explanation,
-                'ai_processed': False,
-                'mcp_result': {
-                    'success': cluster_summary["success"],
-                    'result': cluster_summary["summary"],
-                    'tool': 'cluster_resources',
-                    'arguments': {}
-                }
-            }
-        
-        elif any(keyword in query_lower for keyword in ['cpu', 'memory', 'utilization', 'usage']):
-            result = self._call_mcp_tool('pods_top', {'namespace': 'all'})
-            return {
-                'command': 'Regex: pods_top',
-                'explanation': "Here's the current pod CPU and memory usage from the metrics server.",
-                'ai_processed': False,
-                'mcp_result': result
-            }
-        
         # 9. DEPLOYMENTS
         elif 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
             result = self._call_mcp_tool('resources_list', {
@@ -879,12 +676,7 @@ Transform this into a polished response."""
     def process_query(self, query: str) -> dict:
         """Process natural language query using AI-first approach with regex fallback"""
         
-        # Try regex handlers first for deterministic tool usage
-        regex_result = self._process_with_regex(query)
-        if regex_result.get('command'):
-            return regex_result
-        
-        # Regex had no match; allow AI processing if available
+        # Try AI processing first if available
         if self.use_ai and self.anthropic:
             try:
                 ai_result = self._process_with_ai(query)
@@ -898,9 +690,9 @@ Transform this into a polished response."""
             except Exception as e:
                 print(f"⚠️  AI processing failed, falling back to regex: {e}")
         
-        # Fall back to default regex explanation (no command matched)
+        # Fall back to regex processing
         print(f"🔧 Using regex fallback for: {query}")
-        return regex_result
+        return self._process_with_regex(query)
     
     def _extract_pod_name(self, query: str) -> str:
         """Extract pod name from create pod query"""
@@ -1152,6 +944,106 @@ def dashboard():
     
     return render_template('dashboard.html', user=user, servers=servers)
 
+
+@app.route('/benchmark')
+def benchmark_page():
+    """Render benchmark dashboard."""
+    if 'user_id' not in session:
+        flash('Please log in to access benchmarks.', 'warning')
+        return redirect(url_for('login'))
+
+    user = User.query.get(session['user_id'])
+    if not user:
+        session.clear()
+        flash('Your session has expired. Please log in again.', 'warning')
+        return redirect(url_for('login'))
+
+    servers = Server.query.filter_by(user_id=user.id).all()
+    return render_template('benchmark.html', user=user, servers=servers)
+
+
+@app.route('/api/benchmark/<int:server_id>', methods=['POST'])
+def run_benchmark(server_id):
+    """Execute a lightweight benchmark comparing RAG vs LLM latency."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+
+    try:
+        iterations = request.json.get('iterations', 2) if request.is_json else 2
+        iterations = max(1, min(int(iterations), 20))
+
+        ai_monitoring = get_ai_monitoring(server_id)
+        if not ai_monitoring:
+            return jsonify({'error': 'AI monitoring not available for this server'}), 500
+
+        warmup_iterations = 1 if iterations > 1 else 0
+        for _ in range(warmup_iterations):
+            try:
+                ai_monitoring.get_current_analysis()
+                ai_monitoring.get_llm_recommendations()
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        rag_times, rag_sizes, rag_items = [], [], []
+        llm_times, llm_sizes, llm_items = [], [], []
+
+        def safe_dump(payload: Any) -> bytes:
+            try:
+                return json.dumps(payload, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)).encode('utf-8')
+            except TypeError:
+                return json.dumps(payload, default=str).encode('utf-8')
+
+        for _ in range(iterations):
+            start = time.time()
+            analysis = ai_monitoring.get_current_analysis()
+            rag_times.append(time.time() - start)
+            rag_data = safe_dump(analysis)
+            rag_sizes.append(len(rag_data))
+            rag_items.append(len(analysis.get('rag_recommendations', [])))
+            time.sleep(0.05)
+
+            start = time.time()
+            llm_recs = ai_monitoring.get_llm_recommendations()
+            llm_times.append(time.time() - start)
+            llm_data = safe_dump({'llm_recommendations': llm_recs})
+            llm_sizes.append(len(llm_data))
+            llm_items.append(len(llm_recs))
+            time.sleep(0.05)
+
+        def summarize(values: List[float]) -> Dict[str, float]:
+            if not values:
+                return {'avg': 0, 'min': 0, 'max': 0, 'p50': 0, 'p95': 0}
+            sorted_vals = sorted(values)
+            return {
+                'avg': sum(values) / len(values),
+                'min': min(values),
+                'max': max(values),
+                'p50': sorted_vals[len(sorted_vals)//2],
+                'p95': sorted_vals[int(len(sorted_vals)*0.95)] if len(sorted_vals) > 1 else sorted_vals[0]
+            }
+
+        return jsonify({
+            'server_id': server_id,
+            'iterations': iterations,
+            'timestamp': datetime.utcnow().isoformat(),
+            'rag': {
+                'latency': summarize(rag_times),
+                'payload_size': summarize(rag_sizes),
+                'item_count': summarize(rag_items),
+            },
+            'llm': {
+                'latency': summarize(llm_times),
+                'payload_size': summarize(llm_sizes),
+                'item_count': summarize(llm_items),
+            }
+        })
+    except Exception as exc:
+        app.logger.exception("Benchmark failed for server %s", server_id)
+        return jsonify({'error': str(exc)}), 500
+
 @app.route('/add_server', methods=['GET', 'POST'])
 def add_server():
     if 'user_id' not in session:
@@ -1243,58 +1135,125 @@ def api_chat(server_id):
     
     # Check if it's a direct kubectl command
     if message.strip().startswith('kubectl'):
-        # Direct kubectl command - use MCP tools
         try:
-            # Parse kubectl command to determine which MCP tool to use
-            parts = message.strip().split()
-            if len(parts) < 2:
+            import shlex
+
+            tokens = shlex.split(message.strip())
+            if len(tokens) < 2:
                 return jsonify({'error': 'Invalid kubectl command'}), 400
-            
-            command = parts[1]  # get, create, delete, etc.
-            
-            # Map kubectl commands to MCP tools
+
+            command = tokens[1]
+
+            def extract_namespace(args, default=None):
+                if '-A' in args or '--all-namespaces' in args:
+                    return 'all'
+                if '-n' in args:
+                    idx = args.index('-n')
+                    if idx + 1 < len(args):
+                        return args[idx + 1]
+                for token in args:
+                    if token.startswith('--namespace='):
+                        return token.split('=', 1)[1]
+                return default
+
+            def run_tool(tool_name, params):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(call_mcp_tool(tool_name, params))
+                finally:
+                    loop.close()
+
+            result = None
+
             if command == 'get':
-                if 'pods' in message:
-                    # Use pods_list MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('pods_list', {}))
-                    loop.close()
-                elif 'namespaces' in message:
-                    # Use namespaces_list MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('namespaces_list', {}))
-                    loop.close()
+                resource = tokens[2] if len(tokens) > 2 else ''
+
+                if resource in ('pods', 'pod'):
+                    namespace = extract_namespace(tokens, default='all')
+                    if resource == 'pod' and len(tokens) > 3:
+                        pod_name = tokens[3]
+                        result = run_tool('pods_get', {
+                            'name': pod_name,
+                            'namespace': namespace if namespace and namespace != 'all' else 'default'
+                        })
+                    else:
+                        result = run_tool('pods_list', {'namespace': namespace or 'all'})
+                elif resource in ('events', 'event'):
+                    namespace = extract_namespace(tokens, default='all')
+                    result = run_tool('events_list', {'namespace': namespace or 'all'})
+                elif resource in ('namespaces', 'ns'):
+                    result = run_tool('namespaces_list', {})
                 else:
-                    # Generic resource list
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('resources_list', {
-                        'apiVersion': 'v1',
-                        'kind': 'Pod'  # Default to Pod for now
-                    }))
-                    loop.close()
+                    return jsonify({'error': f'Unsupported kubectl get resource: {resource}'}), 400
+
             elif command == 'top':
-                if 'pods' in message:
-                    # Use pods_top MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('pods_top', {}))
-                    loop.close()
+                resource = tokens[2] if len(tokens) > 2 else ''
+                if resource.startswith('pod'):
+                    namespace = extract_namespace(tokens, default='all')
+                    pod_name = None
+                    for token in tokens[2:]:
+                        if not token.startswith('-') and token != resource:
+                            pod_name = token
+                            break
+                    result = run_tool('pods_top', {
+                        'namespace': namespace or 'all',
+                        'pod_name': pod_name
+                    })
                 else:
-                    return jsonify({'error': 'Unsupported kubectl top command'}), 400
+                    return jsonify({'error': f'Unsupported kubectl top resource: {resource}'}), 400
+
+            elif command == 'describe':
+                if 'pod' in tokens:
+                    namespace = extract_namespace(tokens, default='default')
+                    pod_idx = tokens.index('pod')
+                    if pod_idx + 1 >= len(tokens):
+                        return jsonify({'error': 'Pod name required for kubectl describe pod'}), 400
+                    pod_name = tokens[pod_idx + 1]
+                    result = run_tool('pods_get', {
+                        'name': pod_name,
+                        'namespace': namespace
+                    })
+                else:
+                    return jsonify({'error': 'Unsupported kubectl describe command'}), 400
+
+            elif command == 'logs':
+                namespace = extract_namespace(tokens, default='default')
+                pod_name = None
+                for token in tokens[2:]:
+                    if not token.startswith('-'):
+                        pod_name = token
+                        break
+                if not pod_name:
+                    return jsonify({'error': 'Pod name required for kubectl logs'}), 400
+                result = run_tool('pods_log', {
+                    'name': pod_name,
+                    'namespace': namespace
+                })
+
+            elif command == 'delete':
+                if 'pod' in tokens:
+                    namespace = extract_namespace(tokens, default='default')
+                    pod_idx = tokens.index('pod')
+                    if pod_idx + 1 >= len(tokens):
+                        return jsonify({'error': 'Pod name required for kubectl delete pod'}), 400
+                    pod_name = tokens[pod_idx + 1]
+                    result = run_tool('pods_delete', {
+                        'name': pod_name,
+                        'namespace': namespace
+                    })
+                else:
+                    return jsonify({'error': 'Unsupported kubectl delete command'}), 400
             else:
                 return jsonify({'error': f'Unsupported kubectl command: {command}'}), 400
-            
-            if result.get('success'):
-                # Format the result for display
-                if 'result' in result and 'content' in result['result']:
-                    content = result['result']['content'][0]['text'] if result['result']['content'] else 'No output'
+
+            if result and result.get('success'):
+                payload = result.get('result', result)
+                if isinstance(payload, dict):
+                    content = json.dumps(payload, indent=2)
                 else:
-                    content = str(result.get('result', 'Command executed successfully'))
-                
-                # Store kubectl command in database
+                    content = str(payload)
+
                 chat = Chat(
                     user_id=session['user_id'],
                     server_id=server_id,
@@ -1306,15 +1265,13 @@ def api_chat(server_id):
                 )
                 db.session.add(chat)
                 db.session.commit()
-                
-                return jsonify({
-                    'response': content,
-                    'chat_id': chat.id
-                })
-            else:
-                return jsonify({'error': result.get('error', 'Command failed')}), 500
-                
+
+                return jsonify({'response': content, 'chat_id': chat.id})
+
+            error_message = result.get('error', 'Command failed') if result else 'Unknown error'
+            return jsonify({'error': error_message}), 500
         except Exception as e:
+            app.logger.exception("Kubectl command processing failed")
             return jsonify({'error': str(e)}), 500
     else:
         # Natural language query - use intelligent MCP processor
@@ -1337,26 +1294,7 @@ def api_chat(server_id):
                     else:
                         result_text = str(mcp_result['result'])
                     
-                response_text = processed["explanation"]
-                polished_text = None
-                actual_tool = (mcp_result.get('tool') or '').lower()
-                allow_ai = processor.use_ai and actual_tool not in processor.ai_skip_tools
-                if allow_ai:
-                        try:
-                            polished_text = processor._post_process_with_ai(
-                                message,
-                                processed['command'],
-                                mcp_result['result']
-                            )
-                        except Exception as polish_exc:  # pylint: disable=unused-variable
-                            polished_text = None
-                formatted = processor._format_mcp_result(actual_tool or processed['command'], mcp_result['result'])
-                if polished_text:
-                    response_text = polished_text
-                elif formatted:
-                    response_text = f"{processed['explanation']}\n\n{formatted}"
-                elif result_text.strip():
-                    response_text = f"{processed['explanation']}\n\n{result_text}"
+                    response_text = processed["explanation"]
                     
                     # Store chat in database
                     chat = Chat(
@@ -1820,13 +1758,28 @@ if True:
                 }]
             return jsonify({'alerts': alerts, 'count': len(alerts)})
         except Exception as e:
-            app.logger.exception("Failed to fetch alerts for server %s", server_id)
-            return jsonify({
-                'alerts': [],
-                'count': 0,
-                'error': str(e)
-            }), 200
+            return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/monitoring/llm_recommendations/<int:server_id>')
+    def get_monitoring_llm_recommendations(server_id):
+        """LLM or fallback recommendations for specific server."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            recommendations = ai_monitoring.get_llm_recommendations()
+            return jsonify({
+                'llm_recommendations': recommendations,
+                'count': len(recommendations)
+            })
+        except Exception as exc:
+            app.logger.exception("Failed to fetch LLM recommendations for server %s", server_id)
+            return jsonify({'llm_recommendations': [], 'count': 0, 'error': str(exc)}), 200
+
     @app.route('/api/monitoring/recommendations/<int:server_id>')
     def get_monitoring_recommendations(server_id):
         """Get performance recommendations for specific server"""
@@ -1864,183 +1817,6 @@ if True:
             return jsonify(forecast)
         except Exception as e:
             return jsonify({'error': str(e)}), 500
-
-    @app.route('/api/monitoring/trends/<int:server_id>')
-    def get_monitoring_trends(server_id):
-        """Get 24h trends for specific server."""
-        if 'user_id' not in session:
-            return jsonify({'error': 'Unauthorized'}), 401
-
-        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-        try:
-            ai_monitoring = get_ai_monitoring(server_id)
-            if not ai_monitoring:
-                return jsonify({'error': 'AI monitoring not available for this server'}), 500
-            trends = ai_monitoring.get_trends_24h()
-            return jsonify(trends)
-        except Exception as exc:
-            app.logger.exception("Failed to fetch trends for server %s", server_id)
-            return jsonify({'cpu': [], 'memory': [], 'error': str(exc)}), 200
-
-    @app.route('/api/monitoring/events/<int:server_id>')
-    def get_monitoring_events(server_id):
-        """Return recent Kubernetes events for the cluster."""
-        if 'user_id' not in session:
-            return jsonify({'error': 'Unauthorized'}), 401
-
-        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-        try:
-            import subprocess
-            result = subprocess.run(
-                ['kubectl', 'get', 'events', '--all-namespaces', '-o', 'json'],
-                capture_output=True, text=True, check=False
-            )
-            if result.returncode != 0:
-                return jsonify({'events': [], 'count': 0, 'error': result.stderr.strip()}), 200
-            data = json.loads(result.stdout or '{}')
-            items = data.get('items', [])
-            events = []
-            for ev in items:
-                involved = ev.get('involvedObject', {})
-                meta = ev.get('metadata', {})
-                last_ts = ev.get('lastTimestamp') or ev.get('eventTime') or meta.get('creationTimestamp')
-                events.append({
-                    'namespace': involved.get('namespace') or meta.get('namespace') or '',
-                    'type': ev.get('type', 'Normal'),
-                    'reason': ev.get('reason', ''),
-                    'message': ev.get('message', ''),
-                    'source': (ev.get('source') or {}).get('component', ''),
-                    'count': ev.get('count', 1),
-                    'timestamp': last_ts,
-                    'involved_object': {
-                        'kind': involved.get('kind', ''),
-                        'name': involved.get('name', ''),
-                        'namespace': involved.get('namespace', '')
-                    }
-                })
-            events.sort(key=lambda item: item.get('timestamp') or '', reverse=True)
-            return jsonify({'events': events[:30], 'count': min(len(events), 30)})
-        except Exception as exc:
-            app.logger.exception("Failed to fetch events for server %s", server_id)
-            return jsonify({'events': [], 'count': 0, 'error': str(exc)}), 200
-
-    @app.route('/api/monitoring/llm_recommendations/<int:server_id>')
-    def get_monitoring_llm_recommendations(server_id):
-        """LLM or fallback recommendations for specific server."""
-        if 'user_id' not in session:
-            return jsonify({'error': 'Unauthorized'}), 401
-
-        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-        try:
-            ai_monitoring = get_ai_monitoring(server_id)
-            if not ai_monitoring:
-                return jsonify({'error': 'AI monitoring not available for this server'}), 500
-            recommendations = ai_monitoring.get_llm_recommendations()
-            return jsonify({
-                'llm_recommendations': recommendations,
-                'count': len(recommendations)
-            })
-        except Exception as exc:
-            app.logger.exception("Failed to fetch LLM recommendations for server %s", server_id)
-            return jsonify({'llm_recommendations': [], 'count': 0, 'error': str(exc)}), 200
-    
-    @app.route('/benchmark')
-    def benchmark_page():
-        """Render benchmark dashboard."""
-        if 'user_id' not in session:
-            flash('Please log in to access benchmarks.', 'warning')
-            return redirect(url_for('login'))
-
-        user = User.query.get(session['user_id'])
-        if not user:
-            session.clear()
-            flash('Your session has expired. Please log in again.', 'warning')
-            return redirect(url_for('login'))
-
-        servers = Server.query.filter_by(user_id=user.id).all()
-        return render_template('benchmark.html', user=user, servers=servers)
-
-    @app.route('/api/benchmark/<int:server_id>', methods=['POST'])
-    def run_benchmark(server_id):
-        """Execute a lightweight benchmark comparing RAG vs LLM latency."""
-        if 'user_id' not in session:
-            return jsonify({'error': 'Unauthorized'}), 401
-
-        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-
-        try:
-            iterations = request.json.get('iterations', 5) if request.is_json else 5
-            iterations = max(1, min(int(iterations), 20))
-
-            ai_monitoring = get_ai_monitoring(server_id)
-            if not ai_monitoring:
-                return jsonify({'error': 'AI monitoring not available for this server'}), 500
-
-            # Warm-up
-            for _ in range(2):
-                try:
-                    ai_monitoring.get_current_analysis()
-                    ai_monitoring.get_llm_recommendations()
-                except Exception:
-                    pass
-                time.sleep(0.2)
-
-            rag_times, rag_sizes, rag_items = [], [], []
-            llm_times, llm_sizes, llm_items = [], [], []
-
-            def safe_dump(payload: Any) -> bytes:
-                try:
-                    return json.dumps(payload, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)).encode('utf-8')
-                except TypeError:
-                    return json.dumps(payload, default=str).encode('utf-8')
-
-            for _ in range(iterations):
-                start = time.time()
-                analysis = ai_monitoring.get_current_analysis()
-                rag_times.append(time.time() - start)
-                rag_data = safe_dump(analysis)
-                rag_sizes.append(len(rag_data))
-                rag_items.append(len(analysis.get('rag_recommendations', [])))
-                time.sleep(0.1)
-
-                start = time.time()
-                llm_recs = ai_monitoring.get_llm_recommendations()
-                llm_times.append(time.time() - start)
-                llm_data = safe_dump({'llm_recommendations': llm_recs})
-                llm_sizes.append(len(llm_data))
-                llm_items.append(len(llm_recs))
-                time.sleep(0.1)
-
-            def summarize(values: List[float]) -> Dict[str, float]:
-                if not values:
-                    return {'avg': 0, 'min': 0, 'max': 0, 'p50': 0, 'p95': 0}
-                sorted_vals = sorted(values)
-                return {
-                    'avg': sum(values) / len(values),
-                    'min': min(values),
-                    'max': max(values),
-                    'p50': sorted_vals[len(sorted_vals)//2],
-                    'p95': sorted_vals[int(len(sorted_vals)*0.95)] if len(sorted_vals) > 1 else sorted_vals[0]
-                }
-
-            return jsonify({
-                'server_id': server_id,
-                'iterations': iterations,
-                'timestamp': datetime.utcnow().isoformat(),
-                'rag': {
-                    'latency': summarize(rag_times),
-                    'payload_size': summarize(rag_sizes),
-                    'item_count': summarize(rag_items),
-                },
-                'llm': {
-                    'latency': summarize(llm_times),
-                    'payload_size': summarize(llm_sizes),
-                    'item_count': summarize(llm_items),
-                }
-            })
-        except Exception as exc:
-            app.logger.exception("Benchmark failed for server %s", server_id)
-            return jsonify({'error': str(exc)}), 500
     
     @app.route('/api/monitoring/health/<int:server_id>')
     def get_monitoring_health(server_id):

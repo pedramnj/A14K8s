@@ -345,52 +345,89 @@ function createLatencyChart(data) {
     if (charts.latency) {
         charts.latency.destroy();
     }
-    
+
+    const ragLatencyData = [
+        data.rag.latency.avg,
+        data.rag.latency.min,
+        data.rag.latency.max,
+        data.rag.latency.p50,
+        data.rag.latency.p95
+    ];
+    const llmLatencyData = [
+        data.llm.latency.avg,
+        data.llm.latency.min,
+        data.llm.latency.max,
+        data.llm.latency.p50,
+        data.llm.latency.p95
+    ];
+
+    const ragMax = Math.max(...ragLatencyData);
+    const llmMax = Math.max(...llmLatencyData);
+    const ratio = ragMax > 0 ? llmMax / ragMax : Infinity;
+    const useDualAxis = ragMax > 0 && ratio > 1000;
+
+    const datasets = [
+        {
+            label: 'RAG (seconds)',
+            data: ragLatencyData,
+            backgroundColor: 'rgba(37, 99, 235, 0.6)',
+            borderColor: 'rgba(37, 99, 235, 1)',
+            borderWidth: 1,
+            minBarLength: 2,
+            yAxisID: useDualAxis ? 'yRag' : 'y'
+        },
+        {
+            label: 'LLM (seconds)',
+            data: llmLatencyData,
+            backgroundColor: 'rgba(14, 165, 233, 0.6)',
+            borderColor: 'rgba(14, 165, 233, 1)',
+            borderWidth: 1,
+            yAxisID: useDualAxis ? 'yLLM' : 'y'
+        }
+    ];
+
+    const scales = useDualAxis ? {
+        yRag: {
+            beginAtZero: true,
+            suggestedMax: ragMax ? ragMax * 1.2 : 1,
+            position: 'left',
+            title: {
+                display: true,
+                text: 'RAG Latency (seconds)'
+            }
+        },
+        yLLM: {
+            beginAtZero: true,
+            suggestedMax: llmMax ? llmMax * 1.2 : 1,
+            position: 'right',
+            grid: {
+                drawOnChartArea: false
+            },
+            title: {
+                display: true,
+                text: 'LLM Latency (seconds)'
+            }
+        }
+    } : {
+        y: {
+            beginAtZero: true,
+            title: {
+                display: true,
+                text: 'Latency (seconds)'
+            }
+        }
+    };
+
     charts.latency = new Chart(ctx, {
         type: 'bar',
         data: {
             labels: ['Average', 'Min', 'Max', 'P50', 'P95'],
-            datasets: [
-                {
-                    label: 'RAG (seconds)',
-                    data: [
-                        data.rag.latency.avg,
-                        data.rag.latency.min,
-                        data.rag.latency.max,
-                        data.rag.latency.p50,
-                        data.rag.latency.p95
-                    ],
-                    backgroundColor: 'rgba(37, 99, 235, 0.6)',
-                    borderColor: 'rgba(37, 99, 235, 1)',
-                    borderWidth: 1
-                },
-                {
-                    label: 'LLM (seconds)',
-                    data: [
-                        data.llm.latency.avg,
-                        data.llm.latency.min,
-                        data.llm.latency.max,
-                        data.llm.latency.p50,
-                        data.llm.latency.p95
-                    ],
-                    backgroundColor: 'rgba(14, 165, 233, 0.6)',
-                    borderColor: 'rgba(14, 165, 233, 1)',
-                    borderWidth: 1
-                }
-            ]
+            datasets
         },
         options: {
             responsive: true,
             maintainAspectRatio: true,
-            scales: {
-                y: {
-                    beginAtZero: true,
-                    title: {
-                        display: true,
-                        text: 'Latency (seconds)'
-                    }
-                }
-            },
+            scales,
             plugins: {
                 legend: {
                     display: true,
@@ -470,6 +507,31 @@ function createItemsChart(data) {
         charts.items.destroy();
     }
     
+    const ragItems = [
+        data.rag.item_count.avg,
+        data.rag.item_count.min,
+        data.rag.item_count.max,
+        data.rag.item_count.p50,
+        data.rag.item_count.p95
+    ];
+    const llmItems = [
+        data.llm.item_count.avg,
+        data.llm.item_count.min,
+        data.llm.item_count.max,
+        data.llm.item_count.p50,
+        data.llm.item_count.p95
+    ];
+
+    const allZero = ragItems.every(v => v === 0) && llmItems.every(v => v === 0);
+    if (allZero) {
+        ctx.canvas.parentNode.innerHTML = `
+            <div style="text-align:center; color: var(--text-muted); padding: 2rem;">
+                No recommendations were returned by either endpoint.
+            </div>
+        `;
+        return;
+    }
+
     charts.items = new Chart(ctx, {
         type: 'bar',
         data: {
@@ -477,29 +539,19 @@ function createItemsChart(data) {
             datasets: [
                 {
                     label: 'RAG (items)',
-                    data: [
-                        data.rag.item_count.avg,
-                        data.rag.item_count.min,
-                        data.rag.item_count.max,
-                        data.rag.item_count.p50,
-                        data.rag.item_count.p95
-                    ],
+                    data: ragItems,
                     backgroundColor: 'rgba(37, 99, 235, 0.6)',
                     borderColor: 'rgba(37, 99, 235, 1)',
-                    borderWidth: 1
+                    borderWidth: 1,
+                    minBarLength: 2
                 },
                 {
                     label: 'LLM (items)',
-                    data: [
-                        data.llm.item_count.avg,
-                        data.llm.item_count.min,
-                        data.llm.item_count.max,
-                        data.llm.item_count.p50,
-                        data.llm.item_count.p95
-                    ],
+                    data: llmItems,
                     backgroundColor: 'rgba(14, 165, 233, 0.6)',
                     borderColor: 'rgba(14, 165, 233, 1)',
-                    borderWidth: 1
+                    borderWidth: 1,
+                    minBarLength: 2
                 }
             ]
         },
