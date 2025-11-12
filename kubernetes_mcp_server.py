@@ -384,13 +384,24 @@ class KubernetesMCP:
             for line in lines:
                 if line.strip():
                     parts = line.split()
-                    if len(parts) >= 3:
-                        pod_metrics.append({
-                            "name": parts[0],
-                            "cpu": parts[1],
-                            "memory": parts[2],
-                            "namespace": namespace
-                        })
+                    if namespace in ("all", "--all-namespaces") and len(parts) >= 4:
+                        pod_namespace = parts[0]
+                        pod_name = parts[1]
+                        cpu = parts[2]
+                        memory = parts[3]
+                    elif len(parts) >= 3:
+                        pod_namespace = namespace
+                        pod_name = parts[0]
+                        cpu = parts[1]
+                        memory = parts[2]
+                    else:
+                        continue
+                    pod_metrics.append({
+                        "name": pod_name,
+                        "cpu": cpu,
+                        "memory": memory,
+                        "namespace": pod_namespace
+                    })
             
             return {
                 "namespace": namespace,

@@ -51,6 +51,18 @@ class AIPoweredMCPKubernetesProcessor:
         self.anthropic = None
         self._load_tools()
         self._initialize_ai()
+        # Tools that must remain deterministic; skip AI post-processing
+        self.ai_skip_tools = {
+            "pods_list",
+            "pods_top",
+            "cluster_resources",
+            "pods_run",
+            "pods_delete",
+            "pods_get",
+            "resources_list",
+            "namespaces_list",
+            "events_list",
+        }
     
     def _initialize_ai(self):
         """Initialize AI client (Groq primary, Anthropic fallback)"""
@@ -222,6 +234,58 @@ class AIPoweredMCPKubernetesProcessor:
             if len(snippet) > 20:
                 snippet = snippet[:20] + ["… (truncated)"]
             return "📝 **Latest logs:**\n" + "\n".join(snippet)
+        
+        if 'pods_top' in identifier and isinstance(result, dict):
+            metrics = result.get('metrics', [])
+            if not metrics:
+                return "ℹ️ No pod usage metrics were returned (metrics-server may be unavailable)."
+            cpu_vals = []
+            mem_vals = []
+            rows = []
+            for item in metrics[:10]:
+                name = item.get('name', 'unknown')
+                cpu_raw = item.get('cpu', '0m')
+                mem_raw = item.get('memory', '0Mi')
+                rows.append(f"• `{name}` — CPU {cpu_raw}, Memory {mem_raw}")
+                try:
+                    cpu_val = cpu_raw
+                    if isinstance(cpu_raw, str) and cpu_raw.endswith('m'):
+                        cpu_vals.append(int(cpu_raw[:-1]) / 1000)
+                    else:
+                        cpu_vals.append(float(cpu_raw))
+                except Exception:
+                    pass
+                try:
+                    if isinstance(mem_raw, str) and mem_raw.endswith('Mi'):
+                        mem_vals.append(int(mem_raw[:-2]))
+                    else:
+                        mem_vals.append(float(mem_raw))
+                except Exception:
+                    pass
+            summary_lines = ["📈 **Top Pod Resource Usage**"]
+            if rows:
+                summary_lines.append("\n".join(rows))
+            if cpu_vals:
+                summary_lines.append(f"\nAverage CPU: {sum(cpu_vals)/len(cpu_vals):.2f} cores")
+            if mem_vals:
+                summary_lines.append(f"Average Memory: {sum(mem_vals)/len(mem_vals):.0f} Mi")
+            return "\n".join(summary_lines)
+        
+        if 'pods_run' in identifier and isinstance(result, dict):
+            status = result.get('status', 'unknown')
+            pod_name = result.get('pod_name', result.get('name', 'unknown'))
+            namespace = result.get('namespace', 'default')
+            image = result.get('image', 'nginx')
+            return (
+                f"✅ Pod `{pod_name}` created in namespace `{namespace}` using image `{image}` "
+                f"(status: {status})."
+            )
+        
+        if 'pods_delete' in identifier and isinstance(result, dict):
+            name = result.get('name', 'unknown')
+            namespace = result.get('namespace', 'default')
+            message = result.get('message') or ''
+            return f"🗑️ Pod `{name}` in namespace `{namespace}` deleted. {message}"
         
         return None
     
@@ -399,19 +463,23 @@ class AIPoweredMCPKubernetesProcessor:
         try:
             # Extract the actual content from MCP result
             if isinstance(raw_result, dict):
-                content = raw_result.get('content', [{}])
-                if isinstance(content, list) and len(content) > 0:
-                    actual_content = content[0].get('text', '')
+                content = raw_result.get('content')
+                if isinstance(content, list) and content and isinstance(content[0], dict):
+                    actual_content = content[0].get('text', json.dumps(raw_result, default=str))
                 else:
-                    actual_content = str(raw_result)
+                    actual_content = json.dumps(raw_result, indent=2, default=str)
             else:
                 actual_content = str(raw_result)
             
             # Create a system prompt for post-processing
             system_prompt = (
                 "You are a Kubernetes expert. Transform the raw output into a polished, "
-                "user-friendly response with emojis and clear formatting. "
-                "Focus on what the user asked for and make it easy to understand."
+                "user-friendly response with emojis and clear formatting.\n"
+                "IMPORTANT:\n"
+                "  • Base every statement strictly on the RAW OUTPUT data provided.\n"
+                "  • Do not invent or guess values that are not present.\n"
+                "  • If data is missing, state that it is unavailable instead of estimating.\n"
+                "  • Summaries or counts must be derived from the actual data."
             )
             
             message = f"""User Question: "{user_query}"
@@ -651,7 +719,7 @@ Transform this into a polished response."""
         
         # 5. ENHANCED POD LISTING
         if 'pods' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower or 'running' in query_lower):
-            result = self._call_mcp_tool('pods_list', {})
+            result = self._call_mcp_tool('pods_list', {'namespace': 'all'})
             return {
                 'command': 'Regex: pods_list',
                 'explanation': f"I'll show you all pods using MCP tools",
@@ -745,6 +813,15 @@ Transform this into a polished response."""
                 }
             }
         
+        elif any(keyword in query_lower for keyword in ['cpu', 'memory', 'utilization', 'usage']):
+            result = self._call_mcp_tool('pods_top', {'namespace': 'all'})
+            return {
+                'command': 'Regex: pods_top',
+                'explanation': "Here's the current pod CPU and memory usage from the metrics server.",
+                'ai_processed': False,
+                'mcp_result': result
+            }
+        
         # 9. DEPLOYMENTS
         elif 'deployments' in query_lower and ('show' in query_lower or 'list' in query_lower or 'get' in query_lower or 'display' in query_lower or 'what' in query_lower):
             result = self._call_mcp_tool('resources_list', {
@@ -802,7 +879,12 @@ Transform this into a polished response."""
     def process_query(self, query: str) -> dict:
         """Process natural language query using AI-first approach with regex fallback"""
         
-        # Try AI processing first if available
+        # Try regex handlers first for deterministic tool usage
+        regex_result = self._process_with_regex(query)
+        if regex_result.get('command'):
+            return regex_result
+        
+        # Regex had no match; allow AI processing if available
         if self.use_ai and self.anthropic:
             try:
                 ai_result = self._process_with_ai(query)
@@ -816,9 +898,9 @@ Transform this into a polished response."""
             except Exception as e:
                 print(f"⚠️  AI processing failed, falling back to regex: {e}")
         
-        # Fall back to regex processing
+        # Fall back to default regex explanation (no command matched)
         print(f"🔧 Using regex fallback for: {query}")
-        return self._process_with_regex(query)
+        return regex_result
     
     def _extract_pod_name(self, query: str) -> str:
         """Extract pod name from create pod query"""
@@ -1255,9 +1337,11 @@ def api_chat(server_id):
                     else:
                         result_text = str(mcp_result['result'])
                     
-                    response_text = processed["explanation"]
-                    polished_text = None
-                    if processor.use_ai:
+                response_text = processed["explanation"]
+                polished_text = None
+                actual_tool = (mcp_result.get('tool') or '').lower()
+                allow_ai = processor.use_ai and actual_tool not in processor.ai_skip_tools
+                if allow_ai:
                         try:
                             polished_text = processor._post_process_with_ai(
                                 message,
@@ -1266,14 +1350,13 @@ def api_chat(server_id):
                             )
                         except Exception as polish_exc:  # pylint: disable=unused-variable
                             polished_text = None
-                    if polished_text:
-                        response_text = polished_text
-                    else:
-                        formatted = processor._format_mcp_result(processed['command'], mcp_result['result'])
-                        if formatted:
-                            response_text = f"{processed['explanation']}\n\n{formatted}"
-                        elif result_text.strip():
-                            response_text = f"{processed['explanation']}\n\n{result_text}"
+                formatted = processor._format_mcp_result(actual_tool or processed['command'], mcp_result['result'])
+                if polished_text:
+                    response_text = polished_text
+                elif formatted:
+                    response_text = f"{processed['explanation']}\n\n{formatted}"
+                elif result_text.strip():
+                    response_text = f"{processed['explanation']}\n\n{result_text}"
                     
                     # Store chat in database
                     chat = Chat(
