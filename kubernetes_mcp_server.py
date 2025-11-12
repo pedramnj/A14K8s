@@ -100,13 +100,18 @@ class KubernetesMCP:
             return {"error": "kubectl not available"}
         
         try:
+            if namespace in (None, "", "all", "all-namespaces", "--all-namespaces"):
+                cmd = "kubectl get pods --all-namespaces -o json"
+            else:
+                cmd = f"kubectl get pods -n {namespace} -o json"
             result = subprocess.run(
-                f"kubectl get pods -n {namespace} -o json",
+                cmd,
                 shell=True,
                 capture_output=True,
                 text=True,
                 timeout=30
             )
+            display_namespace = namespace if namespace not in (None, "", "all", "all-namespaces", "--all-namespaces") else "all"
             
             if result.returncode != 0:
                 return {"error": f"kubectl error: {result.stderr}"}
@@ -115,7 +120,7 @@ class KubernetesMCP:
             pods = data.get("items", [])
             
             return {
-                "namespace": namespace,
+                "namespace": display_namespace,
                 "pod_count": len(pods),
                 "pods": [
                     {
@@ -123,13 +128,66 @@ class KubernetesMCP:
                         "status": pod.get("status", {}).get("phase", "Unknown"),
                         "ready": f"{len([c for c in pod.get('status', {}).get('containerStatuses', []) if c.get('ready', False)])}/{len(pod.get('spec', {}).get('containers', []))}",
                         "restarts": sum(c.get('restartCount', 0) for c in pod.get('status', {}).get('containerStatuses', [])),
-                        "age": "unknown"  # Simplified for now
+                        "age": pod.get("metadata", {}).get("creationTimestamp", "unknown"),
+                        "namespace": pod.get("metadata", {}).get("namespace", display_namespace)
                     }
                     for pod in pods
                 ]
             }
         except Exception as e:
             return {"error": f"Failed to get pods: {str(e)}"}
+
+    async def get_pod_details(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """Get detailed information for a single pod"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        
+        try:
+            result = subprocess.run(
+                f"kubectl get pod {name} -n {namespace} -o json",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return {"error": f"kubectl error: {result.stderr or 'pod not found'}"}
+            
+            data = json.loads(result.stdout)
+            return {
+                "name": data.get("metadata", {}).get("name", name),
+                "namespace": data.get("metadata", {}).get("namespace", namespace),
+                "labels": data.get("metadata", {}).get("labels", {}),
+                "status": data.get("status", {}),
+                "spec": data.get("spec", {}),
+            }
+        except Exception as e:
+            return {"error": f"Failed to get pod details: {str(e)}"}
+
+    async def delete_pod(self, name: str, namespace: str = "default") -> Dict[str, Any]:
+        """Delete a pod"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        try:
+            result = subprocess.run(
+                f"kubectl delete pod {name} -n {namespace}",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return {"error": result.stderr or "Failed to delete pod"}
+            return {
+                "name": name,
+                "namespace": namespace,
+                "status": "deleted",
+                "message": result.stdout.strip()
+            }
+        except subprocess.TimeoutExpired:
+            return {"error": "Delete operation timed out"}
+        except Exception as e:
+            return {"error": f"Failed to delete pod: {str(e)}"}
 
     async def get_services(self, namespace: str = "default") -> Dict[str, Any]:
         """Get services in a namespace"""
@@ -351,13 +409,17 @@ class KubernetesMCP:
             return {"error": "kubectl not available"}
         
         try:
+            if isinstance(command, list):
+                command_str = " ".join(command)
+            else:
+                command_str = command
             # Build kubectl exec command
             cmd = ["kubectl", "exec", pod_name, "-n", namespace]
             
             if container:
                 cmd.extend(["-c", container])
             
-            cmd.extend(["--", "sh", "-c", command])
+            cmd.extend(["--", "sh", "-c", command_str])
             
             result = subprocess.run(
                 cmd,
@@ -370,7 +432,7 @@ class KubernetesMCP:
                 "pod": pod_name,
                 "namespace": namespace,
                 "container": container,
-                "command": command,
+                "command": command_str,
                 "return_code": result.returncode,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
@@ -398,7 +460,10 @@ class KubernetesMCP:
             cmd = ["kubectl", "run", name, f"--image={image}", f"-n", namespace, "--restart=Never"]
             
             if command:
-                cmd.extend(["--command", "--", command])
+                if isinstance(command, list):
+                    cmd.extend(["--command", "--"] + command)
+                else:
+                    cmd.extend(["--command", "--", command])
             
             if args:
                 cmd.extend(args)
@@ -430,6 +495,92 @@ class KubernetesMCP:
             return {"error": "Command timed out"}
         except Exception as e:
             return {"error": f"Failed to run container: {str(e)}"}
+
+    async def list_resources(self, api_version: str, kind: str, namespace: Optional[str] = None) -> Dict[str, Any]:
+        """Generic resource listing"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        resource = kind.lower()
+        if not resource.endswith('s'):
+            resource = resource + 's'
+        try:
+            if namespace and namespace not in ("all", "all-namespaces", "--all-namespaces"):
+                cmd = f"kubectl get {resource} -n {namespace} -o json"
+            else:
+                cmd = f"kubectl get {resource} --all-namespaces -o json"
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return {"error": result.stderr or f"Failed to list {kind}"}
+            data = json.loads(result.stdout)
+            return {
+                "apiVersion": api_version,
+                "kind": kind,
+                "count": len(data.get("items", [])),
+                "items": data.get("items", [])
+            }
+        except Exception as e:
+            return {"error": f"Failed to list resources: {str(e)}"}
+
+    async def list_namespaces(self) -> Dict[str, Any]:
+        """List namespaces"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        try:
+            result = subprocess.run(
+                "kubectl get namespaces -o json",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return {"error": result.stderr or "Failed to list namespaces"}
+            data = json.loads(result.stdout)
+            return {
+                "count": len(data.get("items", [])),
+                "namespaces": [
+                    {
+                        "name": item.get("metadata", {}).get("name", "unknown"),
+                        "status": item.get("status", {}).get("phase", "Unknown"),
+                        "labels": item.get("metadata", {}).get("labels", {})
+                    }
+                    for item in data.get("items", [])
+                ]
+            }
+        except Exception as e:
+            return {"error": f"Failed to list namespaces: {str(e)}"}
+
+    async def list_events(self, namespace: Optional[str] = None) -> Dict[str, Any]:
+        """List cluster events"""
+        if not self.kubectl_available:
+            return {"error": "kubectl not available"}
+        try:
+            if namespace and namespace not in ("all", "all-namespaces", "--all-namespaces"):
+                cmd = f"kubectl get events -n {namespace} -o json"
+            else:
+                cmd = "kubectl get events --all-namespaces -o json"
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            if result.returncode != 0:
+                return {"error": result.stderr or "Failed to list events"}
+            data = json.loads(result.stdout)
+            return {
+                "count": len(data.get("items", [])),
+                "events": data.get("items", [])
+            }
+        except Exception as e:
+            return {"error": f"Failed to list events: {str(e)}"}
 
 # Initialize the Kubernetes MCP instance
 k8s_mcp = KubernetesMCP()
