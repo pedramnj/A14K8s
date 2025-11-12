@@ -9,6 +9,7 @@ ExecStart=/usr/bin/python3 -m uvicorn mcp_http_server:app --host 127.0.0.1 --por
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
