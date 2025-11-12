@@ -225,6 +225,57 @@ class AIPoweredMCPKubernetesProcessor:
         
         return None
     
+    def _build_cluster_resource_summary(self) -> Dict[str, Any]:
+        """Gather cluster wide resource information using MCP tools."""
+        pods_info = self._call_mcp_tool('pods_list', {'namespace': 'all'})
+        nodes_info = self._call_mcp_tool('resources_list', {'apiVersion': 'v1', 'kind': 'Node'})
+        services_info = self._call_mcp_tool('resources_list', {'apiVersion': 'v1', 'kind': 'Service'})
+        deployments_info = self._call_mcp_tool('resources_list', {'apiVersion': 'apps/v1', 'kind': 'Deployment'})
+        summary_parts = []
+        success = True
+        
+        if pods_info.get('success'):
+            pods_data = pods_info['result']
+            pods = pods_data.get('pods', [])
+            running = sum(1 for pod in pods if pod.get('status') == 'Running')
+            pending = sum(1 for pod in pods if pod.get('status') == 'Pending')
+            summary_parts.append(
+                f"📦 Pods: {pods_data.get('pod_count', len(pods))} total "
+                f"(Running {running}, Pending {pending})"
+            )
+        else:
+            success = False
+            summary_parts.append(f"Pods: {pods_info.get('error', 'Unavailable')}")
+        
+        if nodes_info.get('success'):
+            nodes = nodes_info['result'].get('items', [])
+            ready = sum(
+                1 for node in nodes
+                if any(
+                    cond.get('type') == 'Ready' and cond.get('status') == 'True'
+                    for cond in node.get('status', {}).get('conditions', [])
+                )
+            )
+            summary_parts.append(f"🖥️ Nodes: {len(nodes)} total (Ready {ready})")
+        else:
+            success = False
+            summary_parts.append(f"Nodes: {nodes_info.get('error', 'Unavailable')}")
+        
+        if services_info.get('success'):
+            summary_parts.append(f"🛠️ Services: {services_info['result'].get('count', 0)} total")
+        else:
+            success = False
+            summary_parts.append(f"Services: {services_info.get('error', 'Unavailable')}")
+        
+        if deployments_info.get('success'):
+            summary_parts.append(f"🚀 Deployments: {deployments_info['result'].get('count', 0)} total")
+        else:
+            success = False
+            summary_parts.append(f"Deployments: {deployments_info.get('error', 'Unavailable')}")
+        
+        details = "\n".join(summary_parts)
+        return {"success": success, "summary": details}
+    
     def _get_mcp_tools_for_ai(self):
         """Get MCP tools formatted for AI context"""
         if not self.available_tools:
@@ -673,6 +724,25 @@ Transform this into a polished response."""
                 'explanation': f"I'll show you all services using MCP tools",
                 'ai_processed': False,
                 'mcp_result': result
+            }
+        
+        elif 'cluster' in query_lower and ('resource' in query_lower or 'status' in query_lower or 'health' in query_lower):
+            cluster_summary = self._build_cluster_resource_summary()
+            explanation = (
+                "Here's a quick cluster resource overview based on current Kubernetes metrics."
+            )
+            if not cluster_summary["success"]:
+                explanation += " Some sections could not be retrieved completely."
+            return {
+                'command': 'Regex: cluster_resources',
+                'explanation': explanation,
+                'ai_processed': False,
+                'mcp_result': {
+                    'success': cluster_summary["success"],
+                    'result': cluster_summary["summary"],
+                    'tool': 'cluster_resources',
+                    'arguments': {}
+                }
             }
         
         # 9. DEPLOYMENTS
