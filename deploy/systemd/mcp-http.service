@@ -1,0 +1,14 @@
+[Unit]
+Description=AI4K8s MCP HTTP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/ai4k8s
+ExecStart=/usr/bin/python3 -m uvicorn mcp_http_server:app --host 127.0.0.1 --port 5002
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
