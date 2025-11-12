@@ -1,0 +1,15 @@
+[Unit]
+Description=AI4K8s Flask Web App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/ai4k8s
+ExecStart=/usr/bin/python3 %h/ai4k8s/ai_kubernetes_web_app.py
+Restart=always
+RestartSec=5
+Environment=FLASK_ENV=production
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

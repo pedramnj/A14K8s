@@ -1,0 +1,12 @@
+[Unit]
+Description=Cloudflared Tunnel for AI4K8s
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/cloudflared --loglevel info --logfile %h/cloudflared.log tunnel run --token-file %h/.cloudflared/ai4k8s.token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
