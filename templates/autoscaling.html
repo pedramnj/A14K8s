@@ -375,9 +375,11 @@ async function refreshAutoscaling() {
                                     cacheAge > RECOMMENDATION_CACHE_TTL;
                 
                 if (shouldRefresh) {
+                    console.log(`🔄 Refreshing recommendation (cache age: ${Math.round(cacheAge/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
                 } else {
-                    // Use cached data if available
+                    // Use cached data - don't call loadPredictiveForecast at all
+                    console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s)`);
                     const chartContainer = document.getElementById('predictive-forecast-chart');
                     const recommendationsContainer = document.getElementById('predictive-recommendations');
                     if (chartContainer && recommendationsContainer && recommendationCache.data) {
@@ -537,7 +539,8 @@ async function enablePredictiveAutoscaling(event) {
             form.reset();
             refreshAutoscaling();
             // Clear cache and force refresh
-            recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null };
+            recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null, lastMetrics: null };
+            isLoadingRecommendations = false; // Reset loading flag
             loadPredictiveForecast(data.deployment_name, data.namespace, true);
         } else {
             alert('Error: ' + (result.error || 'Failed to enable predictive autoscaling'));
@@ -558,39 +561,39 @@ let recommendationCache = {
 const RECOMMENDATION_CACHE_TTL = 120000; // 120 seconds (2 minutes) cache - increased for stability
 const METRICS_CHANGE_THRESHOLD = 5; // Only refresh if metrics change by more than 5%
 
+// Flag to prevent multiple simultaneous API calls
+let isLoadingRecommendations = false;
+
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
     const chartContainer = document.getElementById('predictive-forecast-chart');
     const recommendationsContainer = document.getElementById('predictive-recommendations');
     
+    // Prevent multiple simultaneous calls
+    if (isLoadingRecommendations && !forceRefresh) {
+        console.log('⏸️ Recommendation load already in progress, skipping...');
+        return;
+    }
+    
     // Check cache with metrics stability check
     const now = Date.now();
     const cacheKey = `${deployment}/${namespace}`;
+    const cacheAge = recommendationCache.timestamp > 0 ? (now - recommendationCache.timestamp) : Infinity;
     
-    // Get current metrics from the data if available (will be fetched)
-    let shouldUseCache = false;
-    
+    // Check if cache is valid
     if (!forceRefresh && 
         recommendationCache.deployment === deployment && 
         recommendationCache.namespace === namespace &&
-        (now - recommendationCache.timestamp) < RECOMMENDATION_CACHE_TTL &&
+        cacheAge < RECOMMENDATION_CACHE_TTL &&
         recommendationCache.data) {
-        // Check if metrics changed significantly
-        if (recommendationCache.lastMetrics) {
-            const currentMetrics = recommendationCache.lastMetrics;
-            // If we have cached data and it's recent, use it
-            shouldUseCache = true;
-        } else {
-            // No previous metrics, use cache if recent
-            shouldUseCache = true;
-        }
-    }
-    
-    if (shouldUseCache) {
+        console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
         // Use cached data
         displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
         return;
     }
+    
+    // Mark as loading
+    isLoadingRecommendations = true;
     
     // Show loading state only if not already showing data
     if (!recommendationCache.data || forceRefresh) {
