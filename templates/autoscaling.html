@@ -751,15 +751,24 @@ function debouncedRefresh() {
     }, 5000); // Wait 5 seconds after last call
 }
 
-// Refresh every 90 seconds (increased to reduce flicker and API calls)
+// Track refresh interval to prevent multiple intervals
+let refreshIntervalId = null;
+
+// Clear any existing interval
+if (refreshIntervalId) {
+    clearInterval(refreshIntervalId);
+}
+
+// Refresh every 120 seconds (2 minutes) - matches cache TTL
 // Note: Recommendations are cached for 2 minutes, so this refresh only updates
 // the overview stats, not the recommendations (which use their own cache)
-setInterval(() => {
-    // Only refresh if page is visible and not currently loading
-    if (!document.hidden) {
+refreshIntervalId = setInterval(() => {
+    // Only refresh if page is visible and not currently loading recommendations
+    if (!document.hidden && !isLoadingRecommendations) {
+        console.log('🔄 Auto-refreshing autoscaling status (recommendations use separate cache)');
         refreshAutoscaling();
     }
-}, 90000); // 90 seconds
+}, 120000); // 120 seconds (2 minutes) - matches cache TTL
 </script>
 {% endblock %}
 
