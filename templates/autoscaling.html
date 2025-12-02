@@ -365,21 +365,20 @@ async function refreshAutoscaling() {
                 const now = Date.now();
                 const cacheAge = now - recommendationCache.timestamp;
                 
-                // Only refresh if:
-                // 1. No cache data exists
-                // 2. Different deployment/namespace
-                // 3. Cache expired (older than TTL)
-                const shouldRefresh = !recommendationCache.data || 
+                // STRICT refresh check - only refresh if cache is truly expired AND we haven't fetched recently
+                const timeSinceLastFetch = Date.now() - lastRecommendationFetchTime;
+                const shouldRefresh = (!recommendationCache.data || 
                                     recommendationCache.deployment !== firstDeployment.deployment_name ||
                                     recommendationCache.namespace !== firstDeployment.namespace ||
-                                    cacheAge > RECOMMENDATION_CACHE_TTL;
+                                    cacheAge > RECOMMENDATION_CACHE_TTL) &&
+                                    (timeSinceLastFetch >= RECOMMENDATION_CACHE_TTL || lastRecommendationFetchTime === 0);
                 
                 if (shouldRefresh) {
-                    console.log(`🔄 Refreshing recommendation (cache age: ${Math.round(cacheAge/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
+                    console.log(`🔄 Refreshing recommendation (cache age: ${Math.round(cacheAge/1000)}s, time since fetch: ${Math.round(timeSinceLastFetch/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
                 } else {
                     // Use cached data - don't call loadPredictiveForecast at all
-                    console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s)`);
+                    console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s, time since fetch: ${Math.round(timeSinceLastFetch/1000)}s)`);
                     const chartContainer = document.getElementById('predictive-forecast-chart');
                     const recommendationsContainer = document.getElementById('predictive-recommendations');
                     if (chartContainer && recommendationsContainer && recommendationCache.data) {
@@ -538,8 +537,9 @@ async function enablePredictiveAutoscaling(event) {
             alert('Predictive autoscaling enabled! ' + (result.reason || ''));
             form.reset();
             refreshAutoscaling();
-            // Clear cache and force refresh
+            // Clear cache and force refresh (user action, so allow it)
             recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null, lastMetrics: null };
+            lastRecommendationFetchTime = 0; // Reset fetch time to allow immediate fetch
             isLoadingRecommendations = false; // Reset loading flag
             loadPredictiveForecast(data.deployment_name, data.namespace, true);
         } else {
@@ -558,11 +558,14 @@ let recommendationCache = {
     namespace: null,
     lastMetrics: null  // Store last metrics to detect significant changes
 };
-const RECOMMENDATION_CACHE_TTL = 120000; // 120 seconds (2 minutes) cache - increased for stability
+// Match backend rate limit: 5 minutes (300 seconds)
+// This ensures we don't call the API more frequently than backend allows
+const RECOMMENDATION_CACHE_TTL = 300000; // 300 seconds (5 minutes) - matches backend rate limit
 const METRICS_CHANGE_THRESHOLD = 5; // Only refresh if metrics change by more than 5%
 
 // Flag to prevent multiple simultaneous API calls
 let isLoadingRecommendations = false;
+let lastRecommendationFetchTime = 0; // Track when we last fetched recommendations
 
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
@@ -579,17 +582,29 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
     const now = Date.now();
     const cacheKey = `${deployment}/${namespace}`;
     const cacheAge = recommendationCache.timestamp > 0 ? (now - recommendationCache.timestamp) : Infinity;
+    const timeSinceLastFetch = now - lastRecommendationFetchTime;
     
-    // Check if cache is valid
-    if (!forceRefresh && 
-        recommendationCache.deployment === deployment && 
-        recommendationCache.namespace === namespace &&
-        cacheAge < RECOMMENDATION_CACHE_TTL &&
-        recommendationCache.data) {
-        console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
-        // Use cached data
-        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
-        return;
+    // STRICT cache check - don't call API if cache is valid OR if we fetched recently
+    if (!forceRefresh) {
+        // Check 1: Cache is valid and for same deployment
+        if (recommendationCache.deployment === deployment && 
+            recommendationCache.namespace === namespace &&
+            cacheAge < RECOMMENDATION_CACHE_TTL &&
+            recommendationCache.data) {
+            console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
+            displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+            return;
+        }
+        
+        // Check 2: Rate limit - don't fetch if we fetched less than 5 minutes ago
+        if (timeSinceLastFetch < RECOMMENDATION_CACHE_TTL && lastRecommendationFetchTime > 0) {
+            console.log(`⏸️ Rate limiting: Only ${Math.round(timeSinceLastFetch/1000)}s since last fetch (min: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
+            // Use cached data if available, even if expired
+            if (recommendationCache.data && recommendationCache.deployment === deployment) {
+                displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+            }
+            return;
+        }
     }
     
     // Mark as loading
@@ -602,6 +617,9 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
     }
     
     try {
+        // Update fetch time BEFORE making the call
+        lastRecommendationFetchTime = Date.now();
+        
         const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
         const data = await response.json();
         
@@ -621,11 +639,13 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
         // Update cache
         recommendationCache = {
             data: data,
-            timestamp: now,
+            timestamp: Date.now(), // Use current time
             deployment: deployment,
             namespace: namespace,
             lastMetrics: currentMetrics
         };
+        
+        console.log(`✅ Recommendation fetched and cached (will cache for ${RECOMMENDATION_CACHE_TTL/1000}s)`);
         
         displayRecommendations(data, chartContainer, recommendationsContainer);
         } else {
@@ -759,16 +779,17 @@ if (refreshIntervalId) {
     clearInterval(refreshIntervalId);
 }
 
-// Refresh every 120 seconds (2 minutes) - matches cache TTL
-// Note: Recommendations are cached for 2 minutes, so this refresh only updates
-// the overview stats, not the recommendations (which use their own cache)
+// Refresh every 120 seconds (2 minutes) - updates overview stats only
+// NOTE: Recommendations are NOT auto-refreshed - they use 5-minute cache and rate limiting
+// Users must manually refresh or wait for cache to expire
 refreshIntervalId = setInterval(() => {
     // Only refresh if page is visible and not currently loading recommendations
     if (!document.hidden && !isLoadingRecommendations) {
-        console.log('🔄 Auto-refreshing autoscaling status (recommendations use separate cache)');
+        console.log('🔄 Auto-refreshing autoscaling status (overview stats only, recommendations cached for 5 min)');
+        // Refresh status but DON'T auto-load recommendations
         refreshAutoscaling();
     }
-}, 120000); // 120 seconds (2 minutes) - matches cache TTL
+}, 120000); // 120 seconds (2 minutes) - for overview stats only
 </script>
 {% endblock %}
 
