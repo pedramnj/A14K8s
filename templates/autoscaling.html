@@ -587,26 +587,26 @@ const METRICS_CHANGE_THRESHOLD = 5; // Only refresh if metrics change by more th
 // Flag to prevent multiple simultaneous API calls
 let isLoadingRecommendations = false;
 let lastRecommendationFetchTime = 0; // Track when we last fetched recommendations
+let initialLoadDone = false; // Global flag: initial load completed, block ALL automatic calls
 
 // Track last manual refresh time to prevent any automatic calls
 let lastManualRefreshTime = 0;
 
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
-    // STRICT GUARD: Only allow if forceRefresh is true (manual action) OR initial load
+    // STRICT GUARD: Only allow if forceRefresh is true (manual action) OR initial load (not done yet)
     const isManualAction = forceRefresh === true;
-    const isInitialLoad = lastRecommendationFetchTime === 0 && !isManualAction;
-    const timeSinceManualRefresh = Date.now() - lastManualRefreshTime;
+    const isInitialLoad = !initialLoadDone && lastRecommendationFetchTime === 0 && !isManualAction;
     
-    // Block ALL automatic calls after initial load
-    if (!isManualAction && !isInitialLoad) {
-        console.log('🚫 BLOCKED: Automatic recommendation refresh prevented. Use Refresh button.');
+    // Block ALL automatic calls if initial load is done
+    if (!isManualAction && initialLoadDone) {
+        console.log('🚫 BLOCKED: Initial load done. Automatic refreshes disabled. Use Refresh button.');
         return;
     }
     
-    // Additional guard: If we've manually refreshed recently, block automatic calls
-    if (!isManualAction && lastManualRefreshTime > 0 && timeSinceManualRefresh < 300000) {
-        console.log('🚫 BLOCKED: Too soon after manual refresh. Wait 5 minutes or use Refresh button.');
+    // Block ALL automatic calls if not initial load
+    if (!isManualAction && !isInitialLoad) {
+        console.log('🚫 BLOCKED: Not initial load and not manual. Automatic refresh prevented.');
         return;
     }
     
@@ -665,7 +665,8 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
             lastManualRefreshTime = now;
             console.log('✅ Manual refresh - allowed');
         } else if (isInitialLoad) {
-            console.log('✅ Initial load - allowed (one-time only)');
+            initialLoadDone = true; // Mark initial load as complete
+            console.log('✅ Initial load - allowed (one-time only, now blocking all automatic calls)');
         }
         
         const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
