@@ -357,32 +357,42 @@ async function refreshAutoscaling() {
             updateScheduleList(data.schedules || []);
             
             // Auto-load forecast for first enabled predictive deployment
-            // Only load if not already loading or if cache expired
+            // IMPORTANT: Only load on initial page load or manual refresh, NOT on auto-refresh
+            // This prevents excessive API calls and respects Groq rate limits
             if (data.predictive_deployments && data.predictive_deployments.length > 0) {
                 const firstDeployment = data.predictive_deployments[0];
-                // Check if we need to refresh (cache expired or different deployment)
-                const cacheKey = `${firstDeployment.deployment_name}/${firstDeployment.namespace}`;
-                const now = Date.now();
-                const cacheAge = now - recommendationCache.timestamp;
                 
-                // STRICT refresh check - only refresh if cache is truly expired AND we haven't fetched recently
-                const timeSinceLastFetch = Date.now() - lastRecommendationFetchTime;
-                const shouldRefresh = (!recommendationCache.data || 
-                                    recommendationCache.deployment !== firstDeployment.deployment_name ||
-                                    recommendationCache.namespace !== firstDeployment.namespace ||
-                                    cacheAge > RECOMMENDATION_CACHE_TTL) &&
-                                    (timeSinceLastFetch >= RECOMMENDATION_CACHE_TTL || lastRecommendationFetchTime === 0);
+                // Check if we already have cached data for this deployment
+                const hasCachedData = recommendationCache.data && 
+                                    recommendationCache.deployment === firstDeployment.deployment_name &&
+                                    recommendationCache.namespace === firstDeployment.namespace;
                 
-                if (shouldRefresh) {
-                    console.log(`🔄 Refreshing recommendation (cache age: ${Math.round(cacheAge/1000)}s, time since fetch: ${Math.round(timeSinceLastFetch/1000)}s, TTL: ${RECOMMENDATION_CACHE_TTL/1000}s)`);
+                if (hasCachedData) {
+                    // Always use cached data if available - don't auto-refresh
+                    console.log(`✅ Using cached recommendation (auto-refresh disabled to save API calls)`);
+                    const chartContainer = document.getElementById('predictive-forecast-chart');
+                    const recommendationsContainer = document.getElementById('predictive-recommendations');
+                    if (chartContainer && recommendationsContainer) {
+                        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+                    }
+                } else if (lastRecommendationFetchTime === 0) {
+                    // Only load on initial page load (first time)
+                    console.log(`🔄 Initial load: Fetching recommendations`);
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
                 } else {
-                    // Use cached data - don't call loadPredictiveForecast at all
-                    console.log(`✅ Using cached recommendation (age: ${Math.round(cacheAge/1000)}s, time since fetch: ${Math.round(timeSinceLastFetch/1000)}s)`);
+                    // Cache expired but we've fetched before - show message or use stale data
+                    console.log(`⏸️ Cache expired but rate-limited. Use manual refresh button to update.`);
                     const chartContainer = document.getElementById('predictive-forecast-chart');
                     const recommendationsContainer = document.getElementById('predictive-recommendations');
                     if (chartContainer && recommendationsContainer && recommendationCache.data) {
+                        // Show stale data with a note
                         displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+                        // Add a note that data is stale
+                        const staleNote = document.createElement('div');
+                        staleNote.className = 'alert alert-info';
+                        staleNote.style.marginTop = '1rem';
+                        staleNote.innerHTML = '<small>💡 Data may be stale. Click "Refresh" button to update recommendations.</small>';
+                        recommendationsContainer.appendChild(staleNote);
                     }
                 }
             } else {
