@@ -942,6 +942,66 @@ def dashboard():
         return redirect(url_for('login'))
     servers = Server.query.filter_by(user_id=user.id).all()
     
+    # Check cluster status for each server (quick check)
+    for server in servers:
+        if server.kubeconfig:
+            try:
+                import subprocess
+                import os
+                import tempfile
+                
+                # Create temp kubeconfig
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                    f.write(server.kubeconfig)
+                    temp_kubeconfig = f.name
+                
+                env = os.environ.copy()
+                env['KUBECONFIG'] = temp_kubeconfig
+                
+                # Quick cluster-info check
+                result = subprocess.run(
+                    ['kubectl', 'cluster-info'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=env
+                )
+                
+                # Check for connection errors
+                if result.returncode != 0:
+                    error_output = result.stderr.lower()
+                    if any(phrase in error_output for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp", "name or service not known", "name resolution"]):
+                        server.status = "error"
+                        server.connection_error = result.stderr
+                        print(f"❌ Server {server.id} ({server.name}): Cluster disconnected - {result.stderr[:100]}")
+                    else:
+                        server.status = "inactive"
+                        server.connection_error = result.stderr
+                else:
+                    server.status = "active"
+                    server.connection_error = None
+                    print(f"✅ Server {server.id} ({server.name}): Cluster connected")
+                
+                # Clean up
+                try:
+                    os.unlink(temp_kubeconfig)
+                except:
+                    pass
+                    
+            except Exception as e:
+                # If check fails, mark as error
+                server.status = "error"
+                server.connection_error = str(e)
+                print(f"❌ Server {server.id} ({server.name}): Status check failed - {str(e)}")
+    
+    # Commit status changes
+    try:
+        db.session.commit()
+        print(f"✅ Updated status for {len(servers)} servers")
+    except Exception as e:
+        print(f"❌ Failed to commit status changes: {e}")
+        db.session.rollback()
+    
     return render_template('dashboard.html', user=user, servers=servers)
 
 
@@ -1431,12 +1491,61 @@ def server_status(server_id):
     
     # Update last accessed time
     server.last_accessed = datetime.utcnow()
-    server.status = "active"
+    
+    # Check if cluster is actually connected by testing kubectl
+    try:
+        import subprocess
+        import os
+        
+        # Set up kubeconfig if available
+        env = os.environ.copy()
+        if server.kubeconfig:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(server.kubeconfig)
+                temp_kubeconfig = f.name
+            env['KUBECONFIG'] = temp_kubeconfig
+        
+        # Test cluster connection
+        result = subprocess.run(
+            ['kubectl', 'cluster-info'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env
+        )
+        
+        if result.returncode == 0:
+            server.status = "active"
+            server.connection_error = None
+        else:
+            # Check for connection errors
+            error_output = result.stderr.lower()
+            if any(phrase in error_output for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                server.status = "error"
+                server.connection_error = result.stderr
+            else:
+                server.status = "inactive"
+                server.connection_error = result.stderr
+        
+        # Clean up temp kubeconfig
+        if server.kubeconfig and 'temp_kubeconfig' in locals():
+            try:
+                os.unlink(temp_kubeconfig)
+            except:
+                pass
+                
+    except Exception as e:
+        # If we can't test, mark as error
+        server.status = "error"
+        server.connection_error = str(e)
+    
     db.session.commit()
     
     return jsonify({
         'status': server.status,
-        'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
+        'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None,
+        'connection_error': server.connection_error
     })
 
 
@@ -1585,16 +1694,31 @@ if True:
     ai_monitoring_instances = {}
 
     def _patch_kubeconfig_for_container(original_path: str) -> str:
-        """Patch kubeconfig server URL if it points to 127.0.0.1 so container can reach host API.
-        Returns a path to a temp kubeconfig file with patched server URL.
+        """Optionally patch kubeconfig when running inside a Docker container.
+        
+        When AI4K8s runs in Docker, a kubeconfig that points to 127.0.0.1 will
+        actually point *inside* the container. In that case we rewrite the
+        server URL to reach the host (e.g. host.docker.internal).
+        
+        On bare-metal / HPC environments (like AMD HPC), we must NOT patch the
+        kubeconfig; 127.0.0.1 should remain as-is so SSH tunnels work.
         """
         try:
             import os
             import re
             import tempfile
             import socket
+
             if not original_path or not os.path.exists(original_path):
                 return original_path
+
+            # Detect if we are actually running inside a Docker container.
+            # If not, skip any patching and use the kubeconfig as-is.
+            in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            if not in_docker:
+                # Running directly on host (e.g. AMD HPC) - do not rewrite 127.0.0.1
+                return original_path
+
             with open(original_path, 'r') as f:
                 content = f.read()
             
@@ -1874,6 +1998,214 @@ if True:
             ai_monitoring.stop_monitoring()
             return jsonify({'success': True, 'message': f'Monitoring stopped for {server.name}'})
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # ==================== Autoscaling Routes ====================
+    
+    def get_autoscaling_instance(server_id):
+        """Get or create autoscaling instance for a specific server"""
+        if server_id not in getattr(app, 'autoscaling_instances', {}):
+            # Get server details to determine kubeconfig path
+            server = Server.query.get(server_id)
+            if server:
+                kubeconfig_path = None
+                import os
+                # If a kubeconfig is stored in DB, always prefer it
+                if getattr(server, 'kubeconfig', None):
+                    try:
+                        import tempfile
+                        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                        temp_file.write(server.kubeconfig)
+                        temp_file.close()
+                        kubeconfig_path = temp_file.name
+                    except Exception:
+                        kubeconfig_path = None
+                # Otherwise, try well-known paths
+                if kubeconfig_path is None:
+                    candidate_paths = [
+                        '/app/instance/kubeconfig_admin',
+                        os.path.expanduser('~/.kube/config'),
+                        '/etc/kubernetes/admin.conf',
+                        '/var/lib/kubelet/kubeconfig'
+                    ]
+                    for path in candidate_paths:
+                        if os.path.exists(path):
+                            kubeconfig_path = path
+                            break
+                # Patch kubeconfig if pointing to 127.0.0.1
+                kubeconfig_path = _patch_kubeconfig_for_container(kubeconfig_path)
+                
+                print(f"🔧 Creating autoscaling instance for server {server_id} ({server.name})")
+                print(f"🔧 Using kubeconfig: {kubeconfig_path}")
+                if not hasattr(app, 'autoscaling_instances'):
+                    app.autoscaling_instances = {}
+                from autoscaling_integration import AutoscalingIntegration
+                app.autoscaling_instances[server_id] = AutoscalingIntegration(kubeconfig_path)
+            else:
+                print(f"⚠️  Server {server_id} not found")
+        return getattr(app, 'autoscaling_instances', {}).get(server_id)
+    
+    @app.route('/autoscaling/<int:server_id>')
+    def autoscaling_page(server_id):
+        """Autoscaling dashboard page"""
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        return render_template('autoscaling.html', server=server)
+    
+    @app.route('/api/autoscaling/status/<int:server_id>')
+    def get_autoscaling_status(server_id):
+        """Get autoscaling status"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            status = autoscaling.get_autoscaling_status()
+            return jsonify(status)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in get_autoscaling_status: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/hpa/create/<int:server_id>', methods=['POST'])
+    def create_hpa(server_id):
+        """Create HPA for deployment"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.create_hpa(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                min_replicas=data.get('min_replicas', 2),
+                max_replicas=data.get('max_replicas', 10),
+                cpu_target=data.get('cpu_target', 70),
+                memory_target=data.get('memory_target', 80)
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in create_hpa: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/predictive/enable/<int:server_id>', methods=['POST'])
+    def enable_predictive_autoscaling(server_id):
+        """Enable predictive autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.enable_predictive_autoscaling(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                min_replicas=data.get('min_replicas', 2),
+                max_replicas=data.get('max_replicas', 10)
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in enable_predictive_autoscaling: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/recommendations/<int:server_id>')
+    def get_scaling_recommendations(server_id):
+        """Get scaling recommendations"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        deployment_name = request.args.get('deployment')
+        namespace = request.args.get('namespace', 'default')
+        
+        if not deployment_name:
+            return jsonify({'error': 'deployment parameter required'}), 400
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.get_scaling_recommendations(deployment_name, namespace)
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in get_scaling_recommendations: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/schedule/create/<int:server_id>', methods=['POST'])
+    def create_schedule(server_id):
+        """Create scheduled autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.create_schedule(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                schedule_rules=data.get('schedule_rules', [])
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in create_schedule: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/patterns/<int:server_id>')
+    def analyze_patterns(server_id):
+        """Analyze historical patterns for schedule suggestions"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        deployment_name = request.args.get('deployment')
+        namespace = request.args.get('namespace', 'default')
+        
+        if not deployment_name:
+            return jsonify({'error': 'deployment parameter required'}), 400
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.analyze_patterns(deployment_name, namespace)
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in analyze_patterns: {e}")
+            print(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

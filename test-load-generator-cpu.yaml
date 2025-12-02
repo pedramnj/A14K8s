@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-load-generator
+  namespace: ai4k8s-test
+  labels:
+    app: cpu-load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-load-generator
+  template:
+    metadata:
+      labels:
+        app: cpu-load-generator
+    spec:
+      containers:
+      - name: cpu-load
+        # Use a simple image that can run CPU-intensive tasks
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Generate variable CPU load based on environment variable
+          LOAD_PERCENT=${CPU_LOAD:-20}
+          echo "Generating ${LOAD_PERCENT}% CPU load"
+          # Simple CPU load generator
+          while true; do
+            # Calculate sleep time for desired CPU percentage
+            # For 20% load: work 0.2s, sleep 0.8s
+            WORK_TIME=$(echo "scale=2; $LOAD_PERCENT / 100" | bc 2>/dev/null || echo "0.2")
+            SLEEP_TIME=$(echo "scale=2; 1 - $WORK_TIME" | bc 2>/dev/null || echo "0.8")
+            timeout ${WORK_TIME}s sh -c 'while true; do :; done' 2>/dev/null || true
+            sleep ${SLEEP_TIME}s
+          done
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "64Mi"
+          limits:
+            cpu: "1000m"
+            memory: "128Mi"
+        env:
+        - name: CPU_LOAD
+          value: "20"  # Start with 20% CPU load
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cpu-load-generator
+  namespace: ai4k8s-test
+spec:
+  selector:
+    app: cpu-load-generator
+  ports: []
+  type: ClusterIP
+

@@ -10,9 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FLASK_APP=ai_kubernetes_web_app.py \
     FLASK_ENV=production
 
-# Install system dependencies
+# Install system dependencies including kubectl
 RUN apt-get update && apt-get install -y \
     curl \
+    ca-certificates \
+    dnsutils \
+    && curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+    && chmod +x kubectl \
+    && mv kubectl /usr/local/bin/ \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
