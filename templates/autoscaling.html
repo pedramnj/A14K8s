@@ -367,6 +367,8 @@ async function refreshAutoscaling() {
                                     recommendationCache.deployment === firstDeployment.deployment_name &&
                                     recommendationCache.namespace === firstDeployment.namespace;
                 
+                // NEVER auto-refresh recommendations - only show cached data
+                // This prevents excessive API calls
                 if (hasCachedData) {
                     // Always use cached data if available - don't auto-refresh
                     console.log(`✅ Using cached recommendation (auto-refresh disabled to save API calls)`);
@@ -376,23 +378,17 @@ async function refreshAutoscaling() {
                         displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
                     }
                 } else if (lastRecommendationFetchTime === 0) {
-                    // Only load on initial page load (first time)
-                    console.log(`🔄 Initial load: Fetching recommendations`);
+                    // Only load on initial page load (first time) - this is the ONLY time we fetch
+                    console.log(`🔄 Initial page load: Fetching recommendations (one-time only)`);
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
                 } else {
-                    // Cache expired but we've fetched before - show message or use stale data
-                    console.log(`⏸️ Cache expired but rate-limited. Use manual refresh button to update.`);
+                    // No cached data but we've fetched before - don't fetch again, show empty state
+                    console.log(`⏸️ No cached data available. Use manual refresh button to fetch recommendations.`);
                     const chartContainer = document.getElementById('predictive-forecast-chart');
                     const recommendationsContainer = document.getElementById('predictive-recommendations');
-                    if (chartContainer && recommendationsContainer && recommendationCache.data) {
-                        // Show stale data with a note
-                        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
-                        // Add a note that data is stale
-                        const staleNote = document.createElement('div');
-                        staleNote.className = 'alert alert-info';
-                        staleNote.style.marginTop = '1rem';
-                        staleNote.innerHTML = '<small>💡 Data may be stale. Click "Refresh" button to update recommendations.</small>';
-                        recommendationsContainer.appendChild(staleNote);
+                    if (chartContainer && recommendationsContainer) {
+                        chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Click "Refresh" button to load.</p>';
+                        recommendationsContainer.innerHTML = '<div class="alert alert-info"><small>💡 Click "Refresh" button above to load recommendations.</small></div>';
                     }
                 }
             } else {
