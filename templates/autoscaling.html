@@ -363,13 +363,26 @@ async function refreshAutoscaling() {
                 // Check if we need to refresh (cache expired or different deployment)
                 const cacheKey = `${firstDeployment.deployment_name}/${firstDeployment.namespace}`;
                 const now = Date.now();
+                const cacheAge = now - recommendationCache.timestamp;
+                
+                // Only refresh if:
+                // 1. No cache data exists
+                // 2. Different deployment/namespace
+                // 3. Cache expired (older than TTL)
                 const shouldRefresh = !recommendationCache.data || 
                                     recommendationCache.deployment !== firstDeployment.deployment_name ||
                                     recommendationCache.namespace !== firstDeployment.namespace ||
-                                    (now - recommendationCache.timestamp) > RECOMMENDATION_CACHE_TTL;
+                                    cacheAge > RECOMMENDATION_CACHE_TTL;
                 
                 if (shouldRefresh) {
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
+                } else {
+                    // Use cached data if available
+                    const chartContainer = document.getElementById('predictive-forecast-chart');
+                    const recommendationsContainer = document.getElementById('predictive-recommendations');
+                    if (chartContainer && recommendationsContainer && recommendationCache.data) {
+                        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+                    }
                 }
             } else {
                 // No enabled deployments, show empty state
@@ -539,23 +552,41 @@ let recommendationCache = {
     data: null,
     timestamp: 0,
     deployment: null,
-    namespace: null
+    namespace: null,
+    lastMetrics: null  // Store last metrics to detect significant changes
 };
-const RECOMMENDATION_CACHE_TTL = 60000; // 60 seconds cache
+const RECOMMENDATION_CACHE_TTL = 120000; // 120 seconds (2 minutes) cache - increased for stability
+const METRICS_CHANGE_THRESHOLD = 5; // Only refresh if metrics change by more than 5%
 
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
     const chartContainer = document.getElementById('predictive-forecast-chart');
     const recommendationsContainer = document.getElementById('predictive-recommendations');
     
-    // Check cache
+    // Check cache with metrics stability check
     const now = Date.now();
     const cacheKey = `${deployment}/${namespace}`;
+    
+    // Get current metrics from the data if available (will be fetched)
+    let shouldUseCache = false;
+    
     if (!forceRefresh && 
         recommendationCache.deployment === deployment && 
         recommendationCache.namespace === namespace &&
         (now - recommendationCache.timestamp) < RECOMMENDATION_CACHE_TTL &&
         recommendationCache.data) {
+        // Check if metrics changed significantly
+        if (recommendationCache.lastMetrics) {
+            const currentMetrics = recommendationCache.lastMetrics;
+            // If we have cached data and it's recent, use it
+            shouldUseCache = true;
+        } else {
+            // No previous metrics, use cache if recent
+            shouldUseCache = true;
+        }
+    }
+    
+    if (shouldUseCache) {
         // Use cached data
         displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
         return;
@@ -571,12 +602,26 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
         const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
         const data = await response.json();
         
+        // Extract metrics for stability checking
+        let currentMetrics = null;
+        if (data.success && data.recommendations?.predictive) {
+            const pred = data.recommendations.predictive;
+            const forecast = pred.forecast || {};
+            currentMetrics = {
+                cpu: forecast.cpu?.current || 0,
+                memory: forecast.memory?.current || 0,
+                cpu_peak: forecast.cpu?.peak || 0,
+                memory_peak: forecast.memory?.peak || 0
+            };
+        }
+        
         // Update cache
         recommendationCache = {
             data: data,
             timestamp: now,
             deployment: deployment,
-            namespace: namespace
+            namespace: namespace,
+            lastMetrics: currentMetrics
         };
         
         displayRecommendations(data, chartContainer, recommendationsContainer);
@@ -703,13 +748,15 @@ function debouncedRefresh() {
     }, 5000); // Wait 5 seconds after last call
 }
 
-// Refresh every 60 seconds (increased from 30 to reduce flicker)
+// Refresh every 90 seconds (increased to reduce flicker and API calls)
+// Note: Recommendations are cached for 2 minutes, so this refresh only updates
+// the overview stats, not the recommendations (which use their own cache)
 setInterval(() => {
     // Only refresh if page is visible and not currently loading
     if (!document.hidden) {
         refreshAutoscaling();
     }
-}, 60000);
+}, 90000); // 90 seconds
 </script>
 {% endblock %}
 
