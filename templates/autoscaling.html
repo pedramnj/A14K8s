@@ -307,8 +307,15 @@ function showClusterDisconnectedMessage(message) {
     `;
 }
 
+// Manual refresh function - explicitly allows recommendation refresh
+async function manualRefresh() {
+    console.log('🔄 Manual refresh triggered by user');
+    lastManualRefreshTime = Date.now();
+    await refreshAutoscaling(true); // Pass true to indicate manual refresh
+}
+
 // Load autoscaling status
-async function refreshAutoscaling() {
+async function refreshAutoscaling(allowRecommendationRefresh = false) {
     try {
         const response = await fetch(`/api/autoscaling/status/${serverId}`);
         const data = await response.json();
@@ -371,17 +378,21 @@ async function refreshAutoscaling() {
                 // This prevents excessive API calls and respects Groq rate limits
                 // Recommendations ONLY refresh on manual Refresh button click
                 
-                // Check if this is the initial page load (only once)
-                const isInitialLoad = lastRecommendationFetchTime === 0 && !hasCachedData;
+                // STRICT: Only load recommendations if explicitly allowed (manual refresh or initial load)
+                const isInitialLoad = lastRecommendationFetchTime === 0 && !hasCachedData && !allowRecommendationRefresh;
                 
-                if (hasCachedData) {
+                if (allowRecommendationRefresh) {
+                    // Manual refresh - explicitly allowed
+                    console.log(`🔄 Manual refresh: Loading recommendations`);
+                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace, true);
+                } else if (hasCachedData) {
                     // Cached data exists - do nothing, it's already displayed
                     console.log(`✅ Cached recommendation available (auto-refresh completely disabled)`);
                     // Don't call loadPredictiveForecast - it's already displayed
                 } else if (isInitialLoad) {
                     // ONLY on initial page load (first time, no cache, never fetched)
                     console.log(`🔄 Initial page load ONLY: Fetching recommendations (one-time)`);
-                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
+                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace, false);
                 } else {
                     // Not initial load and no cache - don't fetch, show message
                     console.log(`⏸️ Auto-refresh disabled. Use manual Refresh button to load recommendations.`);
@@ -577,8 +588,28 @@ const METRICS_CHANGE_THRESHOLD = 5; // Only refresh if metrics change by more th
 let isLoadingRecommendations = false;
 let lastRecommendationFetchTime = 0; // Track when we last fetched recommendations
 
+// Track last manual refresh time to prevent any automatic calls
+let lastManualRefreshTime = 0;
+
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
+    // STRICT GUARD: Only allow if forceRefresh is true (manual action) OR initial load
+    const isManualAction = forceRefresh === true;
+    const isInitialLoad = lastRecommendationFetchTime === 0 && !isManualAction;
+    const timeSinceManualRefresh = Date.now() - lastManualRefreshTime;
+    
+    // Block ALL automatic calls after initial load
+    if (!isManualAction && !isInitialLoad) {
+        console.log('🚫 BLOCKED: Automatic recommendation refresh prevented. Use Refresh button.');
+        return;
+    }
+    
+    // Additional guard: If we've manually refreshed recently, block automatic calls
+    if (!isManualAction && lastManualRefreshTime > 0 && timeSinceManualRefresh < 300000) {
+        console.log('🚫 BLOCKED: Too soon after manual refresh. Wait 5 minutes or use Refresh button.');
+        return;
+    }
+    
     const chartContainer = document.getElementById('predictive-forecast-chart');
     const recommendationsContainer = document.getElementById('predictive-recommendations');
     
@@ -628,7 +659,14 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
     
     try {
         // Update fetch time BEFORE making the call
-        lastRecommendationFetchTime = Date.now();
+        const now = Date.now();
+        lastRecommendationFetchTime = now;
+        if (isManualAction) {
+            lastManualRefreshTime = now;
+            console.log('✅ Manual refresh - allowed');
+        } else if (isInitialLoad) {
+            console.log('✅ Initial load - allowed (one-time only)');
+        }
         
         const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
         const data = await response.json();
