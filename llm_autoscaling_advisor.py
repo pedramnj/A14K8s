@@ -18,22 +18,32 @@ import json
 import os
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import groq
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 class LLMAutoscalingAdvisor:
     """LLM-powered autoscaling advisor using Groq"""
     
-    def __init__(self, groq_api_key: Optional[str] = None):
-        """Initialize LLM advisor with Groq"""
+    def __init__(self, groq_api_key: Optional[str] = None, cache_ttl: int = 300):
+        """Initialize LLM advisor with Groq
+        
+        Args:
+            groq_api_key: Groq API key (or from env)
+            cache_ttl: Cache TTL in seconds (default 5 minutes)
+        """
         self.groq_api_key = groq_api_key or os.getenv('GROQ_API_KEY')
         self.client = None
         # Use a model that supports longer context and better reasoning
         # Try 70b first, fallback to 8b if not available
         self.model = "llama-3.1-70b-versatile"  # More capable model for complex reasoning
         self.fallback_model = "llama-3.1-8b-instant"  # Fallback model
+        
+        # Caching to prevent rapid successive LLM calls
+        self.cache_ttl = cache_ttl  # 5 minutes default
+        self.recommendation_cache: Dict[str, Dict[str, Any]] = {}
         
         if self.groq_api_key:
             try:
@@ -45,6 +55,22 @@ class LLMAutoscalingAdvisor:
         else:
             logger.warning("⚠️  No GROQ_API_KEY found, LLM advisor disabled")
     
+    def _get_cache_key(self, deployment_name: str, namespace: str, 
+                      current_metrics: Dict[str, Any], forecast: Dict[str, Any],
+                      current_replicas: int) -> str:
+        """Generate cache key from input parameters"""
+        # Create a hash of key parameters (rounded to avoid minor fluctuations)
+        key_data = {
+            'deployment': f"{namespace}/{deployment_name}",
+            'replicas': current_replicas,
+            'cpu': round(current_metrics.get('cpu_usage', 0), 1),
+            'memory': round(current_metrics.get('memory_usage', 0), 1),
+            'cpu_peak': round(forecast.get('cpu', {}).get('peak', 0), 1),
+            'memory_peak': round(forecast.get('memory', {}).get('peak', 0), 1)
+        }
+        key_str = json.dumps(key_data, sort_keys=True)
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
     def analyze_scaling_decision(self, 
                                  deployment_name: str,
                                  namespace: str,
@@ -54,7 +80,8 @@ class LLMAutoscalingAdvisor:
                                  historical_patterns: Optional[List[Dict[str, Any]]] = None,
                                  current_replicas: int = 1,
                                  min_replicas: int = 1,
-                                 max_replicas: int = 10) -> Dict[str, Any]:
+                                 max_replicas: int = 10,
+                                 use_cache: bool = True) -> Dict[str, Any]:
         """
         Use LLM to analyze and recommend scaling decisions
         
@@ -78,6 +105,25 @@ class LLMAutoscalingAdvisor:
                 'error': 'LLM advisor not available (no API key)',
                 'fallback': True
             }
+        
+        # Check cache
+        if use_cache:
+            cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+            if cache_key in self.recommendation_cache:
+                cached = self.recommendation_cache[cache_key]
+                cache_age = (datetime.now() - cached['timestamp']).total_seconds()
+                if cache_age < self.cache_ttl:
+                    logger.debug(f"Using cached LLM recommendation (age: {cache_age:.1f}s)")
+                    return {
+                        'success': True,
+                        'recommendation': cached['recommendation'],
+                        'llm_model': cached.get('llm_model', self.model),
+                        'timestamp': cached['timestamp'].isoformat(),
+                        'cached': True
+                    }
+                else:
+                    # Cache expired, remove it
+                    del self.recommendation_cache[cache_key]
         
         try:
             # Prepare context for LLM
@@ -129,12 +175,31 @@ class LLMAutoscalingAdvisor:
             # Try to extract JSON from response (handle both JSON and text responses)
             recommendation = self._parse_llm_response(llm_output)
             
-            return {
+            result = {
                 'success': True,
                 'recommendation': recommendation,
                 'llm_model': self.model,
-                'timestamp': datetime.now().isoformat()
+                'timestamp': datetime.now().isoformat(),
+                'cached': False
             }
+            
+            # Cache the result
+            if use_cache:
+                cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+                self.recommendation_cache[cache_key] = {
+                    'recommendation': recommendation,
+                    'llm_model': self.model,
+                    'timestamp': datetime.now()
+                }
+                # Clean old cache entries (keep only last 100)
+                if len(self.recommendation_cache) > 100:
+                    # Remove oldest entries
+                    sorted_cache = sorted(self.recommendation_cache.items(), 
+                                        key=lambda x: x[1]['timestamp'])
+                    for key, _ in sorted_cache[:-100]:
+                        del self.recommendation_cache[key]
+            
+            return result
             
         except Exception as e:
             logger.error(f"Error in LLM autoscaling advisor: {e}", exc_info=True)

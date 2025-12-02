@@ -357,9 +357,20 @@ async function refreshAutoscaling() {
             updateScheduleList(data.schedules || []);
             
             // Auto-load forecast for first enabled predictive deployment
+            // Only load if not already loading or if cache expired
             if (data.predictive_deployments && data.predictive_deployments.length > 0) {
                 const firstDeployment = data.predictive_deployments[0];
-                loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
+                // Check if we need to refresh (cache expired or different deployment)
+                const cacheKey = `${firstDeployment.deployment_name}/${firstDeployment.namespace}`;
+                const now = Date.now();
+                const shouldRefresh = !recommendationCache.data || 
+                                    recommendationCache.deployment !== firstDeployment.deployment_name ||
+                                    recommendationCache.namespace !== firstDeployment.namespace ||
+                                    (now - recommendationCache.timestamp) > RECOMMENDATION_CACHE_TTL;
+                
+                if (shouldRefresh) {
+                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
+                }
             } else {
                 // No enabled deployments, show empty state
                 const chartContainer = document.getElementById('predictive-forecast-chart');
@@ -512,7 +523,9 @@ async function enablePredictiveAutoscaling(event) {
             alert('Predictive autoscaling enabled! ' + (result.reason || ''));
             form.reset();
             refreshAutoscaling();
-            loadPredictiveForecast(data.deployment_name, data.namespace);
+            // Clear cache and force refresh
+            recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null };
+            loadPredictiveForecast(data.deployment_name, data.namespace, true);
         } else {
             alert('Error: ' + (result.error || 'Failed to enable predictive autoscaling'));
         }
@@ -521,193 +534,52 @@ async function enablePredictiveAutoscaling(event) {
     }
 }
 
+// Cache for recommendations to prevent rapid updates
+let recommendationCache = {
+    data: null,
+    timestamp: 0,
+    deployment: null,
+    namespace: null
+};
+const RECOMMENDATION_CACHE_TTL = 60000; // 60 seconds cache
+
 // Load predictive forecast
-async function loadPredictiveForecast(deployment, namespace) {
+async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
     const chartContainer = document.getElementById('predictive-forecast-chart');
     const recommendationsContainer = document.getElementById('predictive-recommendations');
     
-    // Show loading state
-    chartContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading forecast...</div>';
-    recommendationsContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading recommendations...</div>';
+    // Check cache
+    const now = Date.now();
+    const cacheKey = `${deployment}/${namespace}`;
+    if (!forceRefresh && 
+        recommendationCache.deployment === deployment && 
+        recommendationCache.namespace === namespace &&
+        (now - recommendationCache.timestamp) < RECOMMENDATION_CACHE_TTL &&
+        recommendationCache.data) {
+        // Use cached data
+        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+        return;
+    }
+    
+    // Show loading state only if not already showing data
+    if (!recommendationCache.data || forceRefresh) {
+        chartContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading forecast...</div>';
+        recommendationsContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading recommendations...</div>';
+    }
     
     try {
         const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
         const data = await response.json();
         
-        if (data.success && data.recommendations?.predictive) {
-            const pred = data.recommendations.predictive;
-            const forecast = pred.forecast;
-            
-            // Create forecast chart
-            const ctx = chartContainer.getContext ? chartContainer.getContext('2d') : null;
-            if (!ctx) {
-                // Create canvas if it doesn't exist
-                const canvas = document.createElement('canvas');
-                chartContainer.innerHTML = '';
-                chartContainer.appendChild(canvas);
-                const newCtx = canvas.getContext('2d');
-                
-                if (charts.predictive) charts.predictive.destroy();
-                
-                charts.predictive = new Chart(newCtx, {
-                    type: 'line',
-                    data: {
-                        labels: ['Now', '+1h', '+2h', '+3h', '+4h', '+5h', '+6h'],
-                        datasets: [
-                            {
-                                label: 'CPU Forecast',
-                                data: [forecast.cpu.current, ...(forecast.cpu.predictions || [])],
-                                borderColor: 'rgb(37, 99, 235)',
-                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                                tension: 0.4
-                            },
-                            {
-                                label: 'Memory Forecast',
-                                data: [forecast.memory.current, ...(forecast.memory.predictions || [])],
-                                borderColor: 'rgb(16, 185, 129)',
-                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                                tension: 0.4
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            y: { beginAtZero: true, max: 100, title: { display: true, text: 'Usage (%)' } }
-                        }
-                    }
-                });
-            } else {
-                if (charts.predictive) charts.predictive.destroy();
-                
-                charts.predictive = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: ['Now', '+1h', '+2h', '+3h', '+4h', '+5h', '+6h'],
-                        datasets: [
-                            {
-                                label: 'CPU Forecast',
-                                data: [forecast.cpu.current, ...(forecast.cpu.predictions || [])],
-                                borderColor: 'rgb(37, 99, 235)',
-                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                                tension: 0.4
-                            },
-                            {
-                                label: 'Memory Forecast',
-                                data: [forecast.memory.current, ...(forecast.memory.predictions || [])],
-                                borderColor: 'rgb(16, 185, 129)',
-                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                                tension: 0.4
-                            }
-                        ]
-                    },
-                    options: {
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        scales: {
-                            y: { beginAtZero: true, max: 100, title: { display: true, text: 'Usage (%)' } }
-                        }
-                    }
-                });
-            }
-            
-            // Show recommendations - prioritize LLM if available
-            let rec = pred.recommendation;
-            let llmRec = null;
-            let isLLMRecommendation = false;
-            
-            // Check if LLM recommendation is embedded in predictive recommendation
-            if (pred.llm_used && rec.llm_recommendation) {
-                llmRec = rec.llm_recommendation;
-                isLLMRecommendation = true;
-                rec = llmRec;  // Use LLM recommendation
-            }
-            // Check if standalone LLM recommendation is available
-            else if (data.recommendations?.llm?.success) {
-                llmRec = data.recommendations.llm.recommendation;
-                isLLMRecommendation = true;
-                rec = llmRec;  // Use LLM recommendation
-            }
-            
-            let actionText = 'No Action';
-            let alertClass = 'alert-success';
-            if (rec.action === 'scale_up') {
-                actionText = 'Scale Up';
-                alertClass = 'alert-warning';
-            } else if (rec.action === 'scale_down') {
-                actionText = 'Scale Down';
-                alertClass = 'alert-info';
-            } else if (rec.action === 'at_max') {
-                actionText = 'At Max Capacity';
-                alertClass = 'alert-danger';
-            } else if (rec.action === 'maintain') {
-                actionText = 'Maintain Current';
-                alertClass = 'alert-success';
-            }
-            
-            let targetReplicasText = '';
-            if (rec.target_replicas) {
-                if (rec.calculated_replicas && rec.calculated_replicas > rec.target_replicas) {
-                    targetReplicasText = `<br><strong>Current Replicas:</strong> ${rec.target_replicas} (Max)<br><strong>Recommended:</strong> ${rec.calculated_replicas} (increase max_replicas)`;
-                } else {
-                    targetReplicasText = `<br><strong>Target Replicas:</strong> ${rec.target_replicas}`;
-                }
-            }
-            
-            // Build recommendation HTML
-            let recommendationHTML = '';
-            
-            // LLM recommendation header
-            if (isLLMRecommendation) {
-                const confidence = (rec.confidence || 0) * 100;
-                const risk = rec.risk_assessment || 'unknown';
-                const costImpact = rec.cost_impact || 'unknown';
-                const perfImpact = rec.performance_impact || 'unknown';
-                const timing = rec.recommended_timing || 'unknown';
-                
-                recommendationHTML += `
-                    <div class="alert ${alertClass}" style="border-left: 4px solid #8b5cf6;">
-                        <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-                            <strong style="flex: 1;">🤖 LLM-Powered Recommendation: ${actionText}</strong>
-                            <span class="badge" style="background: ${confidence > 70 ? '#10b981' : confidence > 40 ? '#f59e0b' : '#ef4444'}; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
-                                ${confidence.toFixed(0)}% Confidence
-                            </span>
-                        </div>
-                        <div style="margin-top: 0.75rem;">
-                            <strong>Reasoning:</strong>
-                            <p style="margin: 0.5rem 0; white-space: pre-wrap;">${rec.reasoning || rec.reason || 'No reasoning provided'}</p>
-                        </div>
-                        ${targetReplicasText}
-                        <div style="margin-top: 0.75rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; font-size: 0.875rem;">
-                            <div><strong>Risk:</strong> <span style="color: ${risk === 'low' ? '#10b981' : risk === 'medium' ? '#f59e0b' : '#ef4444'}">${risk.toUpperCase()}</span></div>
-                            <div><strong>Cost Impact:</strong> ${costImpact.toUpperCase()}</div>
-                            <div><strong>Performance:</strong> ${perfImpact.toUpperCase()}</div>
-                            <div><strong>Timing:</strong> ${timing.replace('_', ' ').toUpperCase()}</div>
-                        </div>
-                        ${rec.factors_considered && rec.factors_considered.length > 0 ? `
-                            <div style="margin-top: 0.75rem;">
-                                <strong>Factors Considered:</strong>
-                                <ul style="margin: 0.25rem 0; padding-left: 1.5rem;">
-                                    ${rec.factors_considered.map(f => `<li>${f}</li>`).join('')}
-                                </ul>
-                            </div>
-                        ` : ''}
-                    </div>
-                `;
-            } else {
-                // Standard recommendation (rule-based)
-                recommendationHTML = `
-                    <div class="alert ${alertClass}">
-                        <strong>Recommendation:</strong> ${actionText}
-                        <br><small>${rec.reason || 'No specific recommendation'}</small>
-                        ${targetReplicasText}
-                        ${pred.llm_enabled ? '<br><small class="text-muted">💡 LLM advisor available but using rule-based recommendation</small>' : ''}
-                    </div>
-                `;
-            }
-            
-            recommendationsContainer.innerHTML = recommendationHTML;
+        // Update cache
+        recommendationCache = {
+            data: data,
+            timestamp: now,
+            deployment: deployment,
+            namespace: namespace
+        };
+        
+        displayRecommendations(data, chartContainer, recommendationsContainer);
         } else {
             // No data available
             chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
@@ -822,7 +694,22 @@ loadScalingHistory();
 
 // Forecast will be auto-loaded by refreshAutoscaling() if enabled deployments exist
 
-setInterval(refreshAutoscaling, 30000); // Refresh every 30 seconds
+// Debounced refresh function
+let refreshTimeout = null;
+function debouncedRefresh() {
+    if (refreshTimeout) clearTimeout(refreshTimeout);
+    refreshTimeout = setTimeout(() => {
+        refreshAutoscaling();
+    }, 5000); // Wait 5 seconds after last call
+}
+
+// Refresh every 60 seconds (increased from 30 to reduce flicker)
+setInterval(() => {
+    // Only refresh if page is visible and not currently loading
+    if (!document.hidden) {
+        refreshAutoscaling();
+    }
+}, 60000);
 </script>
 {% endblock %}
 
