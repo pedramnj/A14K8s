@@ -58,15 +58,31 @@ class LLMAutoscalingAdvisor:
     def _get_cache_key(self, deployment_name: str, namespace: str, 
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
                       current_replicas: int) -> str:
-        """Generate cache key from input parameters"""
-        # Create a hash of key parameters (rounded to avoid minor fluctuations)
+        """Generate cache key from input parameters
+        
+        Uses aggressive rounding to create stable cache keys that don't change
+        with minor metric fluctuations. This prevents rapid recommendation changes.
+        """
+        # Round aggressively to create stable cache keys:
+        # - CPU/Memory: Round to nearest 10% (e.g., 175.2% -> 180%, 179.2% -> 180%)
+        # - Replicas: Use as-is (discrete value)
+        # - Forecast peaks: Round to nearest 10%
+        
+        def round_to_10(value: float) -> int:
+            """Round to nearest 10"""
+            return int(round(value / 10.0) * 10)
+        
         key_data = {
             'deployment': f"{namespace}/{deployment_name}",
             'replicas': current_replicas,
-            'cpu': round(current_metrics.get('cpu_usage', 0), 1),
-            'memory': round(current_metrics.get('memory_usage', 0), 1),
-            'cpu_peak': round(forecast.get('cpu', {}).get('peak', 0), 1),
-            'memory_peak': round(forecast.get('memory', {}).get('peak', 0), 1)
+            # Round to nearest 10% to prevent minor fluctuations from changing cache key
+            'cpu': round_to_10(current_metrics.get('cpu_usage', 0)),
+            'memory': round_to_10(current_metrics.get('memory_usage', 0)),
+            'cpu_peak': round_to_10(forecast.get('cpu', {}).get('peak', 0)),
+            'memory_peak': round_to_10(forecast.get('memory', {}).get('peak', 0)),
+            # Also include trend to differentiate between increasing/decreasing patterns
+            'cpu_trend': forecast.get('cpu', {}).get('trend', 'unknown'),
+            'memory_trend': forecast.get('memory', {}).get('trend', 'unknown')
         }
         key_str = json.dumps(key_data, sort_keys=True)
         return hashlib.md5(key_str.encode()).hexdigest()
