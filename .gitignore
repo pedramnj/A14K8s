@@ -1,69 +1,58 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Backup files - exclude all backup variations
+*_backup*.py
+*_BACKUP*.py
+*_final*.py
+*_working*.py
+*_clean*.py
+*_fixed*.py
+*_original*.py
+*_simple*.py
+*_broken*.py
+*_mcp*.py
+*_stdio*.py
 
-# Virtual environments
-venv/
-env/
-ENV/
-env.bak/
-venv.bak/
+# Temporary and fix files
+*.tmp
+*.temp
+*_fix.py
+*_test.py
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Database and sensitive config files
+instance/
+kube/
+.env
+.env.backup
+admin.conf
+*.conf
 
-# OS
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# Backup directories
+backups/
+*_BACKUP_*/
 
-# AWS
+# PKI and certificates
+pki/
 *.pem
-connect.sh
-deploy-to-aws.sh
-mcp-server-key*
+*.key
+*.crt
 
 # Logs
 *.log
 logs/
 
-# Kubernetes
-kubeconfig
-.kube/
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
 
 # Docker
 .dockerignore
-
-# Temporary files
-*.tmp
-*.temp
-temp/
-tmp/
-OVERLEAF_REPORT.tex
+__pycache__/
+*.backup
+*.bak_*
+*_backup.html
+*.backup_*

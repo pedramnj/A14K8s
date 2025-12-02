@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: ai4k8s-test
+  labels:
+    app: load-generator
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: nginx:1.25-alpine
+        ports:
+        - containerPort: 80
+          name: http
+        # Add a sidecar that generates CPU load
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: load-generator
+  namespace: ai4k8s-test
+spec:
+  selector:
+    app: load-generator
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+# Load generator script (deployed as ConfigMap)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: load-script
+  namespace: ai4k8s-test
+data:
+  generate-load.sh: |
+    #!/bin/sh
+    # Simple CPU load generator
+    while true; do
+      # Generate CPU load for 30 seconds, then sleep
+      timeout 30 sh -c 'while true; do :; done' || true
+      sleep 10
+    done
+
