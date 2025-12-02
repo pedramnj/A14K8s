@@ -1,0 +1,40 @@
+CrownLabs SSH Public Key
+========================
+
+This is the public key that should be registered in your CrownLabs account.
+
+FULL PUBLIC KEY (Copy this entire line):
+----------------------------------------
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINeLCuZTP5mYB6nS/7LpDAFNWJk2mfjA+m3Tqetq1fir pedram.nikjooy@studenti.polito.it
+
+Key Details:
+------------
+Key Type: ED25519
+Key Fingerprint: SHA256:WlpYNmmZPq48V3/YikafLqBn74I8sQ1I7sP5BmkhqX8
+Email: pedram.nikjooy@studenti.polito.it
+Key Location: ~/.ssh/crownlabs_key (private key)
+              ~/.ssh/crownlabs_key.pub (public key)
+
+How to Verify in CrownLabs:
+----------------------------
+1. Go to CrownLabs dashboard
+2. Navigate to SSH Keys section (usually in Settings or Account settings)
+3. Check if this exact key is registered:
+   ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINeLCuZTP5mYB6nS/7LpDAFNWJk2mfjA+m3Tqetq1fir pedram.nikjooy@studenti.polito.it
+
+4. If not registered, add it:
+   - Click "Add SSH Key" or "New Key"
+   - Paste the entire line above
+   - Save
+
+5. Verify the fingerprint matches:
+   SHA256:WlpYNmmZPq48V3/YikafLqBn74I8sQ1I7sP5BmkhqX8
+
+Important Notes:
+-----------------
+- This is the PUBLIC key (safe to share)
+- Never share the private key (~/.ssh/crownlabs_key)
+- The key must be registered in CrownLabs for SSH access to work
+- Make sure the key is registered for both instance AND bastion access (if required)
+
+
