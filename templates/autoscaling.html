@@ -369,14 +369,12 @@ async function refreshAutoscaling() {
                 
                 // NEVER auto-refresh recommendations - only show cached data
                 // This prevents excessive API calls
+                // NOTE: Don't call displayRecommendations here - let loadPredictiveForecast handle it
+                // This prevents duplicate rendering when refreshAutoscaling is called
                 if (hasCachedData) {
-                    // Always use cached data if available - don't auto-refresh
-                    console.log(`✅ Using cached recommendation (auto-refresh disabled to save API calls)`);
-                    const chartContainer = document.getElementById('predictive-forecast-chart');
-                    const recommendationsContainer = document.getElementById('predictive-recommendations');
-                    if (chartContainer && recommendationsContainer) {
-                        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
-                    }
+                    // Cached data exists - don't do anything, it's already displayed
+                    // loadPredictiveForecast will handle displaying it if needed
+                    console.log(`✅ Cached recommendation available (auto-refresh disabled)`);
                 } else if (lastRecommendationFetchTime === 0) {
                     // Only load on initial page load (first time) - this is the ONLY time we fetch
                     console.log(`🔄 Initial page load: Fetching recommendations (one-time only)`);
@@ -668,6 +666,10 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
 
 // Display recommendations function (extracted for reuse and stability)
 function displayRecommendations(data, chartContainer, recommendationsContainer) {
+    // Clear containers first to prevent duplicates
+    if (chartContainer) chartContainer.innerHTML = '';
+    if (recommendationsContainer) recommendationsContainer.innerHTML = '';
+    
     if (data.success && data.recommendations?.predictive) {
         const pred = data.recommendations.predictive;
         const forecast = pred.forecast;
