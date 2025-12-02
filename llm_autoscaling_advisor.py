@@ -44,6 +44,9 @@ class LLMAutoscalingAdvisor:
         # Caching to prevent rapid successive LLM calls
         self.cache_ttl = cache_ttl  # 5 minutes default
         self.recommendation_cache: Dict[str, Dict[str, Any]] = {}
+        # Track last LLM call time to enforce minimum interval
+        self.last_llm_call_time: Dict[str, datetime] = {}
+        self.min_llm_interval = 300  # Minimum 5 minutes between LLM calls for same deployment
         
         if self.groq_api_key:
             try:
@@ -60,32 +63,41 @@ class LLMAutoscalingAdvisor:
                       current_replicas: int) -> str:
         """Generate cache key from input parameters
         
-        Uses aggressive rounding to create stable cache keys that don't change
+        Uses very aggressive rounding to create stable cache keys that don't change
         with minor metric fluctuations. This prevents rapid recommendation changes.
         """
-        # Round aggressively to create stable cache keys:
-        # - CPU/Memory: Round to nearest 10% (e.g., 175.2% -> 180%, 179.2% -> 180%)
+        # Round VERY aggressively to create stable cache keys:
+        # - CPU/Memory: Round to nearest 25% (e.g., 173% -> 175%, 175% -> 175%, 180% -> 175%)
+        #   This ensures 170-180% all use the same cache key
         # - Replicas: Use as-is (discrete value)
-        # - Forecast peaks: Round to nearest 10%
+        # - Forecast peaks: Round to nearest 25%
         
-        def round_to_10(value: float) -> int:
-            """Round to nearest 10"""
-            return int(round(value / 10.0) * 10)
+        def round_to_25(value: float) -> int:
+            """Round to nearest 25 (e.g., 173 -> 175, 175 -> 175, 180 -> 175)"""
+            return int(round(value / 25.0) * 25)
+        
+        def round_to_5_percent(value: float) -> int:
+            """Round to nearest 5% for memory (e.g., 11.7% -> 10%, 12.3% -> 10%)"""
+            return int(round(value / 5.0) * 5)
         
         key_data = {
             'deployment': f"{namespace}/{deployment_name}",
             'replicas': current_replicas,
-            # Round to nearest 10% to prevent minor fluctuations from changing cache key
-            'cpu': round_to_10(current_metrics.get('cpu_usage', 0)),
-            'memory': round_to_10(current_metrics.get('memory_usage', 0)),
-            'cpu_peak': round_to_10(forecast.get('cpu', {}).get('peak', 0)),
-            'memory_peak': round_to_10(forecast.get('memory', {}).get('peak', 0)),
+            # Round CPU to nearest 25% (170-180% all become 175%)
+            'cpu': round_to_25(current_metrics.get('cpu_usage', 0)),
+            # Round memory to nearest 5% (more stable for lower values)
+            'memory': round_to_5_percent(current_metrics.get('memory_usage', 0)),
+            # Round forecast peaks similarly
+            'cpu_peak': round_to_25(forecast.get('cpu', {}).get('peak', 0)),
+            'memory_peak': round_to_5_percent(forecast.get('memory', {}).get('peak', 0)),
             # Also include trend to differentiate between increasing/decreasing patterns
             'cpu_trend': forecast.get('cpu', {}).get('trend', 'unknown'),
             'memory_trend': forecast.get('memory', {}).get('trend', 'unknown')
         }
         key_str = json.dumps(key_data, sort_keys=True)
-        return hashlib.md5(key_str.encode()).hexdigest()
+        cache_key = hashlib.md5(key_str.encode()).hexdigest()
+        logger.debug(f"Cache key for {deployment_name}: cpu={key_data['cpu']}%, memory={key_data['memory']}%, key={cache_key[:8]}")
+        return cache_key
     
     def analyze_scaling_decision(self, 
                                  deployment_name: str,
@@ -122,14 +134,18 @@ class LLMAutoscalingAdvisor:
                 'fallback': True
             }
         
-        # Check cache
+        # Check cache and enforce minimum interval between LLM calls
         if use_cache:
             cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+            deployment_key = f"{namespace}/{deployment_name}"
+            now = datetime.now()
+            
+            # Check if we have a cached recommendation
             if cache_key in self.recommendation_cache:
                 cached = self.recommendation_cache[cache_key]
-                cache_age = (datetime.now() - cached['timestamp']).total_seconds()
+                cache_age = (now - cached['timestamp']).total_seconds()
                 if cache_age < self.cache_ttl:
-                    logger.debug(f"Using cached LLM recommendation (age: {cache_age:.1f}s)")
+                    logger.debug(f"✅ Using cached LLM recommendation (age: {cache_age:.1f}s, key: {cache_key[:8]})")
                     return {
                         'success': True,
                         'recommendation': cached['recommendation'],
@@ -139,7 +155,21 @@ class LLMAutoscalingAdvisor:
                     }
                 else:
                     # Cache expired, remove it
+                    logger.debug(f"⏰ Cache expired (age: {cache_age:.1f}s), removing")
                     del self.recommendation_cache[cache_key]
+            
+            # Enforce minimum interval between LLM calls for same deployment
+            if deployment_key in self.last_llm_call_time:
+                time_since_last_call = (now - self.last_llm_call_time[deployment_key]).total_seconds()
+                if time_since_last_call < self.min_llm_interval:
+                    logger.info(f"⏸️ Skipping LLM call - only {time_since_last_call:.1f}s since last call (min: {self.min_llm_interval}s)")
+                    # Return a fallback recommendation indicating we're rate-limiting
+                    return {
+                        'success': False,
+                        'error': f'LLM call rate-limited (last call {time_since_last_call:.1f}s ago, min interval {self.min_llm_interval}s)',
+                        'fallback': True,
+                        'rate_limited': True
+                    }
         
         try:
             # Prepare context for LLM
@@ -191,22 +221,29 @@ class LLMAutoscalingAdvisor:
             # Try to extract JSON from response (handle both JSON and text responses)
             recommendation = self._parse_llm_response(llm_output)
             
+            now = datetime.now()
             result = {
                 'success': True,
                 'recommendation': recommendation,
                 'llm_model': self.model,
-                'timestamp': datetime.now().isoformat(),
+                'timestamp': now.isoformat(),
                 'cached': False
             }
             
-            # Cache the result
+            # Cache the result and track LLM call time
             if use_cache:
                 cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+                deployment_key = f"{namespace}/{deployment_name}"
+                
                 self.recommendation_cache[cache_key] = {
                     'recommendation': recommendation,
                     'llm_model': self.model,
-                    'timestamp': datetime.now()
+                    'timestamp': now
                 }
+                self.last_llm_call_time[deployment_key] = now
+                
+                logger.info(f"✅ LLM recommendation cached (key: {cache_key[:8]}, deployment: {deployment_key})")
+                
                 # Clean old cache entries (keep only last 100)
                 if len(self.recommendation_cache) > 100:
                     # Remove oldest entries
@@ -214,6 +251,13 @@ class LLMAutoscalingAdvisor:
                                         key=lambda x: x[1]['timestamp'])
                     for key, _ in sorted_cache[:-100]:
                         del self.recommendation_cache[key]
+                
+                # Clean old LLM call times (keep only last 50)
+                if len(self.last_llm_call_time) > 50:
+                    sorted_times = sorted(self.last_llm_call_time.items(), 
+                                        key=lambda x: x[1])
+                    for key, _ in sorted_times[:-50]:
+                        del self.last_llm_call_time[key]
             
             return result
             

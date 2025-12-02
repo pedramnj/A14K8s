@@ -727,6 +727,10 @@ class PredictiveAutoscaler:
                     if llm_result.get('success'):
                         llm_recommendation = llm_result.get('recommendation', {})
                         logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} -> {llm_recommendation.get('target_replicas')} replicas")
+                    elif llm_result.get('rate_limited'):
+                        # Rate-limited, use cached recommendation if available, otherwise fallback
+                        logger.info(f"⏸️  LLM rate-limited, using fallback recommendation")
+                        llm_recommendation = None
                     else:
                         logger.warning(f"⚠️  LLM recommendation failed: {llm_result.get('error')}, using fallback")
                 except Exception as e:
