@@ -22,6 +22,7 @@ from predictive_monitoring import (
     ForecastResult
 )
 from autoscaling_engine import HorizontalPodAutoscaler
+from llm_autoscaling_advisor import LLMAutoscalingAdvisor
 
 logger = logging.getLogger(__name__)
 
@@ -30,14 +31,30 @@ class PredictiveAutoscaler:
     
     def __init__(self, monitoring_system: PredictiveMonitoringSystem,
                  hpa_manager: HorizontalPodAutoscaler,
-                 prediction_horizon: int = 6):
+                 prediction_horizon: int = 6,
+                 use_llm: bool = True):
         self.monitoring_system = monitoring_system
         self.hpa_manager = hpa_manager
         self.prediction_horizon = prediction_horizon  # hours ahead
         self.scaling_history = []
         self.enabled_deployments = {}  # Track enabled deployments: {f"{namespace}/{deployment_name}": {...}}
         
-        # Scaling thresholds
+        # Initialize LLM advisor
+        self.use_llm = use_llm
+        self.llm_advisor = None
+        if use_llm:
+            try:
+                self.llm_advisor = LLMAutoscalingAdvisor()
+                if self.llm_advisor.client:
+                    logger.info("✅ LLM autoscaling advisor enabled")
+                else:
+                    logger.warning("⚠️  LLM advisor requested but no API key available")
+                    self.use_llm = False
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize LLM advisor: {e}")
+                self.use_llm = False
+        
+        # Scaling thresholds (fallback when LLM is not available)
         self.scale_up_threshold = 75  # CPU or memory > 75%
         self.scale_down_threshold = 25  # CPU and memory < 25%
         self.safety_buffer = 1.2  # 20% buffer for safety
@@ -660,14 +677,79 @@ class PredictiveAutoscaler:
             logger.info(f"Recommendation forecast - CPU: current={cpu_forecast.current_value}, predicted={cpu_forecast.predicted_values}, max={max_predicted_cpu}")
             logger.info(f"Recommendation forecast - Memory: current={memory_forecast.current_value}, predicted={memory_forecast.predicted_values}, max={max_predicted_memory}")
             
-            # Determine recommendation
-            action = self._determine_scaling_action(
-                max_predicted_cpu,
-                max_predicted_memory,
-                current_replicas,
-                2,  # default min
-                10  # default max
-            )
+            # Try LLM-based recommendation first
+            llm_recommendation = None
+            if self.use_llm and self.llm_advisor:
+                try:
+                    # Get HPA status if exists
+                    hpa_name = f"{deployment_name}-hpa"
+                    hpa_status = None
+                    hpa_result = self.hpa_manager.get_hpa(hpa_name, namespace)
+                    if hpa_result.get('success'):
+                        hpa_status = hpa_result.get('status', {})
+                    
+                    # Prepare metrics
+                    current_metrics = {
+                        'cpu_usage': cpu_current,
+                        'memory_usage': memory_current,
+                        'pod_count': current_replicas,
+                        'running_pod_count': current_replicas
+                    }
+                    
+                    # Prepare forecast
+                    forecast_data = {
+                        'cpu': {
+                            'current': cpu_forecast.current_value,
+                            'peak': max_predicted_cpu,
+                            'trend': cpu_forecast.trend,
+                            'predictions': cpu_forecast.predicted_values
+                        },
+                        'memory': {
+                            'current': memory_forecast.current_value,
+                            'peak': max_predicted_memory,
+                            'trend': memory_forecast.trend,
+                            'predictions': memory_forecast.predicted_values
+                        }
+                    }
+                    
+                    # Get LLM recommendation
+                    llm_result = self.llm_advisor.get_intelligent_recommendation(
+                        deployment_name=deployment_name,
+                        namespace=namespace,
+                        current_metrics=current_metrics,
+                        forecast=forecast_data,
+                        hpa_status=hpa_status,
+                        current_replicas=current_replicas,
+                        min_replicas=2,  # default min
+                        max_replicas=10  # default max
+                    )
+                    
+                    if llm_result.get('success'):
+                        llm_recommendation = llm_result.get('recommendation', {})
+                        logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} -> {llm_recommendation.get('target_replicas')} replicas")
+                    else:
+                        logger.warning(f"⚠️  LLM recommendation failed: {llm_result.get('error')}, using fallback")
+                except Exception as e:
+                    logger.warning(f"⚠️  Error getting LLM recommendation: {e}, using fallback")
+            
+            # Use LLM recommendation if available, otherwise fallback to rule-based
+            if llm_recommendation:
+                action = {
+                    'action': llm_recommendation.get('action', 'none'),
+                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas),
+                    'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
+                    'confidence': llm_recommendation.get('confidence', 0.5),
+                    'llm_recommendation': llm_recommendation
+                }
+            else:
+                # Fallback to rule-based recommendation
+                action = self._determine_scaling_action(
+                    max_predicted_cpu,
+                    max_predicted_memory,
+                    current_replicas,
+                    2,  # default min
+                    10  # default max
+                )
             
             return {
                 'success': True,
@@ -686,7 +768,9 @@ class PredictiveAutoscaler:
                         'predictions': memory_forecast.predicted_values
                     }
                 },
-                'current_replicas': current_replicas
+                'current_replicas': current_replicas,
+                'llm_enabled': self.use_llm and self.llm_advisor is not None,
+                'llm_used': llm_recommendation is not None
             }
             
         except Exception as e:

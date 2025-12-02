@@ -18,6 +18,7 @@ from predictive_autoscaler import PredictiveAutoscaler
 from scheduled_autoscaler import ScheduledAutoscaler
 from predictive_monitoring import PredictiveMonitoringSystem
 from ai_monitoring_integration import AIMonitoringIntegration
+from llm_autoscaling_advisor import LLMAutoscalingAdvisor
 
 logger = logging.getLogger(__name__)
 
@@ -39,10 +40,14 @@ class AutoscalingIntegration:
             from predictive_monitoring import PredictiveMonitoringSystem
             self.monitoring_system = PredictiveMonitoringSystem()
         
-        # Initialize autoscalers
+        # Initialize LLM advisor
+        self.llm_advisor = LLMAutoscalingAdvisor()
+        
+        # Initialize autoscalers (with LLM support)
         self.predictive_autoscaler = PredictiveAutoscaler(
             self.monitoring_system,
-            self.hpa_manager
+            self.hpa_manager,
+            use_llm=True  # Enable LLM-based recommendations
         )
         self.scheduled_autoscaler = ScheduledAutoscaler(self.monitoring_system, self.hpa_manager)
         
@@ -159,21 +164,30 @@ class AutoscalingIntegration:
         )
     
     def get_scaling_recommendations(self, deployment_name: str, namespace: str = "default") -> Dict[str, Any]:
-        """Get scaling recommendations from all sources"""
+        """Get scaling recommendations from all sources including LLM"""
         try:
             recommendations = {
                 'predictive': None,
                 'reactive': None,
-                'scheduled': None
+                'scheduled': None,
+                'llm': None
             }
             
-            # Predictive recommendation
+            # Predictive recommendation (may include LLM if enabled)
             try:
                 pred_rec = self.predictive_autoscaler.get_scaling_recommendation(
                     deployment_name, namespace
                 )
                 if pred_rec['success']:
                     recommendations['predictive'] = pred_rec
+                    
+                    # Extract LLM recommendation if present
+                    if pred_rec.get('llm_used') and pred_rec.get('recommendation', {}).get('llm_recommendation'):
+                        recommendations['llm'] = {
+                            'success': True,
+                            'recommendation': pred_rec['recommendation']['llm_recommendation'],
+                            'source': 'predictive_with_llm'
+                        }
             except Exception as e:
                 logger.warning(f"Failed to get predictive recommendation: {e}")
             
@@ -196,6 +210,46 @@ class AutoscalingIntegration:
                     recommendations['scheduled'] = schedule
             except Exception as e:
                 logger.warning(f"Failed to get scheduled recommendation: {e}")
+            
+            # Standalone LLM recommendation (if not already included in predictive)
+            if not recommendations.get('llm') and self.llm_advisor and self.llm_advisor.client:
+                try:
+                    # Get current metrics
+                    deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
+                    if deployment_status.get('success'):
+                        current_replicas = deployment_status['replicas']
+                        
+                        # Get metrics from monitoring system
+                        current_analysis = self.monitoring_system.analyze() if hasattr(self.monitoring_system, 'analyze') else {}
+                        current_metrics = current_analysis.get('current_metrics', {})
+                        forecasts = current_analysis.get('forecasts', {})
+                        
+                        # Get HPA status
+                        hpa_name = f"{deployment_name}-hpa"
+                        hpa_result = self.hpa_manager.get_hpa(hpa_name, namespace)
+                        hpa_status = hpa_result.get('status') if hpa_result.get('success') else None
+                        
+                        # Get LLM recommendation
+                        llm_result = self.llm_advisor.get_intelligent_recommendation(
+                            deployment_name=deployment_name,
+                            namespace=namespace,
+                            current_metrics=current_metrics,
+                            forecast=forecasts,
+                            hpa_status=hpa_status,
+                            current_replicas=current_replicas,
+                            min_replicas=2,
+                            max_replicas=10
+                        )
+                        
+                        if llm_result.get('success'):
+                            recommendations['llm'] = {
+                                'success': True,
+                                'recommendation': llm_result.get('recommendation', {}),
+                                'source': 'standalone_llm',
+                                'model': llm_result.get('llm_model')
+                            }
+                except Exception as e:
+                    logger.warning(f"Failed to get standalone LLM recommendation: {e}")
             
             return {
                 'success': True,
