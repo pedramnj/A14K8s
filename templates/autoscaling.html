@@ -105,14 +105,11 @@
             <small class="text-muted">AI-powered proactive scaling based on ML forecasts</small>
         </div>
         <div class="card-body">
-            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
                 <div>
                     <h4 style="margin-bottom: 1rem;">Forecast & Scaling</h4>
-                    <div id="predictive-forecast-chart" style="height: 250px; margin-bottom: 1rem;">
+                    <div id="predictive-forecast-chart" style="height: 250px;">
                         <p class="text-muted text-center">No forecast data. Enable predictive autoscaling to see forecasts.</p>
-                    </div>
-                    <div id="predictive-recommendations" style="margin-top: 1rem;">
-                        <p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>
                     </div>
                 </div>
                 <div>
@@ -143,6 +140,13 @@
                             Enable Predictive Autoscaling
                         </button>
                     </form>
+                </div>
+            </div>
+            <!-- Recommendations - Full Width Below Grid -->
+            <div style="width: 100%; margin-top: 1.5rem;">
+                <h4 style="margin-bottom: 1rem;">Recommendations</h4>
+                <div id="predictive-recommendations">
+                    <p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>
                 </div>
             </div>
         </div>
@@ -316,9 +320,14 @@ async function manualRefresh() {
 
 // Load autoscaling status
 async function refreshAutoscaling(allowRecommendationRefresh = false) {
+    console.log(`🔄 refreshAutoscaling called (allowRecommendationRefresh: ${allowRecommendationRefresh})`);
     try {
         const response = await fetch(`/api/autoscaling/status/${serverId}`);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
         const data = await response.json();
+        console.log('📊 Autoscaling status data received:', data);
         
         // Check if cluster is disconnected
         if (data.error || data.cluster_disconnected) {
@@ -459,6 +468,10 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
 
 function updateHPAList(hpas) {
     const container = document.getElementById('hpa-list');
+    if (!container) {
+        console.error('❌ hpa-list container not found');
+        return;
+    }
     if (!hpas || hpas.length === 0) {
         container.innerHTML = '<p class="text-muted">No HPAs configured</p>';
         return;
@@ -487,6 +500,10 @@ function updateHPAList(hpas) {
 
 function updateScheduleList(schedules) {
     const container = document.getElementById('schedule-list');
+    if (!container) {
+        console.error('❌ schedule-list container not found');
+        return;
+    }
     if (!schedules || schedules.length === 0) {
         container.innerHTML = '<p class="text-muted">No schedules configured</p>';
         return;
@@ -868,6 +885,10 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
 // Load scaling history
 async function loadScalingHistory() {
     const container = document.getElementById('scaling-history-chart');
+    if (!container) {
+        console.error('❌ scaling-history-chart container not found');
+        return;
+    }
     
     try {
         // For now, show a placeholder chart
@@ -968,8 +989,15 @@ let initialLoadComplete = false;
 refreshAutoscaling().then(() => {
     initialLoadComplete = true;
     console.log('✅ Initial page load complete - recommendations will NOT auto-refresh');
+}).catch(error => {
+    console.error('❌ Error in initial refreshAutoscaling:', error);
+    initialLoadComplete = true; // Set anyway to prevent blocking
 });
-loadScalingHistory();
+
+// Load scaling history
+loadScalingHistory().catch(error => {
+    console.error('❌ Error loading scaling history:', error);
+});
 
 // Debounced refresh function
 let refreshTimeout = null;
