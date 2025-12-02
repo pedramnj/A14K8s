@@ -612,8 +612,24 @@ async function loadPredictiveForecast(deployment, namespace) {
                 });
             }
             
-            // Show recommendations
-            const rec = pred.recommendation;
+            // Show recommendations - prioritize LLM if available
+            let rec = pred.recommendation;
+            let llmRec = null;
+            let isLLMRecommendation = false;
+            
+            // Check if LLM recommendation is embedded in predictive recommendation
+            if (pred.llm_used && rec.llm_recommendation) {
+                llmRec = rec.llm_recommendation;
+                isLLMRecommendation = true;
+                rec = llmRec;  // Use LLM recommendation
+            }
+            // Check if standalone LLM recommendation is available
+            else if (data.recommendations?.llm?.success) {
+                llmRec = data.recommendations.llm.recommendation;
+                isLLMRecommendation = true;
+                rec = llmRec;  // Use LLM recommendation
+            }
+            
             let actionText = 'No Action';
             let alertClass = 'alert-success';
             if (rec.action === 'scale_up') {
@@ -625,6 +641,9 @@ async function loadPredictiveForecast(deployment, namespace) {
             } else if (rec.action === 'at_max') {
                 actionText = 'At Max Capacity';
                 alertClass = 'alert-danger';
+            } else if (rec.action === 'maintain') {
+                actionText = 'Maintain Current';
+                alertClass = 'alert-success';
             }
             
             let targetReplicasText = '';
@@ -636,13 +655,59 @@ async function loadPredictiveForecast(deployment, namespace) {
                 }
             }
             
-            recommendationsContainer.innerHTML = `
-                <div class="alert ${alertClass}">
-                    <strong>Recommendation:</strong> ${actionText}
-                    <br><small>${rec.reason || 'No specific recommendation'}</small>
-                    ${targetReplicasText}
-                </div>
-            `;
+            // Build recommendation HTML
+            let recommendationHTML = '';
+            
+            // LLM recommendation header
+            if (isLLMRecommendation) {
+                const confidence = (rec.confidence || 0) * 100;
+                const risk = rec.risk_assessment || 'unknown';
+                const costImpact = rec.cost_impact || 'unknown';
+                const perfImpact = rec.performance_impact || 'unknown';
+                const timing = rec.recommended_timing || 'unknown';
+                
+                recommendationHTML += `
+                    <div class="alert ${alertClass}" style="border-left: 4px solid #8b5cf6;">
+                        <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+                            <strong style="flex: 1;">🤖 LLM-Powered Recommendation: ${actionText}</strong>
+                            <span class="badge" style="background: ${confidence > 70 ? '#10b981' : confidence > 40 ? '#f59e0b' : '#ef4444'}; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                                ${confidence.toFixed(0)}% Confidence
+                            </span>
+                        </div>
+                        <div style="margin-top: 0.75rem;">
+                            <strong>Reasoning:</strong>
+                            <p style="margin: 0.5rem 0; white-space: pre-wrap;">${rec.reasoning || rec.reason || 'No reasoning provided'}</p>
+                        </div>
+                        ${targetReplicasText}
+                        <div style="margin-top: 0.75rem; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.5rem; font-size: 0.875rem;">
+                            <div><strong>Risk:</strong> <span style="color: ${risk === 'low' ? '#10b981' : risk === 'medium' ? '#f59e0b' : '#ef4444'}">${risk.toUpperCase()}</span></div>
+                            <div><strong>Cost Impact:</strong> ${costImpact.toUpperCase()}</div>
+                            <div><strong>Performance:</strong> ${perfImpact.toUpperCase()}</div>
+                            <div><strong>Timing:</strong> ${timing.replace('_', ' ').toUpperCase()}</div>
+                        </div>
+                        ${rec.factors_considered && rec.factors_considered.length > 0 ? `
+                            <div style="margin-top: 0.75rem;">
+                                <strong>Factors Considered:</strong>
+                                <ul style="margin: 0.25rem 0; padding-left: 1.5rem;">
+                                    ${rec.factors_considered.map(f => `<li>${f}</li>`).join('')}
+                                </ul>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            } else {
+                // Standard recommendation (rule-based)
+                recommendationHTML = `
+                    <div class="alert ${alertClass}">
+                        <strong>Recommendation:</strong> ${actionText}
+                        <br><small>${rec.reason || 'No specific recommendation'}</small>
+                        ${targetReplicasText}
+                        ${pred.llm_enabled ? '<br><small class="text-muted">💡 LLM advisor available but using rule-based recommendation</small>' : ''}
+                    </div>
+                `;
+            }
+            
+            recommendationsContainer.innerHTML = recommendationHTML;
         } else {
             // No data available
             chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
