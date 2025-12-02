@@ -12,11 +12,19 @@ Thesis: AI Agent for Kubernetes Management
 
 import json
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import threading
 import time
 from dataclasses import asdict
+from collections import deque
+
+try:  # pragma: no cover - optional dependency for type conversion
+    import numpy as np  # type: ignore
+    NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    NUMPY_AVAILABLE = False
 
 from predictive_monitoring import (
     PredictiveMonitoringSystem, 
@@ -35,6 +43,9 @@ class AIMonitoringIntegration:
     """Integrates AI monitoring with the web application"""
     
     def __init__(self, kubeconfig_path: Optional[str] = None):
+        self.metrics_history: deque = deque(maxlen=288)
+        self._load_env_file()
+
         try:
             print(f"🔧 Initializing AI monitoring integration...")
             self.monitoring_system = PredictiveMonitoringSystem()
@@ -61,6 +72,52 @@ class AIMonitoringIntegration:
             self.collection_thread = None
             self.collection_interval = 300
             self.last_analysis = None
+            self.metrics_history = deque(maxlen=288)
+
+    def _load_env_file(self):
+        """Load environment variables from .env-style files for remote services."""
+        env_paths = [
+            'client/.env',
+            '.env',
+            os.path.expanduser('~/.env'),
+            os.path.join(os.path.dirname(__file__), '.env'),
+        ]
+
+        for env_path in env_paths:
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, 'r') as fp:
+                        for line in fp:
+                            line = line.strip()
+                            if line and not line.startswith('#') and '=' in line:
+                                key, value = line.split('=', 1)
+                                os.environ[key.strip()] = value.strip().strip('\'"')
+                    logger.info(f"✅ Loaded environment from {env_path}")
+                    return
+                except Exception as exc:
+                    logger.warning(f"⚠️  Failed to load {env_path}: {exc}")
+        logger.warning("⚠️  No .env file found in expected locations")
+
+    def _to_json_safe(self, value: Any) -> Any:
+        """Recursively convert values to JSON-serializable primitives."""
+        if isinstance(value, dict):
+            return {str(k): self._to_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._to_json_safe(v) for v in value]
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if NUMPY_AVAILABLE:
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, np.floating):
+                return float(value)
+            if isinstance(value, np.bool_):
+                return bool(value)
+        if isinstance(value, bool):
+            return bool(value)
+        if isinstance(value, (int, float, str)) or value is None:
+            return value
+        return str(value)
         
     def start_monitoring(self, interval_seconds: int = 300):
         """Start continuous monitoring"""
@@ -109,6 +166,14 @@ class AIMonitoringIntegration:
                     
                     # Perform analysis
                     self.last_analysis = self.monitoring_system.analyze()
+                    try:
+                        self.metrics_history.append({
+                            "timestamp": resource_metrics.timestamp,
+                            "cpu_usage": resource_metrics.cpu_usage,
+                            "memory_usage": resource_metrics.memory_usage
+                        })
+                    except Exception:
+                        pass
                     
                     logger.info("Metrics collected and analyzed successfully")
                 else:
@@ -122,17 +187,25 @@ class AIMonitoringIntegration:
     
     def get_current_analysis(self) -> Dict[str, Any]:
         """Get the latest analysis results"""
-        if self.last_analysis:
-            return self.last_analysis
-        
         # Check if components are available
         if not self.monitoring_system or not self.metrics_collector:
             print("⚠️  AI monitoring components not available, using demo mode")
+            self.last_analysis = None  # Clear stale cache
             return self._generate_demo_analysis()
         
         # Perform one-time analysis if no continuous monitoring
         try:
             metrics_data = self.metrics_collector.get_aggregated_metrics()
+            
+            # Check for connection errors (cluster disconnected)
+            if "error" in metrics_data:
+                error_msg = str(metrics_data.get("error", ""))
+                # Detect common disconnection errors
+                if any(phrase in error_msg.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                    logger.warning(f"Cluster appears to be disconnected: {error_msg}")
+                    self.last_analysis = None  # Clear stale cache
+                    return self._generate_cluster_disconnected_analysis(error_msg)
+            
             # If collector indicates demo mode, return synthetic demo analysis instead of zeros
             if metrics_data.get("demo_mode"):
                 logger.info("Metrics collector in demo mode; generating synthetic analysis")
@@ -164,20 +237,39 @@ class AIMonitoringIntegration:
                 )
                 
                 self.monitoring_system.add_metrics(resource_metrics)
+                try:
+                    self.metrics_history.append({
+                        "timestamp": resource_metrics.timestamp,
+                        "cpu_usage": resource_metrics.cpu_usage,
+                        "memory_usage": resource_metrics.memory_usage
+                    })
+                except Exception:
+                    pass
                 analysis_result = self.monitoring_system.analyze()
                 if "error" not in analysis_result:
                     self.last_analysis = analysis_result
                     return analysis_result
         except Exception as e:
+            error_msg = str(e)
             logger.error(f"Failed to get current analysis: {e}")
+            # Check if it's a connection error
+            if any(phrase in error_msg.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                logger.warning(f"Cluster connection error detected: {error_msg}")
+                self.last_analysis = None  # Clear stale cache
+                return self._generate_cluster_disconnected_analysis(error_msg)
         
         # Fallback: Generate synthetic data for demonstration
         logger.info("Using demo mode for AI monitoring")
+        self.last_analysis = None  # Clear stale cache
         return self._generate_demo_analysis()
     
     def _generate_demo_analysis(self) -> Dict[str, Any]:
         """Generate demo analysis when Kubernetes is not available"""
         import random
+        
+        # First, check if cluster is actually disconnected (not just unavailable)
+        cluster_disconnected = False
+        error_msg = ""
         
         # Try to get real metrics using MCP tools
         try:
@@ -185,12 +277,21 @@ class AIMonitoringIntegration:
             from mcp_client import call_mcp_tool
             
             # Get real pod count using MCP tools (revert to original approach)
-            pod_count = 12  # fallback
+            pod_count = 0  # Start with 0, only use real data if available
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 result = loop.run_until_complete(call_mcp_tool("pods_list", {"namespace": "all"}))
                 loop.close()
+                
+                # Check if MCP call failed due to cluster disconnection
+                if not result.get("success"):
+                    error_text = str(result.get("error", ""))
+                    if any(phrase in error_text.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                        cluster_disconnected = True
+                        error_msg = error_text
+                        logger.warning(f"Cluster disconnected detected via MCP: {error_msg}")
+                        return self._generate_cluster_disconnected_analysis(error_msg)
                 
                 if result.get("success"):
                     pod_data = result.get("result", {})
@@ -198,16 +299,29 @@ class AIMonitoringIntegration:
                         content = pod_data["content"]
                         if isinstance(content, list) and len(content) > 0:
                             pod_text = content[0].get("text", "")
+                            # Check for connection errors in the text
+                            if any(phrase in pod_text.lower() for phrase in ["no such host", "connection refused", "unable to connect", "dial tcp"]):
+                                cluster_disconnected = True
+                                error_msg = pod_text
+                                logger.warning(f"Cluster disconnected detected in MCP response: {error_msg}")
+                                return self._generate_cluster_disconnected_analysis(error_msg)
                             # Count lines that look like pod entries (skip header)
                             pod_lines = [line for line in pod_text.split('\n') if line.strip() and not line.startswith('NAME') and 'Running' in line]
                             pod_count = len(pod_lines)
-                            logger.info(f"✅ Got real pod count via MCP: {pod_count}")
+                            if pod_count > 0:
+                                logger.info(f"✅ Got real pod count via MCP: {pod_count}")
             except Exception as e:
+                error_msg = str(e)
+                # Check if exception indicates cluster disconnection
+                if any(phrase in error_msg.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                    cluster_disconnected = True
+                    logger.warning(f"Cluster disconnected detected via MCP exception: {error_msg}")
+                    return self._generate_cluster_disconnected_analysis(error_msg)
                 logger.warning(f"Failed to get pod count via MCP: {e}")
             
             # Get real CPU and memory usage using MCP tools
-            cpu_usage = random.uniform(25, 75)  # fallback
-            memory_usage = random.uniform(30, 80)  # fallback
+            cpu_usage = 0  # Start with 0, only use real data if available
+            memory_usage = 0  # Start with 0, only use real data if available
             
             try:
                 # Try to get top pods data
@@ -215,6 +329,15 @@ class AIMonitoringIntegration:
                 asyncio.set_event_loop(loop)
                 result = loop.run_until_complete(call_mcp_tool("pods_top", {"namespace": "all"}))
                 loop.close()
+                
+                # Check if MCP call failed due to cluster disconnection
+                if not result.get("success"):
+                    error_text = str(result.get("error", ""))
+                    if any(phrase in error_text.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                        cluster_disconnected = True
+                        error_msg = error_text
+                        logger.warning(f"Cluster disconnected detected via MCP pods_top: {error_msg}")
+                        return self._generate_cluster_disconnected_analysis(error_msg)
                 
                 if result.get("success"):
                     top_data = result.get("result", {})
@@ -262,13 +385,26 @@ class AIMonitoringIntegration:
                                     pod_count = pod_count_from_top
                                     
             except Exception as e:
+                error_msg = str(e)
+                # Check if exception indicates cluster disconnection
+                if any(phrase in error_msg.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                    cluster_disconnected = True
+                    logger.warning(f"Cluster disconnected detected via MCP pods_top exception: {error_msg}")
+                    return self._generate_cluster_disconnected_analysis(error_msg)
                 logger.warning(f"Failed to get top data via MCP: {e}")
                 
         except Exception as e:
+            error_msg = str(e)
+            # Check if exception indicates cluster disconnection
+            if any(phrase in error_msg.lower() for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                cluster_disconnected = True
+                logger.warning(f"Cluster disconnected detected via MCP exception: {error_msg}")
+                return self._generate_cluster_disconnected_analysis(error_msg)
             logger.warning(f"Failed to get real metrics via MCP: {e}")
-            pod_count = 12  # fallback
-            cpu_usage = random.uniform(25, 75)
-            memory_usage = random.uniform(30, 80)
+        
+        # If we couldn't get any real data and cluster appears disconnected, show disconnected message
+        if pod_count == 0 and cpu_usage == 0 and memory_usage == 0:
+            return self._generate_cluster_disconnected_analysis("Unable to connect to Kubernetes cluster - no metrics available")
         
         # Generate realistic demo metrics
         current_time = datetime.now()
@@ -287,6 +423,14 @@ class AIMonitoringIntegration:
             pod_count=pod_count,
             node_count=node_count
         )
+        try:
+            self.metrics_history.append({
+                "timestamp": demo_metrics.timestamp,
+                "cpu_usage": demo_metrics.cpu_usage,
+                "memory_usage": demo_metrics.memory_usage
+            })
+        except Exception:
+            pass
         
         # Add to monitoring system if available
         if self.monitoring_system:
@@ -307,19 +451,30 @@ class AIMonitoringIntegration:
         
         # Add demo indicator - check if we have real data
         has_real_data = False
-        try:
-            import asyncio
-            from mcp_client import call_mcp_tool
-            # Try to verify we can get real data
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            test_result = loop.run_until_complete(call_mcp_tool("pods_list", {"namespace": "all"}))
-            loop.close()
-            has_real_data = test_result.get("success", False)
-            logger.info(f"MCP connection test result: {has_real_data}")
-        except Exception as e:
-            logger.warning(f"MCP connection test failed: {e}")
-            has_real_data = False
+        # Don't test MCP if we're in disconnected state - it will give false positives
+        if not (analysis.get("error") or (analysis.get("demo_message", "").lower().find("disconnected") >= 0)):
+            try:
+                import asyncio
+                from mcp_client import call_mcp_tool
+                # Try to verify we can get real data
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                test_result = loop.run_until_complete(call_mcp_tool("pods_list", {"namespace": "all"}))
+                loop.close()
+                # Check if MCP result actually contains connection errors
+                if test_result.get("success"):
+                    result_text = str(test_result.get("result", "")).lower()
+                    # If result contains connection errors, it's not real data
+                    if any(phrase in result_text for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                        has_real_data = False
+                    else:
+                        has_real_data = True
+                else:
+                    has_real_data = False
+                logger.info(f"MCP connection test result: {has_real_data}")
+            except Exception as e:
+                logger.warning(f"MCP connection test failed: {e}")
+                has_real_data = False
             
         if has_real_data:
             analysis["demo_mode"] = False
@@ -329,6 +484,57 @@ class AIMonitoringIntegration:
             analysis["demo_message"] = "Demo mode: Using synthetic data for demonstration purposes"
         
         return analysis
+    
+    def _generate_cluster_disconnected_analysis(self, error_msg: str) -> Dict[str, Any]:
+        """Generate analysis when cluster is disconnected"""
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "current_metrics": {
+                "cpu_usage": 0.0,
+                "memory_usage": 0.0,
+                "network_io": 0.0,
+                "disk_io": 0.0,
+                "pod_count": 0,
+                "running_pod_count": 0,
+                "node_count": 0
+            },
+            "health_score": {
+                "score": 0,
+                "status": "disconnected",
+                "message": "Cluster is not accessible"
+            },
+            "anomaly_detection": {
+                "anomaly_detected": False,
+                "severity": "none",
+                "message": "No data available - cluster disconnected"
+            },
+            "forecasts": {
+                "cpu_forecast": {
+                    "current_value": 0.0,
+                    "predicted_values": [],
+                    "trend": "unknown",
+                    "message": "No forecast available - cluster disconnected"
+                },
+                "memory_forecast": {
+                    "current_value": 0.0,
+                    "predicted_values": [],
+                    "trend": "unknown",
+                    "message": "No forecast available - cluster disconnected"
+                }
+            },
+            "recommendations": [
+                {
+                    "type": "cluster_disconnected",
+                    "priority": "high",
+                    "message": f"Kubernetes cluster is not accessible. Error: {error_msg}",
+                    "action": "Please verify the cluster is running and the kubeconfig is correct."
+                }
+            ],
+            "summary": "Cluster Disconnected - Unable to connect to Kubernetes cluster",
+            "demo_mode": True,
+            "demo_message": f"⚠️ Cluster Disconnected: {error_msg}. Please check your cluster configuration and ensure the cluster is running.",
+            "error": error_msg
+        }
     
     def _create_basic_demo_analysis(self, metrics: ResourceMetrics) -> Dict[str, Any]:
         """Create a basic demo analysis when ML models fail"""
@@ -390,7 +596,7 @@ class AIMonitoringIntegration:
                     "timestamp": analysis.get("timestamp", datetime.now().isoformat())
                 })
             
-            return alerts
+            return self._to_json_safe(alerts)
         except Exception as e:
             logger.error(f"Failed to get anomaly alerts: {e}")
             return []
@@ -489,7 +695,7 @@ class AIMonitoringIntegration:
                         "details": {"status": "healthy"}
                     })
             
-            return recommendations
+            return self._to_json_safe(recommendations)
         except Exception as e:
             logger.error(f"Failed to get performance recommendations: {e}")
             return []
@@ -594,12 +800,162 @@ class AIMonitoringIntegration:
                     }
                 })
             
-            return recommendations
+            return self._to_json_safe(recommendations)
             
         except Exception as e:
             logger.error(f"Error getting RAG-enhanced recommendations: {e}")
             return []
+
+    def _build_llm_fallback(self, current_metrics: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return deterministic guidance when LLM is unavailable."""
+        cpu = current_metrics.get("cpu_usage", 0)
+        memory = current_metrics.get("memory_usage", 0)
+        pod_count = current_metrics.get("pod_count", 0)
+
+        fallback: List[Dict[str, Any]] = []
+
+        if cpu < 30:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "medium",
+                "message": f"CPU usage is {cpu:.1f}% (below 30%). Consider scaling down workloads or node counts to save cost.",
+                "action": "scale_down_cpu",
+                "details": {
+                    "reason": "LLM disabled - rule-based guidance",
+                    "metric": "cpu_usage",
+                    "metric_value": cpu
+                }
+            })
+        elif cpu > 80:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "high",
+                "message": f"CPU usage is {cpu:.1f}% (above 80%). Scale up or optimize CPU-intensive workloads.",
+                "action": "scale_up_cpu",
+                "details": {
+                    "reason": "LLM disabled - rule-based guidance",
+                    "metric": "cpu_usage",
+                    "metric_value": cpu
+                }
+            })
+
+        if memory < 40:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "low",
+                "message": f"Memory usage is {memory:.1f}% (below 40%). Right-size memory allocations to reduce waste.",
+                "action": "scale_down_memory",
+                "details": {
+                    "reason": "LLM disabled - rule-based guidance",
+                    "metric": "memory_usage",
+                    "metric_value": memory
+                }
+            })
+        elif memory > 85:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "high",
+                "message": f"Memory usage is {memory:.1f}% (above 85%). Increase limits or investigate high-memory workloads.",
+                "action": "scale_up_memory",
+                "details": {
+                    "reason": "LLM disabled - rule-based guidance",
+                    "metric": "memory_usage",
+                    "metric_value": memory
+                }
+            })
+
+        if pod_count > 60:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "medium",
+                "message": f"Cluster is running {pod_count} pods. Review autoscaling policies and retire unused workloads.",
+                "action": "review_autoscaling",
+                "details": {
+                    "reason": "LLM disabled - rule-based guidance",
+                    "metric": "pod_count",
+                    "metric_value": pod_count
+                }
+            })
+
+        if not fallback:
+            fallback.append({
+                "type": "llm_fallback",
+                "priority": "low",
+                "message": "Cluster metrics look healthy. Continue monitoring and keep alerts enabled.",
+                "action": "monitor",
+                "details": {"reason": "LLM disabled - rule-based guidance"}
+            })
+
+        return self._to_json_safe(fallback)
     
+    def get_llm_recommendations(self, current_metrics: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """Return LLM recommendations, falling back to heuristic guidance if LLM is disabled."""
+        try:
+            if current_metrics is None:
+                metrics_data = self.metrics_collector.get_aggregated_metrics()
+                if "error" in metrics_data or "aggregated_metrics" not in metrics_data:
+                    return []
+                agg = metrics_data["aggregated_metrics"]
+                current_metrics = {
+                    "cpu_usage": agg.get("cpu_usage_percent", 0),
+                    "memory_usage": agg.get("memory_usage_percent", 0),
+                    "pod_count": agg.get("pod_count", 0),
+                    "running_pod_count": agg.get("running_pod_count", 0),
+                    "node_count": agg.get("node_count", 0)
+                }
+
+            llm_enabled = os.environ.get('LLM_ENABLED', '')
+            groq_key = os.environ.get('GROQ_API_KEY', '')
+
+            if not groq_key or llm_enabled not in ('1', 'true', 'True'):
+                return self._build_llm_fallback(current_metrics)
+
+            from groq import Groq  # type: ignore
+        except ImportError:
+            logger.warning("Groq client not installed; using fallback recommendations.")
+            return self._build_llm_fallback(current_metrics or {})
+        except Exception as exc:
+            logger.warning(f"Failed to prepare metrics for LLM: {exc}")
+            return self._build_llm_fallback(current_metrics or {})
+
+        try:
+            client = Groq(api_key=groq_key)
+
+            prompt = (
+                "You are a Kubernetes SRE. Given current cluster metrics, produce up to 3 actionable "
+                "recommendations as JSON array of objects: "
+                "[{\"action\": str, \"message\": str, \"priority\": \"low|medium|high|critical\", \"details\": {}}]. "
+                "Return ONLY JSON.\n\n"
+                f"CURRENT_METRICS: {json.dumps(current_metrics)}"
+            )
+
+            response = client.chat.completions.create(
+                model=os.environ.get('GROQ_MODEL', 'llama-3.1-8b-instant'),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=600
+            )
+            text = response.choices[0].message.content if response and response.choices else "[]"
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                raise ValueError("LLM response is not a list")
+
+            normalized: List[Dict[str, Any]] = []
+            for rec in parsed[:5]:
+                normalized.append({
+                    "type": "llm",
+                    "priority": (rec.get("priority") or "medium").lower(),
+                    "message": rec.get("message", "Recommendation"),
+                    "action": rec.get("action", "review"),
+                    "details": rec.get("details", {})
+                })
+            if not normalized:
+                return self._build_llm_fallback(current_metrics)
+            return self._to_json_safe(normalized)
+        except Exception as exc:
+            logger.warning(f"Groq call failed: {exc}")
+            return self._build_llm_fallback(current_metrics)
+
     def get_forecast_summary(self) -> Dict[str, Any]:
         """Get a summary of forecasts"""
         try:
@@ -631,10 +987,34 @@ class AIMonitoringIntegration:
                 }
             }
             
-            return summary
+            return self._to_json_safe(summary)
         except Exception as e:
             logger.error(f"Failed to get forecast summary: {e}")
             return {"error": f"Failed to get forecast summary: {str(e)}"}
+
+    def get_trends_24h(self) -> Dict[str, Any]:
+        """Return CPU/memory usage trend data for the last 24 hours."""
+        try:
+            cutoff = datetime.utcnow() - timedelta(hours=24)
+            cpu_series: List[Dict[str, Any]] = []
+            mem_series: List[Dict[str, Any]] = []
+
+            for item in list(self.metrics_history):
+                ts = item.get("timestamp")
+                if isinstance(ts, datetime):
+                    if ts < cutoff:
+                        continue
+                    ts_iso = ts.isoformat()
+                else:
+                    ts_iso = str(ts) if ts else datetime.utcnow().isoformat()
+
+                cpu_series.append({"t": ts_iso, "v": item.get("cpu_usage", 0)})
+                mem_series.append({"t": ts_iso, "v": item.get("memory_usage", 0)})
+
+            return self._to_json_safe({"cpu": cpu_series, "memory": mem_series})
+        except Exception as exc:
+            logger.warning(f"Failed to build 24h trends: {exc}")
+            return {"cpu": [], "memory": []}
     
     def get_health_score(self) -> Dict[str, Any]:
         """Calculate overall cluster health score"""
@@ -691,10 +1071,25 @@ class AIMonitoringIntegration:
         """Get comprehensive dashboard data"""
         analysis = self.get_current_analysis()
         
+        # If analysis has an error field (cluster disconnected), return it directly
         if "error" in analysis:
-            return {"error": "No analysis data available"}
+            dashboard = {
+                "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
+                "current_metrics": analysis.get("current_metrics", {}),
+                "health_score": {"score": 0, "status": "disconnected", "message": "Cluster is not accessible"},
+                "forecasts": analysis.get("forecasts", {}),
+                "alerts": analysis.get("anomaly_detection", {}),
+                "recommendations": analysis.get("recommendations", []),
+                "rag_recommendations": [],
+                "trends": [],
+                "summary": analysis.get("summary", "Cluster Disconnected"),
+                "demo_mode": True,
+                "demo_message": analysis.get("demo_message", analysis.get("error", "Cluster is not accessible")),
+                "error": analysis.get("error", "Cluster is not accessible")
+            }
+            return self._to_json_safe(dashboard)
         
-        return {
+        dashboard = {
             "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
             "current_metrics": analysis.get("current_metrics", {}),
             "health_score": self.get_health_score(),
@@ -702,10 +1097,15 @@ class AIMonitoringIntegration:
             "alerts": self.get_anomaly_alerts(),
             "recommendations": self.get_performance_recommendations(),
             "rag_recommendations": self.get_rag_enhanced_recommendations(),
+            "trends": self.get_trends_24h(),
             "summary": analysis.get("summary", "AI monitoring analysis"),
             "demo_mode": analysis.get("demo_mode", False),
             "demo_message": analysis.get("demo_message", "")
         }
+        # Include error field if present
+        if "error" in analysis:
+            dashboard["error"] = analysis["error"]
+        return self._to_json_safe(dashboard)
 
 # MCP Tool Integration Functions
 def get_ai_insights() -> Dict[str, Any]:

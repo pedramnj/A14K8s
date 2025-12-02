@@ -1,0 +1,763 @@
+{% extends "base.html" %}
+
+{% block title %}Autoscaling - {{ server.name }} - AI4K8s{% endblock %}
+
+{% block content %}
+<div class="d-grid" style="grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1 style="font-size: 2rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">AI-Powered Autoscaling</h1>
+            <p class="text-muted">Intelligent resource scaling for {{ server.name }}</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="/dashboard" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M3 9L12 2L21 9V20C21 20.5304 20.7893 21.0391 20.4142 21.4142C20.0391 21.7893 19.5304 22 19 22H5C4.46957 22 3.96086 21.7893 3.58579 21.4142C3.21071 21.0391 3 20.5304 3 20V9Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Back to Dashboard
+            </a>
+            <button onclick="refreshAutoscaling()" class="btn btn-primary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M1 4V10H7M23 20V14H17M20.49 9A9 9 0 0 0 5.64 5.64L9 9M3.51 15A9 9 0 0 0 18.36 18.36L15 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- Overview Cards -->
+    <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: var(--primary-color); margin-bottom: 0.25rem;" id="hpa-count">-</h3>
+                        <p class="text-muted mb-0">Active HPAs</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(37 99 235 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--primary-color)">
+                            <path d="M8 6H16V14H8V6Z"/>
+                            <path d="M16 6H20V10H16V6Z"/>
+                            <path d="M8 14H16V18H8V14Z"/>
+                            <path d="M16 14H20V18H16V14Z"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: var(--success-color); margin-bottom: 0.25rem;" id="predictive-enabled">-</h3>
+                        <p class="text-muted mb-0">Predictive Enabled</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(16 185 129 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--success-color)">
+                            <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: var(--info-color); margin-bottom: 0.25rem;" id="scheduled-count">-</h3>
+                        <p class="text-muted mb-0">Scheduled Rules</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(14 165 233 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--info-color)">
+                            <path d="M12 8V12L15 15M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: var(--warning-color); margin-bottom: 0.25rem;" id="total-replicas">-</h3>
+                        <p class="text-muted mb-0">Total Replicas</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(245 158 11 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--warning-color)">
+                            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Predictive Autoscaling Section -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">🤖 Predictive Autoscaling</h3>
+            <small class="text-muted">AI-powered proactive scaling based on ML forecasts</small>
+        </div>
+        <div class="card-body">
+            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Forecast & Scaling</h4>
+                    <div id="predictive-forecast-chart" style="height: 250px; margin-bottom: 1rem;">
+                        <p class="text-muted text-center">No forecast data. Enable predictive autoscaling to see forecasts.</p>
+                    </div>
+                    <div id="predictive-recommendations" style="margin-top: 1rem;">
+                        <p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Enable Predictive Autoscaling</h4>
+                    <form id="predictive-form" onsubmit="enablePredictiveAutoscaling(event)">
+                        <div style="margin-bottom: 1rem;">
+                            <label for="predictive-deployment" class="form-label">Deployment Name</label>
+                            <input type="text" id="predictive-deployment" class="form-control" placeholder="my-app" required>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="predictive-namespace" class="form-label">Namespace</label>
+                            <input type="text" id="predictive-namespace" class="form-control" value="default" required>
+                        </div>
+                        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div>
+                                <label for="predictive-min" class="form-label">Min Replicas</label>
+                                <input type="number" id="predictive-min" class="form-control" value="2" min="1" required>
+                            </div>
+                            <div>
+                                <label for="predictive-max" class="form-label">Max Replicas</label>
+                                <input type="number" id="predictive-max" class="form-control" value="10" min="1" required>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                                <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            Enable Predictive Autoscaling
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- HPA Management Section -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">📊 Horizontal Pod Autoscaler (HPA)</h3>
+            <small class="text-muted">Reactive autoscaling based on current metrics</small>
+        </div>
+        <div class="card-body">
+            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Active HPAs</h4>
+                    <div id="hpa-list" style="max-height: 400px; overflow-y: auto;">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading HPAs...
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Create New HPA</h4>
+                    <form id="hpa-form" onsubmit="createHPA(event)">
+                        <div style="margin-bottom: 1rem;">
+                            <label for="hpa-deployment" class="form-label">Deployment Name</label>
+                            <input type="text" id="hpa-deployment" class="form-control" placeholder="my-app" required>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="hpa-namespace" class="form-label">Namespace</label>
+                            <input type="text" id="hpa-namespace" class="form-control" value="default" required>
+                        </div>
+                        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div>
+                                <label for="hpa-min" class="form-label">Min Replicas</label>
+                                <input type="number" id="hpa-min" class="form-control" value="2" min="1" required>
+                            </div>
+                            <div>
+                                <label for="hpa-max" class="form-label">Max Replicas</label>
+                                <input type="number" id="hpa-max" class="form-control" value="10" min="1" required>
+                            </div>
+                        </div>
+                        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div>
+                                <label for="hpa-cpu" class="form-label">CPU Target (%)</label>
+                                <input type="number" id="hpa-cpu" class="form-control" value="70" min="1" max="100" required>
+                            </div>
+                            <div>
+                                <label for="hpa-memory" class="form-label">Memory Target (%)</label>
+                                <input type="number" id="hpa-memory" class="form-control" value="80" min="1" max="100" required>
+                            </div>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                                <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            Create HPA
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scheduled Autoscaling Section -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">⏰ Scheduled Autoscaling</h3>
+            <small class="text-muted">Time-based scaling based on historical patterns</small>
+        </div>
+        <div class="card-body">
+            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Active Schedules</h4>
+                    <div id="schedule-list" style="max-height: 300px; overflow-y: auto;">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading schedules...
+                        </div>
+                    </div>
+                    <button onclick="analyzePatterns()" class="btn btn-secondary" style="width: 100%; margin-top: 1rem;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                            <path d="M9 19C9 19.5304 9.21071 20.0391 9.58579 20.4142C9.96086 20.7893 10.4696 21 11 21H13C13.5304 21 14.0391 20.7893 14.4142 20.4142C14.7893 20.0391 15 19.5304 15 19M9 19C9 18.4696 9.21071 17.9609 9.58579 17.5858C9.96086 17.2107 10.4696 17 11 17H13C13.5304 17 14.0391 17.2107 14.4142 17.5858C14.7893 17.9609 15 18.4696 15 19M9 19H15M12 11V17M9 3V5M15 3V5M5 9H7M17 9H19M3 13H5M19 13H21M7 3H17C18.1046 3 19 3.89543 19 5V19C19 20.1046 18.1046 21 17 21H7C5.89543 21 5 20.1046 5 19V5C5 3.89543 5.89543 3 7 3Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Analyze Historical Patterns
+                    </button>
+                </div>
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Create Schedule</h4>
+                    <form id="schedule-form" onsubmit="createSchedule(event)">
+                        <div style="margin-bottom: 1rem;">
+                            <label for="schedule-deployment" class="form-label">Deployment Name</label>
+                            <input type="text" id="schedule-deployment" class="form-control" placeholder="my-app" required>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="schedule-namespace" class="form-label">Namespace</label>
+                            <input type="text" id="schedule-namespace" class="form-control" value="default" required>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="schedule-time" class="form-label">Cron Expression</label>
+                            <input type="text" id="schedule-time" class="form-control" placeholder="0 9 * * 1-5" required>
+                            <small class="text-muted">Format: minute hour day month weekday (e.g., "0 9 * * 1-5" = 9 AM weekdays)</small>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="schedule-replicas" class="form-label">Replicas</label>
+                            <input type="number" id="schedule-replicas" class="form-control" value="5" min="1" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                                <path d="M12 8V12L15 15M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            Create Schedule
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scaling History Chart -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">📈 Scaling History & Predictions</h3>
+        </div>
+        <div class="card-body">
+            <div id="scaling-history-chart" style="height: 400px; position: relative;">
+                <canvas></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+const serverId = {{ server.id }};
+let charts = {};
+
+// Show cluster disconnected message
+function showClusterDisconnectedMessage(message) {
+    let banner = document.getElementById('cluster-disconnected-banner');
+    if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'cluster-disconnected-banner';
+        banner.className = 'alert alert-danger';
+        banner.style.cssText = 'margin-bottom: 2rem; padding: 1.5rem; border-left: 4px solid #ef4444; background: rgba(239, 68, 68, 0.1);';
+        const content = document.querySelector('.d-grid');
+        if (content) {
+            content.insertBefore(banner, content.firstChild);
+        }
+    }
+    banner.innerHTML = `
+        <div class="d-flex align-items-center">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" style="margin-right: 1rem;">
+                <path d="M12 9V13M12 17H12.01M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <div>
+                <strong style="color: #ef4444; font-size: 1.1rem;">⚠️ Cluster Disconnected</strong>
+                <p class="mb-0 mt-1" style="color: #dc2626;">${message || 'Unable to connect to Kubernetes cluster. Please check your cluster configuration and ensure the cluster is running.'}</p>
+            </div>
+        </div>
+    `;
+}
+
+// Load autoscaling status
+async function refreshAutoscaling() {
+    try {
+        const response = await fetch(`/api/autoscaling/status/${serverId}`);
+        const data = await response.json();
+        
+        // Check if cluster is disconnected
+        if (data.error || data.cluster_disconnected) {
+            const errorMsg = data.error || 'Cluster is not accessible';
+            showClusterDisconnectedMessage(errorMsg);
+            
+            // Set all counts to 0
+            document.getElementById('hpa-count').textContent = '0';
+            document.getElementById('predictive-enabled').textContent = '0';
+            document.getElementById('scheduled-count').textContent = '0';
+            document.getElementById('total-replicas').textContent = '0';
+            
+            // Disable all forms
+            document.querySelectorAll('form').forEach(form => {
+                form.style.opacity = '0.5';
+                form.style.pointerEvents = 'none';
+            });
+            
+            return;
+        }
+        
+        // Hide disconnected banner if cluster is connected
+        const banner = document.getElementById('cluster-disconnected-banner');
+        if (banner) banner.remove();
+        
+        // Re-enable forms
+        document.querySelectorAll('form').forEach(form => {
+            form.style.opacity = '1';
+            form.style.pointerEvents = 'auto';
+        });
+        
+        if (data.success) {
+            document.getElementById('hpa-count').textContent = data.hpa_count || 0;
+            document.getElementById('predictive-enabled').textContent = data.predictive_count || 0;
+            document.getElementById('scheduled-count').textContent = data.schedule_count || 0;
+            
+            // Calculate total replicas
+            const totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
+            document.getElementById('total-replicas').textContent = totalReplicas;
+            
+            // Update HPA list
+            updateHPAList(data.hpas || []);
+            updateScheduleList(data.schedules || []);
+            
+            // Auto-load forecast for first enabled predictive deployment
+            if (data.predictive_deployments && data.predictive_deployments.length > 0) {
+                const firstDeployment = data.predictive_deployments[0];
+                loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
+            } else {
+                // No enabled deployments, show empty state
+                const chartContainer = document.getElementById('predictive-forecast-chart');
+                const recommendationsContainer = document.getElementById('predictive-recommendations');
+                if (chartContainer) {
+                    chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
+                }
+                if (recommendationsContainer) {
+                    recommendationsContainer.innerHTML = '<p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>';
+                }
+            }
+        } else {
+            // Handle error state - check if it's a disconnection error
+            const errorMsg = data.error || 'Unknown error';
+            if (data.cluster_disconnected || errorMsg.toLowerCase().includes('no such host') || errorMsg.toLowerCase().includes('connection refused') || errorMsg.toLowerCase().includes('unable to connect')) {
+                showClusterDisconnectedMessage(errorMsg);
+            }
+            document.getElementById('hpa-count').textContent = '0';
+            document.getElementById('predictive-enabled').textContent = '0';
+            document.getElementById('scheduled-count').textContent = '0';
+            document.getElementById('total-replicas').textContent = '0';
+            updateHPAList([]);
+            updateScheduleList([]);
+            
+            // Clear forecast sections on error
+            const chartContainer = document.getElementById('predictive-forecast-chart');
+            const recommendationsContainer = document.getElementById('predictive-recommendations');
+            if (chartContainer) {
+                chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
+            }
+            if (recommendationsContainer) {
+                recommendationsContainer.innerHTML = '<p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>';
+            }
+        }
+    } catch (error) {
+        console.error('Error refreshing autoscaling:', error);
+        // Check if it's a connection error
+        const errorMsg = error.message || String(error);
+        if (errorMsg.toLowerCase().includes('no such host') || errorMsg.toLowerCase().includes('connection refused') || errorMsg.toLowerCase().includes('unable to connect')) {
+            showClusterDisconnectedMessage(errorMsg);
+        }
+        // Set fallback values
+        document.getElementById('hpa-count').textContent = '0';
+        document.getElementById('predictive-enabled').textContent = '0';
+        document.getElementById('scheduled-count').textContent = '0';
+        document.getElementById('total-replicas').textContent = '0';
+        updateHPAList([]);
+        updateScheduleList([]);
+    }
+}
+
+function updateHPAList(hpas) {
+    const container = document.getElementById('hpa-list');
+    if (!hpas || hpas.length === 0) {
+        container.innerHTML = '<p class="text-muted">No HPAs configured</p>';
+        return;
+    }
+    
+    container.innerHTML = hpas.map(hpa => `
+        <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
+            <div class="d-flex justify-content-between align-items-center">
+                <div>
+                    <h5 style="margin-bottom: 0.25rem;">${hpa.name}</h5>
+                    <p class="text-muted mb-0" style="font-size: 0.875rem;">
+                        Target: ${hpa.target} | 
+                        Replicas: ${hpa.current_replicas}/${hpa.desired_replicas} | 
+                        Range: ${hpa.min_replicas}-${hpa.max_replicas}
+                    </p>
+                </div>
+                <div>
+                    <span class="badge ${hpa.status?.scaling_status === 'stable' ? 'badge-success' : 'badge-warning'}">
+                        ${hpa.status?.scaling_status || 'unknown'}
+                    </span>
+                </div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function updateScheduleList(schedules) {
+    const container = document.getElementById('schedule-list');
+    if (!schedules || schedules.length === 0) {
+        container.innerHTML = '<p class="text-muted">No schedules configured</p>';
+        return;
+    }
+    
+    container.innerHTML = schedules.map(schedule => `
+        <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
+            <h5 style="margin-bottom: 0.5rem;">${schedule.deployment_name}</h5>
+            <p class="text-muted mb-0" style="font-size: 0.875rem;">
+                ${schedule.rules_count || 0} schedule rules
+            </p>
+        </div>
+    `).join('');
+}
+
+// Create HPA
+async function createHPA(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        deployment_name: document.getElementById('hpa-deployment').value,
+        namespace: document.getElementById('hpa-namespace').value,
+        min_replicas: parseInt(document.getElementById('hpa-min').value),
+        max_replicas: parseInt(document.getElementById('hpa-max').value),
+        cpu_target: parseInt(document.getElementById('hpa-cpu').value),
+        memory_target: parseInt(document.getElementById('hpa-memory').value)
+    };
+    
+    try {
+        const response = await fetch(`/api/autoscaling/hpa/create/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('HPA created successfully!');
+            form.reset();
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to create HPA'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Enable Predictive Autoscaling
+async function enablePredictiveAutoscaling(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        deployment_name: document.getElementById('predictive-deployment').value,
+        namespace: document.getElementById('predictive-namespace').value,
+        min_replicas: parseInt(document.getElementById('predictive-min').value),
+        max_replicas: parseInt(document.getElementById('predictive-max').value)
+    };
+    
+    try {
+        const response = await fetch(`/api/autoscaling/predictive/enable/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Predictive autoscaling enabled! ' + (result.reason || ''));
+            form.reset();
+            refreshAutoscaling();
+            loadPredictiveForecast(data.deployment_name, data.namespace);
+        } else {
+            alert('Error: ' + (result.error || 'Failed to enable predictive autoscaling'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Load predictive forecast
+async function loadPredictiveForecast(deployment, namespace) {
+    const chartContainer = document.getElementById('predictive-forecast-chart');
+    const recommendationsContainer = document.getElementById('predictive-recommendations');
+    
+    // Show loading state
+    chartContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading forecast...</div>';
+    recommendationsContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading recommendations...</div>';
+    
+    try {
+        const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
+        const data = await response.json();
+        
+        if (data.success && data.recommendations?.predictive) {
+            const pred = data.recommendations.predictive;
+            const forecast = pred.forecast;
+            
+            // Create forecast chart
+            const ctx = chartContainer.getContext ? chartContainer.getContext('2d') : null;
+            if (!ctx) {
+                // Create canvas if it doesn't exist
+                const canvas = document.createElement('canvas');
+                chartContainer.innerHTML = '';
+                chartContainer.appendChild(canvas);
+                const newCtx = canvas.getContext('2d');
+                
+                if (charts.predictive) charts.predictive.destroy();
+                
+                charts.predictive = new Chart(newCtx, {
+                    type: 'line',
+                    data: {
+                        labels: ['Now', '+1h', '+2h', '+3h', '+4h', '+5h', '+6h'],
+                        datasets: [
+                            {
+                                label: 'CPU Forecast',
+                                data: [forecast.cpu.current, ...(forecast.cpu.predictions || [])],
+                                borderColor: 'rgb(37, 99, 235)',
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Memory Forecast',
+                                data: [forecast.memory.current, ...(forecast.memory.predictions || [])],
+                                borderColor: 'rgb(16, 185, 129)',
+                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: { beginAtZero: true, max: 100, title: { display: true, text: 'Usage (%)' } }
+                        }
+                    }
+                });
+            } else {
+                if (charts.predictive) charts.predictive.destroy();
+                
+                charts.predictive = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: ['Now', '+1h', '+2h', '+3h', '+4h', '+5h', '+6h'],
+                        datasets: [
+                            {
+                                label: 'CPU Forecast',
+                                data: [forecast.cpu.current, ...(forecast.cpu.predictions || [])],
+                                borderColor: 'rgb(37, 99, 235)',
+                                backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Memory Forecast',
+                                data: [forecast.memory.current, ...(forecast.memory.predictions || [])],
+                                borderColor: 'rgb(16, 185, 129)',
+                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        scales: {
+                            y: { beginAtZero: true, max: 100, title: { display: true, text: 'Usage (%)' } }
+                        }
+                    }
+                });
+            }
+            
+            // Show recommendations
+            const rec = pred.recommendation;
+            let actionText = 'No Action';
+            let alertClass = 'alert-success';
+            if (rec.action === 'scale_up') {
+                actionText = 'Scale Up';
+                alertClass = 'alert-warning';
+            } else if (rec.action === 'scale_down') {
+                actionText = 'Scale Down';
+                alertClass = 'alert-info';
+            } else if (rec.action === 'at_max') {
+                actionText = 'At Max Capacity';
+                alertClass = 'alert-danger';
+            }
+            
+            let targetReplicasText = '';
+            if (rec.target_replicas) {
+                if (rec.calculated_replicas && rec.calculated_replicas > rec.target_replicas) {
+                    targetReplicasText = `<br><strong>Current Replicas:</strong> ${rec.target_replicas} (Max)<br><strong>Recommended:</strong> ${rec.calculated_replicas} (increase max_replicas)`;
+                } else {
+                    targetReplicasText = `<br><strong>Target Replicas:</strong> ${rec.target_replicas}`;
+                }
+            }
+            
+            recommendationsContainer.innerHTML = `
+                <div class="alert ${alertClass}">
+                    <strong>Recommendation:</strong> ${actionText}
+                    <br><small>${rec.reason || 'No specific recommendation'}</small>
+                    ${targetReplicasText}
+                </div>
+            `;
+        } else {
+            // No data available
+            chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
+            recommendationsContainer.innerHTML = '<p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>';
+        }
+    } catch (error) {
+        console.error('Error loading forecast:', error);
+        chartContainer.innerHTML = '<p class="text-muted text-center">Failed to load forecast. Please try again.</p>';
+        recommendationsContainer.innerHTML = '<p class="text-muted text-center">Failed to load recommendations. Please try again.</p>';
+    }
+}
+
+// Load scaling history
+async function loadScalingHistory() {
+    const container = document.getElementById('scaling-history-chart');
+    
+    try {
+        // For now, show a placeholder chart
+        // In the future, this could show actual scaling history from the API
+        const canvas = document.createElement('canvas');
+        container.innerHTML = '';
+        container.appendChild(canvas);
+        
+        if (charts.history) charts.history.destroy();
+        
+        // Create a sample chart
+        charts.history = new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: ['1h ago', '2h ago', '3h ago', '4h ago', '5h ago', '6h ago', 'Now'],
+                datasets: [
+                    {
+                        label: 'Replicas',
+                        data: [2, 2, 3, 3, 2, 2, 2],
+                        borderColor: 'rgb(37, 99, 235)',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        tension: 0.4
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { beginAtZero: true, title: { display: true, text: 'Replicas' } }
+                }
+            }
+        });
+    } catch (error) {
+        console.error('Error loading scaling history:', error);
+        container.innerHTML = '<p class="text-muted text-center">Failed to load scaling history.</p>';
+    }
+}
+
+// Create Schedule
+async function createSchedule(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        deployment_name: document.getElementById('schedule-deployment').value,
+        namespace: document.getElementById('schedule-namespace').value,
+        schedule_rules: [{
+            time: document.getElementById('schedule-time').value,
+            replicas: parseInt(document.getElementById('schedule-replicas').value),
+            reason: 'Manual schedule'
+        }]
+    };
+    
+    try {
+        const response = await fetch(`/api/autoscaling/schedule/create/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Schedule created successfully!');
+            form.reset();
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to create schedule'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Analyze patterns
+async function analyzePatterns() {
+    const deployment = prompt('Enter deployment name:');
+    if (!deployment) return;
+    
+    try {
+        const response = await fetch(`/api/autoscaling/patterns/${serverId}?deployment=${deployment}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            alert('Pattern analysis complete! Check recommendations.');
+            console.log('Pattern recommendations:', data.recommendations);
+        } else {
+            alert('Error: ' + (data.error || 'Failed to analyze patterns'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Initial load
+refreshAutoscaling();
+loadScalingHistory();
+
+// Forecast will be auto-loaded by refreshAutoscaling() if enabled deployments exist
+
+setInterval(refreshAutoscaling, 30000); // Refresh every 30 seconds
+</script>
+{% endblock %}
+

@@ -1,0 +1,635 @@
+{% extends "base.html" %}
+
+{% block title %}Performance Benchmark - RAG vs LLM - AI4K8s{% endblock %}
+
+{% block head %}
+<!-- Chart.js for visualizations -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+    .benchmark-spinner-wrapper {
+        position: relative;
+        width: 3.5rem;
+        height: 3.5rem;
+        flex-shrink: 0;
+    }
+    
+    .benchmark-spinner {
+        width: 3.5rem;
+        height: 3.5rem;
+        border: 4px solid var(--border);
+        border-top: 4px solid var(--primary-color);
+        border-right: 4px solid var(--accent-color);
+        border-radius: 50%;
+        animation: benchmarkSpin 1.2s cubic-bezier(0.68, -0.55, 0.265, 1.55) infinite;
+        position: relative;
+        box-sizing: border-box;
+    }
+    
+    .benchmark-spinner::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 1.5rem;
+        height: 1.5rem;
+        margin-top: -0.75rem;
+        margin-left: -0.75rem;
+        border: 3px solid var(--border);
+        border-top: 3px solid var(--success-color);
+        border-radius: 50%;
+        animation: benchmarkSpinReverse 0.8s linear infinite;
+        box-sizing: border-box;
+    }
+    
+    @keyframes benchmarkSpin {
+        0% {
+            transform: rotate(0deg);
+        }
+        100% {
+            transform: rotate(360deg);
+        }
+    }
+    
+    @keyframes benchmarkSpinReverse {
+        0% {
+            transform: rotate(360deg);
+        }
+        100% {
+            transform: rotate(0deg);
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-grid" style="grid-template-columns: 1fr; gap: 2rem;">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center">
+        <div>
+            <h1 style="font-size: 2rem; font-weight: 700; color: var(--text-primary); margin-bottom: 0.5rem;">Performance Benchmark</h1>
+            <p class="text-muted">Compare RAG vs LLM endpoint performance in real-time</p>
+        </div>
+        <div class="d-flex gap-2">
+            <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                    <path d="M19 12H5M12 19L5 12L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Back to Dashboard
+            </a>
+        </div>
+    </div>
+
+    <!-- Configuration Card -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">Benchmark Configuration</h3>
+        </div>
+        <div class="card-body">
+            <div class="d-flex" style="gap: 1.5rem; align-items: flex-end;">
+                <div style="flex: 1;">
+                    <label for="server-select" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--text-primary);">Select Server</label>
+                    <select id="server-select" class="form-control" style="width: 100%;">
+                        {% if servers %}
+                            {% for server in servers %}
+                                <option value="{{ server.id }}">{{ server.name }} ({{ server.server_type }})</option>
+                            {% endfor %}
+                        {% else %}
+                            <option value="">No servers available</option>
+                        {% endif %}
+                    </select>
+                    <small class="text-muted" style="display: block; margin-top: 0.25rem; min-height: 1.25rem; line-height: 1.25rem;">&nbsp;</small>
+                </div>
+                <div style="flex: 1;">
+                    <label for="iterations-input" style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--text-primary);">Iterations</label>
+                    <input type="number" id="iterations-input" class="form-control" value="5" min="1" max="20" style="width: 100%;">
+                    <small class="text-muted" style="display: block; margin-top: 0.25rem; min-height: 1.25rem; line-height: 1.25rem;">Number of requests per endpoint (1-20)</small>
+                </div>
+                <div style="flex: 0 0 auto;">
+                    <label style="display: block; margin-bottom: 0.5rem; font-weight: 500; color: var(--text-primary); visibility: hidden;">Start</label>
+                    <button id="start-benchmark-btn" class="btn btn-primary" onclick="startBenchmark()" style="width: 100%; min-width: 160px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                            <path d="M8 5V13L13 9L8 5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Start Benchmark
+                    </button>
+                    <small class="text-muted" style="display: block; margin-top: 0.25rem; min-height: 1.25rem; line-height: 1.25rem;">&nbsp;</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Progress Card -->
+    <div id="progress-card" class="card" style="display: none;">
+        <div class="card-body" style="padding: 2rem;">
+            <div class="d-flex align-items-center" style="gap: 1.5rem;">
+                <div class="benchmark-spinner-wrapper">
+                    <div class="benchmark-spinner"></div>
+                </div>
+                <div style="flex: 1;">
+                    <strong id="progress-text" style="display: block; font-size: 1.125rem; color: var(--text-primary); margin-bottom: 0.5rem;">Running benchmark...</strong>
+                    <div class="text-muted" id="progress-detail" style="font-size: 0.875rem; line-height: 1.5;">Please wait while we collect performance metrics</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Container -->
+    <div id="results-container" style="display: none;">
+        <!-- Summary Cards -->
+        <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--primary-color); margin-bottom: 0.25rem;" id="rag-avg-latency">-</h3>
+                            <p class="text-muted mb-0">RAG Avg Latency</p>
+                            <small class="text-muted" id="rag-latency-unit">seconds</small>
+                        </div>
+                        <div style="width: 3rem; height: 3rem; background: rgb(37 99 235 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--primary-color)">
+                                <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--accent-color); margin-bottom: 0.25rem;" id="llm-avg-latency">-</h3>
+                            <p class="text-muted mb-0">LLM Avg Latency</p>
+                            <small class="text-muted" id="llm-latency-unit">seconds</small>
+                        </div>
+                        <div style="width: 3rem; height: 3rem; background: rgb(14 165 233 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--accent-color)">
+                                <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h3 style="font-size: 1.5rem; font-weight: 700; color: var(--success-color); margin-bottom: 0.25rem;" id="speedup-factor">-</h3>
+                            <p class="text-muted mb-0">Speedup Factor</p>
+                            <small class="text-muted">RAG vs LLM</small>
+                        </div>
+                        <div style="width: 3rem; height: 3rem; background: rgb(16 185 129 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="var(--success-color)">
+                                <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem;">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Latency Comparison (seconds)</h3>
+                </div>
+                <div class="card-body">
+                    <canvas id="latency-chart"></canvas>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Payload Size Comparison (bytes)</h3>
+                </div>
+                <div class="card-body">
+                    <canvas id="payload-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <div class="d-grid" style="grid-template-columns: 1fr; gap: 1.5rem; margin-bottom: 2rem;">
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Item Count Comparison</h3>
+                </div>
+                <div class="card-body">
+                    <canvas id="items-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detailed Statistics Table -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Detailed Statistics</h3>
+            </div>
+            <div class="card-body">
+                <div style="overflow-x: auto;">
+                    <table class="table" style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th>RAG</th>
+                                <th>LLM</th>
+                                <th>Difference</th>
+                            </tr>
+                        </thead>
+                        <tbody id="stats-table-body">
+                            <!-- Populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Raw Data -->
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">Raw Benchmark Data</h3>
+                <button class="btn btn-sm btn-secondary" onclick="toggleRawData()">
+                    <span id="raw-data-toggle-text">Show</span> Raw Data
+                </button>
+            </div>
+            <div class="card-body" id="raw-data-container" style="display: none;">
+                <pre id="raw-data-content" style="background: var(--surface); padding: 1rem; border-radius: var(--radius); overflow-x: auto; font-size: 0.875rem; color: var(--text-primary);"></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let charts = {};
+let currentResults = null;
+
+function startBenchmark() {
+    const serverId = document.getElementById('server-select').value;
+    const iterations = parseInt(document.getElementById('iterations-input').value) || 5;
+    
+    if (!serverId) {
+        alert('Please select a server');
+        return;
+    }
+    
+    // Show progress
+    document.getElementById('progress-card').style.display = 'block';
+    document.getElementById('results-container').style.display = 'none';
+    document.getElementById('start-benchmark-btn').disabled = true;
+    
+    // Update progress
+    document.getElementById('progress-text').textContent = 'Running benchmark...';
+    document.getElementById('progress-detail').textContent = `Testing ${iterations} iterations per endpoint`;
+    
+    // Run benchmark
+    fetch(`/api/benchmark/${serverId}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ iterations: iterations })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        currentResults = data;
+        displayResults(data);
+    })
+    .catch(error => {
+        console.error('Benchmark error:', error);
+        alert('Benchmark failed: ' + error.message);
+        document.getElementById('progress-card').style.display = 'none';
+        document.getElementById('start-benchmark-btn').disabled = false;
+    });
+}
+
+function displayResults(data) {
+    // Hide progress, show results
+    document.getElementById('progress-card').style.display = 'none';
+    document.getElementById('results-container').style.display = 'block';
+    document.getElementById('start-benchmark-btn').disabled = false;
+    
+    // Update summary cards
+    const ragAvg = data.rag.latency.avg;
+    const llmAvg = data.llm.latency.avg;
+    const speedup = ragAvg > 0 ? (llmAvg / ragAvg).toFixed(2) + 'x' : '-';
+    
+    document.getElementById('rag-avg-latency').textContent = ragAvg.toFixed(3);
+    document.getElementById('llm-avg-latency').textContent = llmAvg.toFixed(3);
+    document.getElementById('speedup-factor').textContent = speedup;
+    
+    // Create charts
+    createLatencyChart(data);
+    createPayloadChart(data);
+    createItemsChart(data);
+    
+    // Populate statistics table
+    populateStatsTable(data);
+    
+    // Store raw data
+    document.getElementById('raw-data-content').textContent = JSON.stringify(data, null, 2);
+}
+
+function createLatencyChart(data) {
+    const ctx = document.getElementById('latency-chart').getContext('2d');
+    
+    if (charts.latency) {
+        charts.latency.destroy();
+    }
+
+    const ragLatencyData = [
+        data.rag.latency.avg,
+        data.rag.latency.min,
+        data.rag.latency.max,
+        data.rag.latency.p50,
+        data.rag.latency.p95
+    ];
+    const llmLatencyData = [
+        data.llm.latency.avg,
+        data.llm.latency.min,
+        data.llm.latency.max,
+        data.llm.latency.p50,
+        data.llm.latency.p95
+    ];
+
+    const ragMax = Math.max(...ragLatencyData);
+    const llmMax = Math.max(...llmLatencyData);
+    const ratio = ragMax > 0 ? llmMax / ragMax : Infinity;
+    const useDualAxis = ragMax > 0 && ratio > 1000;
+
+    const datasets = [
+        {
+            label: 'RAG (seconds)',
+            data: ragLatencyData,
+            backgroundColor: 'rgba(37, 99, 235, 0.6)',
+            borderColor: 'rgba(37, 99, 235, 1)',
+            borderWidth: 1,
+            minBarLength: 2,
+            yAxisID: useDualAxis ? 'yRag' : 'y'
+        },
+        {
+            label: 'LLM (seconds)',
+            data: llmLatencyData,
+            backgroundColor: 'rgba(14, 165, 233, 0.6)',
+            borderColor: 'rgba(14, 165, 233, 1)',
+            borderWidth: 1,
+            yAxisID: useDualAxis ? 'yLLM' : 'y'
+        }
+    ];
+
+    const scales = useDualAxis ? {
+        yRag: {
+            beginAtZero: true,
+            suggestedMax: ragMax ? ragMax * 1.2 : 1,
+            position: 'left',
+            title: {
+                display: true,
+                text: 'RAG Latency (seconds)'
+            }
+        },
+        yLLM: {
+            beginAtZero: true,
+            suggestedMax: llmMax ? llmMax * 1.2 : 1,
+            position: 'right',
+            grid: {
+                drawOnChartArea: false
+            },
+            title: {
+                display: true,
+                text: 'LLM Latency (seconds)'
+            }
+        }
+    } : {
+        y: {
+            beginAtZero: true,
+            title: {
+                display: true,
+                text: 'Latency (seconds)'
+            }
+        }
+    };
+
+    charts.latency = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Average', 'Min', 'Max', 'P50', 'P95'],
+            datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales,
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            }
+        }
+    });
+}
+
+function createPayloadChart(data) {
+    const ctx = document.getElementById('payload-chart').getContext('2d');
+    
+    if (charts.payload) {
+        charts.payload.destroy();
+    }
+    
+    charts.payload = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Average', 'Min', 'Max', 'P50', 'P95'],
+            datasets: [
+                {
+                    label: 'RAG (bytes)',
+                    data: [
+                        data.rag.payload_size.avg,
+                        data.rag.payload_size.min,
+                        data.rag.payload_size.max,
+                        data.rag.payload_size.p50,
+                        data.rag.payload_size.p95
+                    ],
+                    backgroundColor: 'rgba(37, 99, 235, 0.6)',
+                    borderColor: 'rgba(37, 99, 235, 1)',
+                    borderWidth: 1
+                },
+                {
+                    label: 'LLM (bytes)',
+                    data: [
+                        data.llm.payload_size.avg,
+                        data.llm.payload_size.min,
+                        data.llm.payload_size.max,
+                        data.llm.payload_size.p50,
+                        data.llm.payload_size.p95
+                    ],
+                    backgroundColor: 'rgba(14, 165, 233, 0.6)',
+                    borderColor: 'rgba(14, 165, 233, 1)',
+                    borderWidth: 1
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Payload Size (bytes)'
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            }
+        }
+    });
+}
+
+function createItemsChart(data) {
+    const ctx = document.getElementById('items-chart').getContext('2d');
+    
+    if (charts.items) {
+        charts.items.destroy();
+    }
+    
+    const ragItems = [
+        data.rag.item_count.avg,
+        data.rag.item_count.min,
+        data.rag.item_count.max,
+        data.rag.item_count.p50,
+        data.rag.item_count.p95
+    ];
+    const llmItems = [
+        data.llm.item_count.avg,
+        data.llm.item_count.min,
+        data.llm.item_count.max,
+        data.llm.item_count.p50,
+        data.llm.item_count.p95
+    ];
+
+    const allZero = ragItems.every(v => v === 0) && llmItems.every(v => v === 0);
+    if (allZero) {
+        ctx.canvas.parentNode.innerHTML = `
+            <div style="text-align:center; color: var(--text-muted); padding: 2rem;">
+                No recommendations were returned by either endpoint.
+            </div>
+        `;
+        return;
+    }
+
+    charts.items = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ['Average', 'Min', 'Max', 'P50', 'P95'],
+            datasets: [
+                {
+                    label: 'RAG (items)',
+                    data: ragItems,
+                    backgroundColor: 'rgba(37, 99, 235, 0.6)',
+                    borderColor: 'rgba(37, 99, 235, 1)',
+                    borderWidth: 1,
+                    minBarLength: 2
+                },
+                {
+                    label: 'LLM (items)',
+                    data: llmItems,
+                    backgroundColor: 'rgba(14, 165, 233, 0.6)',
+                    borderColor: 'rgba(14, 165, 233, 1)',
+                    borderWidth: 1,
+                    minBarLength: 2
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: 'Item Count'
+                    }
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top'
+                }
+            }
+        }
+    });
+}
+
+function populateStatsTable(data) {
+    const tbody = document.getElementById('stats-table-body');
+    tbody.innerHTML = '';
+    
+    const metrics = [
+        { name: 'Latency (avg)', rag: data.rag.latency.avg, llm: data.llm.latency.avg, unit: 's', format: (v) => v.toFixed(3) },
+        { name: 'Latency (min)', rag: data.rag.latency.min, llm: data.llm.latency.min, unit: 's', format: (v) => v.toFixed(3) },
+        { name: 'Latency (max)', rag: data.rag.latency.max, llm: data.llm.latency.max, unit: 's', format: (v) => v.toFixed(3) },
+        { name: 'Latency (p50)', rag: data.rag.latency.p50, llm: data.llm.latency.p50, unit: 's', format: (v) => v.toFixed(3) },
+        { name: 'Latency (p95)', rag: data.rag.latency.p95, llm: data.llm.latency.p95, unit: 's', format: (v) => v.toFixed(3) },
+        { name: 'Payload Size (avg)', rag: data.rag.payload_size.avg, llm: data.llm.payload_size.avg, unit: 'bytes', format: (v) => Math.round(v).toLocaleString() },
+        { name: 'Payload Size (min)', rag: data.rag.payload_size.min, llm: data.llm.payload_size.min, unit: 'bytes', format: (v) => Math.round(v).toLocaleString() },
+        { name: 'Payload Size (max)', rag: data.rag.payload_size.max, llm: data.llm.payload_size.max, unit: 'bytes', format: (v) => Math.round(v).toLocaleString() },
+        { name: 'Item Count (avg)', rag: data.rag.item_count.avg, llm: data.llm.item_count.avg, unit: 'items', format: (v) => v.toFixed(1) },
+        { name: 'Item Count (min)', rag: data.rag.item_count.min, llm: data.llm.item_count.min, unit: 'items', format: (v) => Math.round(v) },
+        { name: 'Item Count (max)', rag: data.rag.item_count.max, llm: data.llm.item_count.max, unit: 'items', format: (v) => Math.round(v) },
+    ];
+    
+    metrics.forEach(metric => {
+        const diff = metric.llm - metric.rag;
+        const diffPercent = metric.rag > 0 ? ((diff / metric.rag) * 100).toFixed(1) : '0';
+        const diffFormatted = diff >= 0 ? `+${metric.format(diff)} ${metric.unit} (+${diffPercent}%)` : `${metric.format(diff)} ${metric.unit} (${diffPercent}%)`;
+        const diffColor = diff > 0 ? 'var(--warning-color)' : 'var(--success-color)';
+        
+        const row = document.createElement('tr');
+        row.innerHTML = `
+            <td><strong>${metric.name}</strong></td>
+            <td>${metric.format(metric.rag)} ${metric.unit}</td>
+            <td>${metric.format(metric.llm)} ${metric.unit}</td>
+            <td style="color: ${diffColor};">${diffFormatted}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+function toggleRawData() {
+    const container = document.getElementById('raw-data-container');
+    const toggleText = document.getElementById('raw-data-toggle-text');
+    
+    if (container.style.display === 'none') {
+        container.style.display = 'block';
+        toggleText.textContent = 'Hide';
+    } else {
+        container.style.display = 'none';
+        toggleText.textContent = 'Show';
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('Benchmark page loaded');
+});
+</script>
+
+{% endblock %}
+

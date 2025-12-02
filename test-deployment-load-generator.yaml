@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: default
+  labels:
+    app: load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: busybox:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          while true; do
+            # Generate CPU load
+            timeout 5 dd if=/dev/zero of=/dev/null 2>/dev/null || true
+            sleep 1
+          done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+

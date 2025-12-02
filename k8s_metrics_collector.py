@@ -450,6 +450,15 @@ class KubernetesMetricsCollector:
         
         try:
             cluster_info = self.get_cluster_info()
+            # Check if cluster_info has an error (cluster disconnected)
+            if "error" in cluster_info:
+                error_msg = cluster_info["error"]
+                logger.error(f"Failed to get cluster info: {error_msg}")
+                return {
+                    "timestamp": datetime.now().isoformat(),
+                    "error": error_msg,
+                    "demo_mode": True
+                }
             node_metrics = self.get_node_metrics()
             pod_metrics = self.get_pod_metrics()
             

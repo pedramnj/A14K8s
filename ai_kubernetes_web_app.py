@@ -13,6 +13,8 @@ import json
 import requests
 import uuid
 import asyncio
+import time
+from typing import Any, List, Dict, Optional
 from mcp_client import call_mcp_tool
 
 # Import predictive monitoring components
@@ -940,7 +942,167 @@ def dashboard():
         return redirect(url_for('login'))
     servers = Server.query.filter_by(user_id=user.id).all()
     
+    # Check cluster status for each server (quick check)
+    for server in servers:
+        if server.kubeconfig:
+            try:
+                import subprocess
+                import os
+                import tempfile
+                
+                # Create temp kubeconfig
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                    f.write(server.kubeconfig)
+                    temp_kubeconfig = f.name
+                
+                env = os.environ.copy()
+                env['KUBECONFIG'] = temp_kubeconfig
+                
+                # Quick cluster-info check
+                result = subprocess.run(
+                    ['kubectl', 'cluster-info'],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=env
+                )
+                
+                # Check for connection errors
+                if result.returncode != 0:
+                    error_output = result.stderr.lower()
+                    if any(phrase in error_output for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp", "name or service not known", "name resolution"]):
+                        server.status = "error"
+                        server.connection_error = result.stderr
+                        print(f"❌ Server {server.id} ({server.name}): Cluster disconnected - {result.stderr[:100]}")
+                    else:
+                        server.status = "inactive"
+                        server.connection_error = result.stderr
+                else:
+                    server.status = "active"
+                    server.connection_error = None
+                    print(f"✅ Server {server.id} ({server.name}): Cluster connected")
+                
+                # Clean up
+                try:
+                    os.unlink(temp_kubeconfig)
+                except:
+                    pass
+                    
+            except Exception as e:
+                # If check fails, mark as error
+                server.status = "error"
+                server.connection_error = str(e)
+                print(f"❌ Server {server.id} ({server.name}): Status check failed - {str(e)}")
+    
+    # Commit status changes
+    try:
+        db.session.commit()
+        print(f"✅ Updated status for {len(servers)} servers")
+    except Exception as e:
+        print(f"❌ Failed to commit status changes: {e}")
+        db.session.rollback()
+    
     return render_template('dashboard.html', user=user, servers=servers)
+
+
+@app.route('/benchmark')
+def benchmark_page():
+    """Render benchmark dashboard."""
+    if 'user_id' not in session:
+        flash('Please log in to access benchmarks.', 'warning')
+        return redirect(url_for('login'))
+
+    user = User.query.get(session['user_id'])
+    if not user:
+        session.clear()
+        flash('Your session has expired. Please log in again.', 'warning')
+        return redirect(url_for('login'))
+
+    servers = Server.query.filter_by(user_id=user.id).all()
+    return render_template('benchmark.html', user=user, servers=servers)
+
+
+@app.route('/api/benchmark/<int:server_id>', methods=['POST'])
+def run_benchmark(server_id):
+    """Execute a lightweight benchmark comparing RAG vs LLM latency."""
+    if 'user_id' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+
+    Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+
+    try:
+        iterations = request.json.get('iterations', 2) if request.is_json else 2
+        iterations = max(1, min(int(iterations), 20))
+
+        ai_monitoring = get_ai_monitoring(server_id)
+        if not ai_monitoring:
+            return jsonify({'error': 'AI monitoring not available for this server'}), 500
+
+        warmup_iterations = 1 if iterations > 1 else 0
+        for _ in range(warmup_iterations):
+            try:
+                ai_monitoring.get_current_analysis()
+                ai_monitoring.get_llm_recommendations()
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+        rag_times, rag_sizes, rag_items = [], [], []
+        llm_times, llm_sizes, llm_items = [], [], []
+
+        def safe_dump(payload: Any) -> bytes:
+            try:
+                return json.dumps(payload, default=lambda o: o.isoformat() if hasattr(o, "isoformat") else str(o)).encode('utf-8')
+            except TypeError:
+                return json.dumps(payload, default=str).encode('utf-8')
+
+        for _ in range(iterations):
+            start = time.time()
+            analysis = ai_monitoring.get_current_analysis()
+            rag_times.append(time.time() - start)
+            rag_data = safe_dump(analysis)
+            rag_sizes.append(len(rag_data))
+            rag_items.append(len(analysis.get('rag_recommendations', [])))
+            time.sleep(0.05)
+
+            start = time.time()
+            llm_recs = ai_monitoring.get_llm_recommendations()
+            llm_times.append(time.time() - start)
+            llm_data = safe_dump({'llm_recommendations': llm_recs})
+            llm_sizes.append(len(llm_data))
+            llm_items.append(len(llm_recs))
+            time.sleep(0.05)
+
+        def summarize(values: List[float]) -> Dict[str, float]:
+            if not values:
+                return {'avg': 0, 'min': 0, 'max': 0, 'p50': 0, 'p95': 0}
+            sorted_vals = sorted(values)
+            return {
+                'avg': sum(values) / len(values),
+                'min': min(values),
+                'max': max(values),
+                'p50': sorted_vals[len(sorted_vals)//2],
+                'p95': sorted_vals[int(len(sorted_vals)*0.95)] if len(sorted_vals) > 1 else sorted_vals[0]
+            }
+
+        return jsonify({
+            'server_id': server_id,
+            'iterations': iterations,
+            'timestamp': datetime.utcnow().isoformat(),
+            'rag': {
+                'latency': summarize(rag_times),
+                'payload_size': summarize(rag_sizes),
+                'item_count': summarize(rag_items),
+            },
+            'llm': {
+                'latency': summarize(llm_times),
+                'payload_size': summarize(llm_sizes),
+                'item_count': summarize(llm_items),
+            }
+        })
+    except Exception as exc:
+        app.logger.exception("Benchmark failed for server %s", server_id)
+        return jsonify({'error': str(exc)}), 500
 
 @app.route('/add_server', methods=['GET', 'POST'])
 def add_server():
@@ -1033,58 +1195,125 @@ def api_chat(server_id):
     
     # Check if it's a direct kubectl command
     if message.strip().startswith('kubectl'):
-        # Direct kubectl command - use MCP tools
         try:
-            # Parse kubectl command to determine which MCP tool to use
-            parts = message.strip().split()
-            if len(parts) < 2:
+            import shlex
+
+            tokens = shlex.split(message.strip())
+            if len(tokens) < 2:
                 return jsonify({'error': 'Invalid kubectl command'}), 400
-            
-            command = parts[1]  # get, create, delete, etc.
-            
-            # Map kubectl commands to MCP tools
+
+            command = tokens[1]
+
+            def extract_namespace(args, default=None):
+                if '-A' in args or '--all-namespaces' in args:
+                    return 'all'
+                if '-n' in args:
+                    idx = args.index('-n')
+                    if idx + 1 < len(args):
+                        return args[idx + 1]
+                for token in args:
+                    if token.startswith('--namespace='):
+                        return token.split('=', 1)[1]
+                return default
+
+            def run_tool(tool_name, params):
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return loop.run_until_complete(call_mcp_tool(tool_name, params))
+                finally:
+                    loop.close()
+
+            result = None
+
             if command == 'get':
-                if 'pods' in message:
-                    # Use pods_list MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('pods_list', {}))
-                    loop.close()
-                elif 'namespaces' in message:
-                    # Use namespaces_list MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('namespaces_list', {}))
-                    loop.close()
+                resource = tokens[2] if len(tokens) > 2 else ''
+
+                if resource in ('pods', 'pod'):
+                    namespace = extract_namespace(tokens, default='all')
+                    if resource == 'pod' and len(tokens) > 3:
+                        pod_name = tokens[3]
+                        result = run_tool('pods_get', {
+                            'name': pod_name,
+                            'namespace': namespace if namespace and namespace != 'all' else 'default'
+                        })
+                    else:
+                        result = run_tool('pods_list', {'namespace': namespace or 'all'})
+                elif resource in ('events', 'event'):
+                    namespace = extract_namespace(tokens, default='all')
+                    result = run_tool('events_list', {'namespace': namespace or 'all'})
+                elif resource in ('namespaces', 'ns'):
+                    result = run_tool('namespaces_list', {})
                 else:
-                    # Generic resource list
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('resources_list', {
-                        'apiVersion': 'v1',
-                        'kind': 'Pod'  # Default to Pod for now
-                    }))
-                    loop.close()
+                    return jsonify({'error': f'Unsupported kubectl get resource: {resource}'}), 400
+
             elif command == 'top':
-                if 'pods' in message:
-                    # Use pods_top MCP tool
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result = loop.run_until_complete(call_mcp_tool('pods_top', {}))
-                    loop.close()
+                resource = tokens[2] if len(tokens) > 2 else ''
+                if resource.startswith('pod'):
+                    namespace = extract_namespace(tokens, default='all')
+                    pod_name = None
+                    for token in tokens[2:]:
+                        if not token.startswith('-') and token != resource:
+                            pod_name = token
+                            break
+                    result = run_tool('pods_top', {
+                        'namespace': namespace or 'all',
+                        'pod_name': pod_name
+                    })
                 else:
-                    return jsonify({'error': 'Unsupported kubectl top command'}), 400
+                    return jsonify({'error': f'Unsupported kubectl top resource: {resource}'}), 400
+
+            elif command == 'describe':
+                if 'pod' in tokens:
+                    namespace = extract_namespace(tokens, default='default')
+                    pod_idx = tokens.index('pod')
+                    if pod_idx + 1 >= len(tokens):
+                        return jsonify({'error': 'Pod name required for kubectl describe pod'}), 400
+                    pod_name = tokens[pod_idx + 1]
+                    result = run_tool('pods_get', {
+                        'name': pod_name,
+                        'namespace': namespace
+                    })
+                else:
+                    return jsonify({'error': 'Unsupported kubectl describe command'}), 400
+
+            elif command == 'logs':
+                namespace = extract_namespace(tokens, default='default')
+                pod_name = None
+                for token in tokens[2:]:
+                    if not token.startswith('-'):
+                        pod_name = token
+                        break
+                if not pod_name:
+                    return jsonify({'error': 'Pod name required for kubectl logs'}), 400
+                result = run_tool('pods_log', {
+                    'name': pod_name,
+                    'namespace': namespace
+                })
+
+            elif command == 'delete':
+                if 'pod' in tokens:
+                    namespace = extract_namespace(tokens, default='default')
+                    pod_idx = tokens.index('pod')
+                    if pod_idx + 1 >= len(tokens):
+                        return jsonify({'error': 'Pod name required for kubectl delete pod'}), 400
+                    pod_name = tokens[pod_idx + 1]
+                    result = run_tool('pods_delete', {
+                        'name': pod_name,
+                        'namespace': namespace
+                    })
+                else:
+                    return jsonify({'error': 'Unsupported kubectl delete command'}), 400
             else:
                 return jsonify({'error': f'Unsupported kubectl command: {command}'}), 400
-            
-            if result.get('success'):
-                # Format the result for display
-                if 'result' in result and 'content' in result['result']:
-                    content = result['result']['content'][0]['text'] if result['result']['content'] else 'No output'
+
+            if result and result.get('success'):
+                payload = result.get('result', result)
+                if isinstance(payload, dict):
+                    content = json.dumps(payload, indent=2)
                 else:
-                    content = str(result.get('result', 'Command executed successfully'))
-                
-                # Store kubectl command in database
+                    content = str(payload)
+
                 chat = Chat(
                     user_id=session['user_id'],
                     server_id=server_id,
@@ -1096,15 +1325,13 @@ def api_chat(server_id):
                 )
                 db.session.add(chat)
                 db.session.commit()
-                
-                return jsonify({
-                    'response': content,
-                    'chat_id': chat.id
-                })
-            else:
-                return jsonify({'error': result.get('error', 'Command failed')}), 500
-                
+
+                return jsonify({'response': content, 'chat_id': chat.id})
+
+            error_message = result.get('error', 'Command failed') if result else 'Unknown error'
+            return jsonify({'error': error_message}), 500
         except Exception as e:
+            app.logger.exception("Kubectl command processing failed")
             return jsonify({'error': str(e)}), 500
     else:
         # Natural language query - use intelligent MCP processor
@@ -1264,12 +1491,61 @@ def server_status(server_id):
     
     # Update last accessed time
     server.last_accessed = datetime.utcnow()
-    server.status = "active"
+    
+    # Check if cluster is actually connected by testing kubectl
+    try:
+        import subprocess
+        import os
+        
+        # Set up kubeconfig if available
+        env = os.environ.copy()
+        if server.kubeconfig:
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+                f.write(server.kubeconfig)
+                temp_kubeconfig = f.name
+            env['KUBECONFIG'] = temp_kubeconfig
+        
+        # Test cluster connection
+        result = subprocess.run(
+            ['kubectl', 'cluster-info'],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env
+        )
+        
+        if result.returncode == 0:
+            server.status = "active"
+            server.connection_error = None
+        else:
+            # Check for connection errors
+            error_output = result.stderr.lower()
+            if any(phrase in error_output for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp"]):
+                server.status = "error"
+                server.connection_error = result.stderr
+            else:
+                server.status = "inactive"
+                server.connection_error = result.stderr
+        
+        # Clean up temp kubeconfig
+        if server.kubeconfig and 'temp_kubeconfig' in locals():
+            try:
+                os.unlink(temp_kubeconfig)
+            except:
+                pass
+                
+    except Exception as e:
+        # If we can't test, mark as error
+        server.status = "error"
+        server.connection_error = str(e)
+    
     db.session.commit()
     
     return jsonify({
         'status': server.status,
-        'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None
+        'last_accessed': server.last_accessed.isoformat() if server.last_accessed else None,
+        'connection_error': server.connection_error
     })
 
 
@@ -1418,16 +1694,31 @@ if True:
     ai_monitoring_instances = {}
 
     def _patch_kubeconfig_for_container(original_path: str) -> str:
-        """Patch kubeconfig server URL if it points to 127.0.0.1 so container can reach host API.
-        Returns a path to a temp kubeconfig file with patched server URL.
+        """Optionally patch kubeconfig when running inside a Docker container.
+        
+        When AI4K8s runs in Docker, a kubeconfig that points to 127.0.0.1 will
+        actually point *inside* the container. In that case we rewrite the
+        server URL to reach the host (e.g. host.docker.internal).
+        
+        On bare-metal / HPC environments (like AMD HPC), we must NOT patch the
+        kubeconfig; 127.0.0.1 should remain as-is so SSH tunnels work.
         """
         try:
             import os
             import re
             import tempfile
             import socket
+
             if not original_path or not os.path.exists(original_path):
                 return original_path
+
+            # Detect if we are actually running inside a Docker container.
+            # If not, skip any patching and use the kubeconfig as-is.
+            in_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER')
+            if not in_docker:
+                # Running directly on host (e.g. AMD HPC) - do not rewrite 127.0.0.1
+                return original_path
+
             with open(original_path, 'r') as f:
                 content = f.read()
             
@@ -1593,6 +1884,26 @@ if True:
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/monitoring/llm_recommendations/<int:server_id>')
+    def get_monitoring_llm_recommendations(server_id):
+        """LLM or fallback recommendations for specific server."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'error': 'AI monitoring not available for this server'}), 500
+            recommendations = ai_monitoring.get_llm_recommendations()
+            return jsonify({
+                'llm_recommendations': recommendations,
+                'count': len(recommendations)
+            })
+        except Exception as exc:
+            app.logger.exception("Failed to fetch LLM recommendations for server %s", server_id)
+            return jsonify({'llm_recommendations': [], 'count': 0, 'error': str(exc)}), 200
+
     @app.route('/api/monitoring/recommendations/<int:server_id>')
     def get_monitoring_recommendations(server_id):
         """Get performance recommendations for specific server"""
@@ -1687,6 +1998,214 @@ if True:
             ai_monitoring.stop_monitoring()
             return jsonify({'success': True, 'message': f'Monitoring stopped for {server.name}'})
         except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    # ==================== Autoscaling Routes ====================
+    
+    def get_autoscaling_instance(server_id):
+        """Get or create autoscaling instance for a specific server"""
+        if server_id not in getattr(app, 'autoscaling_instances', {}):
+            # Get server details to determine kubeconfig path
+            server = Server.query.get(server_id)
+            if server:
+                kubeconfig_path = None
+                import os
+                # If a kubeconfig is stored in DB, always prefer it
+                if getattr(server, 'kubeconfig', None):
+                    try:
+                        import tempfile
+                        temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+                        temp_file.write(server.kubeconfig)
+                        temp_file.close()
+                        kubeconfig_path = temp_file.name
+                    except Exception:
+                        kubeconfig_path = None
+                # Otherwise, try well-known paths
+                if kubeconfig_path is None:
+                    candidate_paths = [
+                        '/app/instance/kubeconfig_admin',
+                        os.path.expanduser('~/.kube/config'),
+                        '/etc/kubernetes/admin.conf',
+                        '/var/lib/kubelet/kubeconfig'
+                    ]
+                    for path in candidate_paths:
+                        if os.path.exists(path):
+                            kubeconfig_path = path
+                            break
+                # Patch kubeconfig if pointing to 127.0.0.1
+                kubeconfig_path = _patch_kubeconfig_for_container(kubeconfig_path)
+                
+                print(f"🔧 Creating autoscaling instance for server {server_id} ({server.name})")
+                print(f"🔧 Using kubeconfig: {kubeconfig_path}")
+                if not hasattr(app, 'autoscaling_instances'):
+                    app.autoscaling_instances = {}
+                from autoscaling_integration import AutoscalingIntegration
+                app.autoscaling_instances[server_id] = AutoscalingIntegration(kubeconfig_path)
+            else:
+                print(f"⚠️  Server {server_id} not found")
+        return getattr(app, 'autoscaling_instances', {}).get(server_id)
+    
+    @app.route('/autoscaling/<int:server_id>')
+    def autoscaling_page(server_id):
+        """Autoscaling dashboard page"""
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        return render_template('autoscaling.html', server=server)
+    
+    @app.route('/api/autoscaling/status/<int:server_id>')
+    def get_autoscaling_status(server_id):
+        """Get autoscaling status"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            status = autoscaling.get_autoscaling_status()
+            return jsonify(status)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in get_autoscaling_status: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/hpa/create/<int:server_id>', methods=['POST'])
+    def create_hpa(server_id):
+        """Create HPA for deployment"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.create_hpa(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                min_replicas=data.get('min_replicas', 2),
+                max_replicas=data.get('max_replicas', 10),
+                cpu_target=data.get('cpu_target', 70),
+                memory_target=data.get('memory_target', 80)
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in create_hpa: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/predictive/enable/<int:server_id>', methods=['POST'])
+    def enable_predictive_autoscaling(server_id):
+        """Enable predictive autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.enable_predictive_autoscaling(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                min_replicas=data.get('min_replicas', 2),
+                max_replicas=data.get('max_replicas', 10)
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in enable_predictive_autoscaling: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/recommendations/<int:server_id>')
+    def get_scaling_recommendations(server_id):
+        """Get scaling recommendations"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        deployment_name = request.args.get('deployment')
+        namespace = request.args.get('namespace', 'default')
+        
+        if not deployment_name:
+            return jsonify({'error': 'deployment parameter required'}), 400
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.get_scaling_recommendations(deployment_name, namespace)
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in get_scaling_recommendations: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/schedule/create/<int:server_id>', methods=['POST'])
+    def create_schedule(server_id):
+        """Create scheduled autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.create_schedule(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                schedule_rules=data.get('schedule_rules', [])
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in create_schedule: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/patterns/<int:server_id>')
+    def analyze_patterns(server_id):
+        """Analyze historical patterns for schedule suggestions"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        deployment_name = request.args.get('deployment')
+        namespace = request.args.get('namespace', 'default')
+        
+        if not deployment_name:
+            return jsonify({'error': 'deployment parameter required'}), 400
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.analyze_patterns(deployment_name, namespace)
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in analyze_patterns: {e}")
+            print(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
