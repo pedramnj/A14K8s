@@ -367,26 +367,32 @@ async function refreshAutoscaling() {
                                     recommendationCache.deployment === firstDeployment.deployment_name &&
                                     recommendationCache.namespace === firstDeployment.namespace;
                 
-                // NEVER auto-refresh recommendations - only show cached data
-                // This prevents excessive API calls
-                // NOTE: Don't call displayRecommendations here - let loadPredictiveForecast handle it
-                // This prevents duplicate rendering when refreshAutoscaling is called
+                // NEVER auto-refresh recommendations - completely disabled
+                // This prevents excessive API calls and respects Groq rate limits
+                // Recommendations ONLY refresh on manual Refresh button click
+                
+                // Check if this is the initial page load (only once)
+                const isInitialLoad = lastRecommendationFetchTime === 0 && !hasCachedData;
+                
                 if (hasCachedData) {
-                    // Cached data exists - don't do anything, it's already displayed
-                    // loadPredictiveForecast will handle displaying it if needed
-                    console.log(`✅ Cached recommendation available (auto-refresh disabled)`);
-                } else if (lastRecommendationFetchTime === 0) {
-                    // Only load on initial page load (first time) - this is the ONLY time we fetch
-                    console.log(`🔄 Initial page load: Fetching recommendations (one-time only)`);
+                    // Cached data exists - do nothing, it's already displayed
+                    console.log(`✅ Cached recommendation available (auto-refresh completely disabled)`);
+                    // Don't call loadPredictiveForecast - it's already displayed
+                } else if (isInitialLoad) {
+                    // ONLY on initial page load (first time, no cache, never fetched)
+                    console.log(`🔄 Initial page load ONLY: Fetching recommendations (one-time)`);
                     loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace);
                 } else {
-                    // No cached data but we've fetched before - don't fetch again, show empty state
-                    console.log(`⏸️ No cached data available. Use manual refresh button to fetch recommendations.`);
+                    // Not initial load and no cache - don't fetch, show message
+                    console.log(`⏸️ Auto-refresh disabled. Use manual Refresh button to load recommendations.`);
                     const chartContainer = document.getElementById('predictive-forecast-chart');
                     const recommendationsContainer = document.getElementById('predictive-recommendations');
                     if (chartContainer && recommendationsContainer) {
-                        chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Click "Refresh" button to load.</p>';
-                        recommendationsContainer.innerHTML = '<div class="alert alert-info"><small>💡 Click "Refresh" button above to load recommendations.</small></div>';
+                        // Don't clear existing content if it exists
+                        if (!chartContainer.innerHTML && !recommendationsContainer.innerHTML) {
+                            chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Click "Refresh" button to load.</p>';
+                            recommendationsContainer.innerHTML = '<div class="alert alert-info"><small>💡 Click "Refresh" button above to load recommendations.</small></div>';
+                        }
                     }
                 }
             } else {
@@ -916,11 +922,15 @@ async function analyzePatterns() {
     }
 }
 
-// Initial load
-refreshAutoscaling();
-loadScalingHistory();
+// Track if initial load has happened
+let initialLoadComplete = false;
 
-// Forecast will be auto-loaded by refreshAutoscaling() if enabled deployments exist
+// Initial load - only fetch recommendations once
+refreshAutoscaling().then(() => {
+    initialLoadComplete = true;
+    console.log('✅ Initial page load complete - recommendations will NOT auto-refresh');
+});
+loadScalingHistory();
 
 // Debounced refresh function
 let refreshTimeout = null;
@@ -944,12 +954,29 @@ if (refreshIntervalId) {
 // Users must manually refresh or wait for cache to expire
 refreshIntervalId = setInterval(() => {
     // Only refresh if page is visible and not currently loading recommendations
-    if (!document.hidden && !isLoadingRecommendations) {
-        console.log('🔄 Auto-refreshing autoscaling status (overview stats only, recommendations cached for 5 min)');
-        // Refresh status but DON'T auto-load recommendations
-        refreshAutoscaling();
+    // IMPORTANT: This ONLY updates overview stats (HPA count, etc.), NOT recommendations
+    if (!document.hidden && !isLoadingRecommendations && initialLoadComplete) {
+        console.log('🔄 Auto-refreshing autoscaling STATUS ONLY (HPA count, schedules, etc.) - NOT recommendations');
+        // Refresh status but DON'T trigger recommendation loading
+        // We'll manually fetch status without calling loadPredictiveForecast
+        fetch(`/api/autoscaling/status/${serverId}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Update overview stats only
+                    document.getElementById('hpa-count').textContent = data.hpa_count || 0;
+                    document.getElementById('predictive-enabled').textContent = data.predictive_count || 0;
+                    document.getElementById('scheduled-count').textContent = data.schedule_count || 0;
+                    const totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
+                    document.getElementById('total-replicas').textContent = totalReplicas;
+                    updateHPAList(data.hpas || []);
+                    updateScheduleList(data.schedules || []);
+                    // DO NOT call loadPredictiveForecast - recommendations stay as-is
+                }
+            })
+            .catch(error => console.error('Error refreshing status:', error));
     }
-}, 120000); // 120 seconds (2 minutes) - for overview stats only
+}, 120000); // 120 seconds (2 minutes) - for overview stats only, NOT recommendations
 </script>
 {% endblock %}
 
