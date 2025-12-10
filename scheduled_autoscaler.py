@@ -283,17 +283,48 @@ class ScheduledAutoscaler:
     
     def delete_schedule(self, deployment_name: str, namespace: str = "default") -> Dict[str, Any]:
         """Delete schedule for deployment"""
-        key = f"{namespace}/{deployment_name}"
-        if key in self.schedules:
-            del self.schedules[key]
+        try:
+            # Remove from Kubernetes annotations if hpa_manager is available
+            if self.hpa_manager:
+                annotations_to_remove = [
+                    'ai4k8s.io/scheduled-autoscaling-enabled',
+                    'ai4k8s.io/scheduled-autoscaling-enabled-at',
+                    'ai4k8s.io/scheduled-autoscaling-config'
+                ]
+                
+                labels_to_remove = {
+                    'ai4k8s.io/scheduled-autoscaling': None  # Set to None to remove
+                }
+                
+                # Remove annotations
+                for annotation in annotations_to_remove:
+                    result = self.hpa_manager._execute_kubectl(
+                        f"annotate deployment {deployment_name} -n {namespace} {annotation}-"
+                    )
+                    if not result.get('success'):
+                        logger.warning(f"Failed to remove annotation {annotation}: {result.get('error')}")
+                
+                # Remove labels
+                label_result = self.hpa_manager.patch_deployment_labels(
+                    deployment_name, namespace, labels_to_remove
+                )
+                if not label_result.get('success'):
+                    logger.warning(f"Failed to remove labels: {label_result.get('error')}")
+            
+            # Also remove from in-memory cache
+            key = f"{namespace}/{deployment_name}"
+            if key in self.schedules:
+                del self.schedules[key]
+            
             return {
                 'success': True,
                 'message': f'Schedule deleted for {deployment_name}'
             }
-        else:
+        except Exception as e:
+            logger.error(f"Error deleting schedule: {e}")
             return {
                 'success': False,
-                'error': f'No schedule found for {deployment_name}'
+                'error': str(e)
             }
     
     def list_schedules(self, namespace: Optional[str] = None) -> Dict[str, Any]:
