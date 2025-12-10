@@ -26,8 +26,8 @@
         </div>
     </div>
 
-    <!-- Overview Cards -->
-    <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem;">
+    <!-- Overview Cards - First Row: Autoscaling Stats -->
+    <div class="d-grid" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1.5rem; margin-bottom: 1.5rem;">
         <div class="card">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-center">
@@ -96,6 +96,72 @@
                 </div>
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: #8b5cf6; margin-bottom: 0.25rem;" id="vpa-count">-</h3>
+                        <p class="text-muted mb-0">Active VPAs</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(139 92 246 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#8b5cf6">
+                            <path d="M4 6H20V18H4V6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M8 6V4C8 3.46957 8.21071 2.96086 8.58579 2.58579C8.96086 2.21071 9.46957 2 10 2H14C14.5304 2 15.0391 2.21071 15.4142 2.58579C15.7893 2.96086 16 3.46957 16 4V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M12 10V14M12 6V8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Resource Usage Cards - Second Row: CPU & Memory (50% width each) -->
+    <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 1.5rem;">
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: #ef4444; margin-bottom: 0.25rem;" id="cluster-cpu-usage">-</h3>
+                        <p class="text-muted mb-0">CPU Usage</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(239 68 68 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#ef4444">
+                            <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <div class="progress" style="height: 6px; background: #f3f4f6;">
+                        <div id="cluster-cpu-progress" class="progress-bar" role="progressbar" style="width: 0%; background: #ef4444; transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h3 style="font-size: 2rem; font-weight: 700; color: #3b82f6; margin-bottom: 0.25rem;" id="cluster-memory-usage">-</h3>
+                        <p class="text-muted mb-0">Memory Usage</p>
+                    </div>
+                    <div style="width: 3rem; height: 3rem; background: rgb(59 130 246 / 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="#3b82f6">
+                            <path d="M4 6H20V18H4V6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M8 6V4C8 3.46957 8.21071 2.96086 8.58579 2.58579C8.96086 2.21071 9.46957 2 10 2H14C14.5304 2 15.0391 2.21071 15.4142 2.58579C15.7893 2.96086 16 3.46957 16 4V6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                </div>
+                <div style="margin-top: 0.5rem;">
+                    <div class="progress" style="height: 6px; background: #f3f4f6;">
+                        <div id="cluster-memory-progress" class="progress-bar" role="progressbar" style="width: 0%; background: #3b82f6; transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Predictive Autoscaling Section -->
@@ -141,6 +207,10 @@
                         </button>
                     </form>
                 </div>
+            </div>
+            <!-- Enabled Deployments List -->
+            <div id="predictive-deployments-list" style="margin-bottom: 1.5rem;">
+                <!-- Will be populated by JavaScript -->
             </div>
             <!-- Recommendations - Full Width Below Grid -->
             <div style="width: 100%; margin-top: 1.5rem;">
@@ -205,6 +275,74 @@
                                 <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
                             </svg>
                             Create HPA
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- VPA Management Section -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">📈 Vertical Pod Autoscaler (VPA)</h3>
+            <small class="text-muted">Vertical scaling by adjusting CPU/Memory resources per pod</small>
+        </div>
+        <div class="card-body">
+            <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Active VPAs</h4>
+                    <div id="vpa-list" style="max-height: 400px; overflow-y: auto;">
+                        <div class="loading">
+                            <div class="spinner"></div>
+                            Loading VPAs...
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <h4 style="margin-bottom: 1rem;">Create New VPA</h4>
+                    <form id="vpa-form" onsubmit="createVPA(event)">
+                        <div style="margin-bottom: 1rem;">
+                            <label for="vpa-deployment" class="form-label">Deployment Name</label>
+                            <input type="text" id="vpa-deployment" class="form-control" placeholder="my-app" required>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="vpa-namespace" class="form-label">Namespace</label>
+                            <input type="text" id="vpa-namespace" class="form-control" value="default" required>
+                        </div>
+                        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div>
+                                <label for="vpa-min-cpu" class="form-label">Min CPU</label>
+                                <input type="text" id="vpa-min-cpu" class="form-control" value="100m" placeholder="100m" required>
+                            </div>
+                            <div>
+                                <label for="vpa-max-cpu" class="form-label">Max CPU</label>
+                                <input type="text" id="vpa-max-cpu" class="form-control" value="1000m" placeholder="1000m" required>
+                            </div>
+                        </div>
+                        <div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                            <div>
+                                <label for="vpa-min-memory" class="form-label">Min Memory</label>
+                                <input type="text" id="vpa-min-memory" class="form-control" value="128Mi" placeholder="128Mi" required>
+                            </div>
+                            <div>
+                                <label for="vpa-max-memory" class="form-label">Max Memory</label>
+                                <input type="text" id="vpa-max-memory" class="form-control" value="512Mi" placeholder="512Mi" required>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 1rem;">
+                            <label for="vpa-update-mode" class="form-label">Update Mode</label>
+                            <select id="vpa-update-mode" class="form-control" required>
+                                <option value="Auto">Auto (VPA automatically updates pods)</option>
+                                <option value="Recreate">Recreate (VPA recreates pods with new resources)</option>
+                                <option value="Off">Off (VPA only provides recommendations)</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-primary" style="width: 100%;">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
+                                <path d="M12 5V19M5 12H19" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                            Create VPA
                         </button>
                     </form>
                 </div>
@@ -282,7 +420,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
-const serverId = {{ server.id }};
+const serverId = {{ server.id | tojson }};
 let charts = {};
 
 // Show cluster disconnected message
@@ -328,6 +466,9 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
         }
         const data = await response.json();
         console.log('📊 Autoscaling status data received:', data);
+        console.log('📊 total_replicas:', data.total_replicas);
+        console.log('📊 predictive_count:', data.predictive_count);
+        console.log('📊 predictive_deployments:', data.predictive_deployments);
         
         // Check if cluster is disconnected
         if (data.error || data.cluster_disconnected) {
@@ -339,6 +480,17 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
             document.getElementById('predictive-enabled').textContent = '0';
             document.getElementById('scheduled-count').textContent = '0';
             document.getElementById('total-replicas').textContent = '0';
+            document.getElementById('vpa-count').textContent = '0';
+            
+            // Reset resource stats
+            const cpuUsageEl = document.getElementById('cluster-cpu-usage');
+            const memoryUsageEl = document.getElementById('cluster-memory-usage');
+            const cpuProgressEl = document.getElementById('cluster-cpu-progress');
+            const memoryProgressEl = document.getElementById('cluster-memory-progress');
+            if (cpuUsageEl) cpuUsageEl.textContent = 'N/A';
+            if (memoryUsageEl) memoryUsageEl.textContent = 'N/A';
+            if (cpuProgressEl) cpuProgressEl.style.width = '0%';
+            if (memoryProgressEl) memoryProgressEl.style.width = '0%';
             
             // Disable all forms
             document.querySelectorAll('form').forEach(form => {
@@ -360,17 +512,102 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
         });
         
         if (data.success) {
-            document.getElementById('hpa-count').textContent = data.hpa_count || 0;
-            document.getElementById('predictive-enabled').textContent = data.predictive_count || 0;
-            document.getElementById('scheduled-count').textContent = data.schedule_count || 0;
+            console.log('✅ Processing successful autoscaling status data');
+            const hpaCountEl = document.getElementById('hpa-count');
+            const predictiveEl = document.getElementById('predictive-enabled');
+            const scheduledEl = document.getElementById('scheduled-count');
+            const totalReplicasEl = document.getElementById('total-replicas');
+            const vpaCountEl = document.getElementById('vpa-count');
             
-            // Calculate total replicas
-            const totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
-            document.getElementById('total-replicas').textContent = totalReplicas;
+            if (hpaCountEl) hpaCountEl.textContent = data.hpa_count || 0;
+            if (predictiveEl) predictiveEl.textContent = data.predictive_count || 0;
+            if (scheduledEl) scheduledEl.textContent = data.schedule_count || 0;
+            if (vpaCountEl) vpaCountEl.textContent = data.vpa_count || 0;
             
+            // Calculate total replicas: use backend-calculated total if available, otherwise sum HPAs
+            let totalReplicas = 0;
+            if (data.total_replicas !== undefined) {
+                // Use backend-calculated total (includes HPAs + predictive deployments without HPA)
+                totalReplicas = data.total_replicas;
+            } else {
+                // Fallback: sum HPA replicas only
+                totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
+            }
+            if (totalReplicasEl) totalReplicasEl.textContent = totalReplicas;
+            
+            // Update real-time cluster resource stats (CPU & Memory Usage)
+            const cpuUsageEl = document.getElementById('cluster-cpu-usage');
+            const memoryUsageEl = document.getElementById('cluster-memory-usage');
+            const cpuProgressEl = document.getElementById('cluster-cpu-progress');
+            const memoryProgressEl = document.getElementById('cluster-memory-progress');
+            
+            if (data.current_metrics) {
+                const cpuUsage = data.current_metrics.cpu_usage || 0;
+                const memoryUsage = data.current_metrics.memory_usage || 0;
+                
+                // Update CPU usage
+                if (cpuUsageEl) {
+                    cpuUsageEl.textContent = cpuUsage.toFixed(1) + '%';
+                    // Color code: green < 50%, yellow 50-80%, red > 80%
+                    if (cpuUsage > 80) {
+                        cpuUsageEl.style.color = '#ef4444';
+                    } else if (cpuUsage > 50) {
+                        cpuUsageEl.style.color = '#f59e0b';
+                    } else {
+                        cpuUsageEl.style.color = '#10b981';
+                    }
+                }
+                if (cpuProgressEl) {
+                    cpuProgressEl.style.width = Math.min(cpuUsage, 100) + '%';
+                    // Update progress bar color
+                    cpuProgressEl.className = 'progress-bar';
+                    if (cpuUsage > 80) {
+                        cpuProgressEl.style.background = '#ef4444';
+                    } else if (cpuUsage > 50) {
+                        cpuProgressEl.style.background = '#f59e0b';
+                    } else {
+                        cpuProgressEl.style.background = '#10b981';
+                    }
+                }
+                
+                // Update Memory usage
+                if (memoryUsageEl) {
+                    memoryUsageEl.textContent = memoryUsage.toFixed(1) + '%';
+                    // Color code: green < 50%, yellow 50-80%, red > 80%
+                    if (memoryUsage > 80) {
+                        memoryUsageEl.style.color = '#ef4444';
+                    } else if (memoryUsage > 50) {
+                        memoryUsageEl.style.color = '#f59e0b';
+                    } else {
+                        memoryUsageEl.style.color = '#10b981';
+                    }
+                }
+                if (memoryProgressEl) {
+                    memoryProgressEl.style.width = Math.min(memoryUsage, 100) + '%';
+                    // Update progress bar color
+                    memoryProgressEl.className = 'progress-bar';
+                    if (memoryUsage > 80) {
+                        memoryProgressEl.style.background = '#ef4444';
+                    } else if (memoryUsage > 50) {
+                        memoryProgressEl.style.background = '#f59e0b';
+                    } else {
+                        memoryProgressEl.style.background = '#10b981';
+                    }
+                }
+            } else {
+                // No metrics available
+                if (cpuUsageEl) cpuUsageEl.textContent = 'N/A';
+                if (memoryUsageEl) memoryUsageEl.textContent = 'N/A';
+                if (cpuProgressEl) cpuProgressEl.style.width = '0%';
+                if (memoryProgressEl) memoryProgressEl.style.width = '0%';
+            }
+            
+            console.log(`📊 Updating lists - HPAs: ${(data.hpas || []).length}, Schedules: ${(data.schedules || []).length}`);
             // Update HPA list
             updateHPAList(data.hpas || []);
             updateScheduleList(data.schedules || []);
+            updatePredictiveDeploymentsList(data.predictive_deployments || []);
+            updateVPAList(data.vpas || []);
             
             // Auto-load forecast for first enabled predictive deployment
             // IMPORTANT: Only load on initial page load or manual refresh, NOT on auto-refresh
@@ -388,32 +625,29 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
                 // Recommendations ONLY refresh on manual Refresh button click
                 
                 // STRICT: Only load recommendations if explicitly allowed (manual refresh or initial load)
-                const isInitialLoad = lastRecommendationFetchTime === 0 && !hasCachedData && !allowRecommendationRefresh;
+                // Check if this is truly the initial page load (no cache, never fetched, not a manual refresh)
+                const isInitialLoad = !initialLoadDone && lastRecommendationFetchTime === 0 && !hasCachedData && !allowRecommendationRefresh;
                 
                 if (allowRecommendationRefresh) {
                     // Manual refresh - explicitly allowed
                     console.log(`🔄 Manual refresh: Loading recommendations`);
-                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace, true);
+                    loadPredictiveForecast(firstDeployment.deployment_name.trim(), (firstDeployment.namespace || 'default').trim(), true);
                 } else if (hasCachedData) {
-                    // Cached data exists - do nothing, it's already displayed
+                    // Cached data exists - display it
                     console.log(`✅ Cached recommendation available (auto-refresh completely disabled)`);
-                    // Don't call loadPredictiveForecast - it's already displayed
+                    const chartContainer = document.getElementById('predictive-forecast-chart');
+                    const recommendationsContainer = document.getElementById('predictive-recommendations');
+                    if (chartContainer && recommendationsContainer && recommendationCache.data) {
+                        displayRecommendations(recommendationCache.data, chartContainer, recommendationsContainer);
+                    }
                 } else if (isInitialLoad) {
                     // ONLY on initial page load (first time, no cache, never fetched)
                     console.log(`🔄 Initial page load ONLY: Fetching recommendations (one-time)`);
-                    loadPredictiveForecast(firstDeployment.deployment_name, firstDeployment.namespace, false);
+                    loadPredictiveForecast(firstDeployment.deployment_name.trim(), (firstDeployment.namespace || 'default').trim(), false);
                 } else {
-                    // Not initial load and no cache - don't fetch, show message
-                    console.log(`⏸️ Auto-refresh disabled. Use manual Refresh button to load recommendations.`);
-                    const chartContainer = document.getElementById('predictive-forecast-chart');
-                    const recommendationsContainer = document.getElementById('predictive-recommendations');
-                    if (chartContainer && recommendationsContainer) {
-                        // Don't clear existing content if it exists
-                        if (!chartContainer.innerHTML && !recommendationsContainer.innerHTML) {
-                            chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Click "Refresh" button to load.</p>';
-                            recommendationsContainer.innerHTML = '<div class="alert alert-info"><small>💡 Click "Refresh" button above to load recommendations.</small></div>';
-                        }
-                    }
+                    // Not initial load and no cache - try to load anyway (might be a hard refresh)
+                    console.log(`🔄 No cache found, loading recommendations on page load`);
+                    loadPredictiveForecast(firstDeployment.deployment_name.trim(), (firstDeployment.namespace || 'default').trim(), false);
                 }
             } else {
                 // No enabled deployments, show empty state
@@ -436,8 +670,12 @@ async function refreshAutoscaling(allowRecommendationRefresh = false) {
             document.getElementById('predictive-enabled').textContent = '0';
             document.getElementById('scheduled-count').textContent = '0';
             document.getElementById('total-replicas').textContent = '0';
+            document.getElementById('vpa-count').textContent = '0';
             updateHPAList([]);
             updateScheduleList([]);
+            updatePredictiveDeploymentsList([]);
+            updateVPAList([]);
+            updateVPAList([]);
             
             // Clear forecast sections on error
             const chartContainer = document.getElementById('predictive-forecast-chart');
@@ -480,7 +718,7 @@ function updateHPAList(hpas) {
     container.innerHTML = hpas.map(hpa => `
         <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
             <div class="d-flex justify-content-between align-items-center">
-                <div>
+                <div style="flex: 1;">
                     <h5 style="margin-bottom: 0.25rem;">${hpa.name}</h5>
                     <p class="text-muted mb-0" style="font-size: 0.875rem;">
                         Target: ${hpa.target} | 
@@ -488,10 +726,13 @@ function updateHPAList(hpas) {
                         Range: ${hpa.min_replicas}-${hpa.max_replicas}
                     </p>
                 </div>
-                <div>
+                <div class="d-flex align-items-center gap-2">
                     <span class="badge ${hpa.status?.scaling_status === 'stable' ? 'badge-success' : 'badge-warning'}">
                         ${hpa.status?.scaling_status || 'unknown'}
                     </span>
+                    <button class="btn btn-sm btn-danger" onclick="deleteHPA('${hpa.name}', '${hpa.namespace || 'default'}')" title="Delete HPA">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
                 </div>
             </div>
         </div>
@@ -511,12 +752,111 @@ function updateScheduleList(schedules) {
     
     container.innerHTML = schedules.map(schedule => `
         <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
-            <h5 style="margin-bottom: 0.5rem;">${schedule.deployment_name}</h5>
-            <p class="text-muted mb-0" style="font-size: 0.875rem;">
-                ${schedule.rules_count || 0} schedule rules
-            </p>
+            <div class="d-flex justify-content-between align-items-center">
+                <div style="flex: 1;">
+                    <h5 style="margin-bottom: 0.5rem;">${schedule.deployment_name}</h5>
+                    <p class="text-muted mb-0" style="font-size: 0.875rem;">
+                        ${schedule.rules_count || 0} schedule rules
+                    </p>
+                </div>
+                <div>
+                    <button class="btn btn-sm btn-danger" onclick="deleteSchedule('${schedule.deployment_name}', '${schedule.namespace || 'default'}')" title="Delete Schedule">
+                        <i class="fas fa-trash"></i> Delete
+                    </button>
+                </div>
+            </div>
         </div>
     `).join('');
+}
+
+function updatePredictiveDeploymentsList(deployments) {
+    // Find or create container for predictive deployments list
+    let container = document.getElementById('predictive-deployments-list');
+    if (!container) {
+        // Create container if it doesn't exist (should be in HTML, but create as fallback)
+        const predictiveSection = document.querySelector('.predictive-autoscaling-section');
+        if (predictiveSection) {
+            container = document.createElement('div');
+            container.id = 'predictive-deployments-list';
+            container.style.marginTop = '1rem';
+            predictiveSection.appendChild(container);
+        } else {
+            console.error('❌ Could not find predictive autoscaling section');
+            return;
+        }
+    }
+    
+    if (!deployments || deployments.length === 0) {
+        container.innerHTML = '<p class="text-muted">No predictive autoscaling enabled</p>';
+        return;
+    }
+    
+    container.innerHTML = `
+        <div style="margin-bottom: 1rem;">
+            <h5>Enabled Deployments</h5>
+            ${deployments.map(deployment => `
+                <div class="card" style="margin-bottom: 0.5rem; padding: 0.75rem;">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div style="flex: 1;">
+                            <strong>${deployment.deployment_name}</strong>
+                            <span class="text-muted" style="font-size: 0.875rem; margin-left: 0.5rem;">
+                                (${deployment.namespace || 'default'})
+                            </span>
+                            <p class="text-muted mb-0" style="font-size: 0.75rem; margin-top: 0.25rem;">
+                                Range: ${deployment.min_replicas || 2}-${deployment.max_replicas || 10} replicas
+                            </p>
+                        </div>
+                        <div>
+                            <button class="btn btn-sm btn-danger" onclick="disablePredictiveAutoscaling('${deployment.deployment_name}', '${deployment.namespace || 'default'}')" title="Disable Predictive Autoscaling">
+                                <i class="fas fa-ban"></i> Disable
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function updateVPAList(vpas) {
+    const container = document.getElementById('vpa-list');
+    if (!container) {
+        console.error('❌ vpa-list container not found');
+        return;
+    }
+    if (!vpas || vpas.length === 0) {
+        container.innerHTML = '<p class="text-muted">No VPAs configured</p>';
+        return;
+    }
+    
+    container.innerHTML = vpas.map(vpa => {
+        const recommendations = vpa.recommendations || [];
+        const firstRec = recommendations.length > 0 ? recommendations[0] : null;
+        return `
+            <div class="card" style="margin-bottom: 1rem; padding: 1rem;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div style="flex: 1;">
+                        <h5 style="margin-bottom: 0.5rem;">${vpa.name}</h5>
+                        <p class="text-muted mb-1" style="font-size: 0.9rem;">
+                            <strong>Target:</strong> ${vpa.target} | 
+                            <strong>Mode:</strong> ${vpa.update_mode}
+                        </p>
+                        ${firstRec ? `
+                            <p class="text-muted mb-1" style="font-size: 0.85rem;">
+                                <strong>Recommended:</strong> CPU: ${firstRec.target_cpu || 'N/A'}, Memory: ${firstRec.target_memory || 'N/A'}
+                            </p>
+                        ` : ''}
+                    </div>
+                    <button class="btn btn-sm btn-danger" onclick="deleteVPA('${vpa.name}', '${vpa.namespace}')" style="margin-left: 1rem;">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M3 6H5H21M8 6V4C8 3.46957 8.21071 2.96086 8.58579 2.58579C8.96086 2.21071 9.46957 2 10 2H14C14.5304 2 15.0391 2.21071 15.4142 2.58579C15.7893 2.96086 16 3.46957 16 4V6M19 6V20C19 21.1046 18.1046 22 17 22H7C5.89543 22 5 21.1046 5 20V6H19Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                        Delete
+                    </button>
+                </div>
+            </div>
+        `;
+    }).join('');
 }
 
 // Create HPA
@@ -552,6 +892,68 @@ async function createHPA(event) {
     }
 }
 
+// Create VPA
+async function createVPA(event) {
+    event.preventDefault();
+    const form = event.target;
+    const data = {
+        deployment_name: document.getElementById('vpa-deployment').value,
+        namespace: document.getElementById('vpa-namespace').value,
+        min_cpu: document.getElementById('vpa-min-cpu').value,
+        max_cpu: document.getElementById('vpa-max-cpu').value,
+        min_memory: document.getElementById('vpa-min-memory').value,
+        max_memory: document.getElementById('vpa-max-memory').value,
+        update_mode: document.getElementById('vpa-update-mode').value
+    };
+    
+    try {
+        const response = await fetch(`/api/autoscaling/vpa/create/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('VPA created successfully!');
+            form.reset();
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to create VPA'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Delete VPA
+async function deleteVPA(vpaName, namespace) {
+    if (!confirm(`Delete VPA "${vpaName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/autoscaling/vpa/delete/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                vpa_name: vpaName,
+                namespace: namespace
+            })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('VPA deleted successfully!');
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to delete VPA'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
 // Enable Predictive Autoscaling
 async function enablePredictiveAutoscaling(event) {
     event.preventDefault();
@@ -572,7 +974,9 @@ async function enablePredictiveAutoscaling(event) {
         const result = await response.json();
         
         if (result.success) {
-            alert('Predictive autoscaling enabled! ' + (result.reason || ''));
+            // Show clean success message (use backend message if available, otherwise create one)
+            let message = result.message || 'Predictive autoscaling enabled!';
+            alert(message);
             form.reset();
             refreshAutoscaling();
             // Clear cache and force refresh (user action, so allow it)
@@ -609,8 +1013,14 @@ let initialLoadDone = false; // Global flag: initial load completed, block ALL a
 // Track last manual refresh time to prevent any automatic calls
 let lastManualRefreshTime = 0;
 
+// Store current deployment for recommendation button
+window.currentPredictiveDeployment = null;
+
 // Load predictive forecast
 async function loadPredictiveForecast(deployment, namespace, forceRefresh = false) {
+    // Store for use in recommendation display
+    window.currentPredictiveDeployment = { deployment_name: deployment, namespace: namespace };
+    
     // STRICT GUARD: Only allow if forceRefresh is true (manual action) OR initial load (not done yet)
     const isManualAction = forceRefresh === true;
     const isInitialLoad = !initialLoadDone && lastRecommendationFetchTime === 0 && !isManualAction;
@@ -686,8 +1096,37 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
             console.log('✅ Initial load - allowed (one-time only, now blocking all automatic calls)');
         }
         
-        const response = await fetch(`/api/autoscaling/recommendations/${serverId}?deployment=${deployment}&namespace=${namespace}`);
+        // Trim deployment name and namespace to avoid whitespace issues
+        const trimmedDeployment = deployment.trim();
+        const trimmedNamespace = (namespace || 'default').trim();
+        
+        console.log(`🔄 Fetching recommendations for deployment: "${trimmedDeployment}" in namespace: "${trimmedNamespace}"`);
+        
+        const url = `/api/autoscaling/recommendations/${serverId}?deployment=${encodeURIComponent(trimmedDeployment)}&namespace=${encodeURIComponent(trimmedNamespace)}`;
+        console.log(`📡 API URL: ${url}`);
+        
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error(`❌ HTTP ${response.status} error:`, errorText);
+            throw new Error(`HTTP ${response.status}: ${response.statusText}. ${errorText.substring(0, 200)}`);
+        }
+        
         const data = await response.json();
+        console.log(`📊 API response success:`, data.success, `error:`, data.error);
+        
+        // Check if API returned an error
+        if (!data.success || data.error) {
+            console.error(`❌ API returned error:`, data.error);
+            throw new Error(data.error || 'Failed to get recommendations');
+        }
+        
+        // Check if recommendations data exists
+        if (!data.recommendations || !data.recommendations.predictive) {
+            console.warn(`⚠️ No predictive recommendations in response:`, data);
+            throw new Error('No recommendations data returned from API');
+        }
         
         // Extract metrics for stability checking
         let currentMetrics = null;
@@ -706,23 +1145,28 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
         recommendationCache = {
             data: data,
             timestamp: Date.now(), // Use current time
-            deployment: deployment,
-            namespace: namespace,
+            deployment: trimmedDeployment,
+            namespace: trimmedNamespace,
             lastMetrics: currentMetrics
         };
         
         console.log(`✅ Recommendation fetched and cached (will cache for ${RECOMMENDATION_CACHE_TTL/1000}s)`);
         
         displayRecommendations(data, chartContainer, recommendationsContainer);
-        } else {
-            // No data available
-            chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
-            recommendationsContainer.innerHTML = '<p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>';
-        }
     } catch (error) {
-        console.error('Error loading forecast:', error);
-        chartContainer.innerHTML = '<p class="text-muted text-center">Failed to load forecast. Please try again.</p>';
-        recommendationsContainer.innerHTML = '<p class="text-muted text-center">Failed to load recommendations. Please try again.</p>';
+        console.error('❌ Error loading forecast:', error);
+        const errorMsg = error.message || 'Unknown error';
+        console.error('❌ Full error details:', {
+            error: error,
+            deployment: deployment,
+            namespace: namespace,
+            url: `/api/autoscaling/recommendations/${serverId}?deployment=${encodeURIComponent(deployment)}&namespace=${encodeURIComponent(namespace)}`
+        });
+        chartContainer.innerHTML = `<p class="text-muted text-center">Failed to load forecast: ${errorMsg}. <button onclick="manualRefresh()" class="btn btn-sm btn-primary mt-2">Retry</button></p>`;
+        recommendationsContainer.innerHTML = `<p class="text-muted text-center">Failed to load recommendations: ${errorMsg}. <button onclick="manualRefresh()" class="btn btn-sm btn-primary mt-2">Retry</button></p>`;
+    } finally {
+        // Always clear loading flag
+        isLoadingRecommendations = false;
     }
 }
 
@@ -836,24 +1280,163 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
             alertClass = 'alert-success'; // GREEN
         }
         
-        let targetReplicasText = '';
-        if (rec.target_replicas) {
-            if (rec.calculated_replicas && rec.calculated_replicas > rec.target_replicas) {
-                targetReplicasText = `<br><strong>Current Replicas:</strong> ${rec.target_replicas} (Max)<br><strong>Recommended:</strong> ${rec.calculated_replicas} (increase max_replicas)`;
-            } else {
-                targetReplicasText = `<br><strong>Target Replicas:</strong> ${rec.target_replicas}`;
+        // Get scaling type (HPA, VPA, both, or maintain)
+        const scalingType = rec.scaling_type || 'hpa';  // Default to HPA for backward compatibility
+        
+        // Get current resource stats from recommendation data
+        // The data structure is: data.recommendations.predictive contains current_resources, current_replicas, etc.
+        const currentResources = pred.current_resources || {};
+        const currentReplicas = pred.current_replicas || 0;
+        const readyReplicas = pred.ready_replicas || 0;
+        const availableReplicas = pred.available_replicas || 0;
+        const currentMetrics = pred.current_metrics || {};
+        
+        // Build target information text with current stats
+        let targetInfoText = '';
+        
+        // Show current pod/replica stats
+        if (currentReplicas > 0) {
+            targetInfoText += `<br><div style="margin-top: 0.5rem; padding: 0.75rem; background: #f8f9fa; border-radius: 0.25rem;"><strong>📊 Current Status:</strong>`;
+            targetInfoText += `<br>&nbsp;&nbsp;• Pods: ${currentReplicas} total, ${readyReplicas} ready, ${availableReplicas} available`;
+            if (currentMetrics.cpu_usage !== undefined) {
+                targetInfoText += `<br>&nbsp;&nbsp;• CPU Usage: ${currentMetrics.cpu_usage.toFixed(1)}%`;
+            }
+            if (currentMetrics.memory_usage !== undefined) {
+                targetInfoText += `<br>&nbsp;&nbsp;• Memory Usage: ${currentMetrics.memory_usage.toFixed(1)}%`;
+            }
+            targetInfoText += `</div>`;
+        }
+        
+        // Show HPA target
+        if (scalingType === 'hpa' || scalingType === 'both') {
+            if (rec.target_replicas !== undefined && rec.target_replicas !== null) {
+                targetInfoText += `<br><div style="margin-top: 0.5rem;"><strong>↔️ Horizontal Scaling (HPA):</strong>`;
+                if (rec.calculated_replicas && rec.calculated_replicas > rec.target_replicas) {
+                    targetInfoText += `<br>&nbsp;&nbsp;• Current: ${currentReplicas} replicas`;
+                    targetInfoText += `<br>&nbsp;&nbsp;• Target: ${rec.target_replicas} replicas (Max reached)`;
+                    targetInfoText += `<br>&nbsp;&nbsp;• Recommended: ${rec.calculated_replicas} replicas (increase max_replicas)`;
+                } else {
+                    targetInfoText += `<br>&nbsp;&nbsp;• Current: ${currentReplicas} replicas`;
+                    targetInfoText += `<br>&nbsp;&nbsp;• Target: ${rec.target_replicas} replicas`;
+                }
+                targetInfoText += `</div>`;
+            }
+        }
+        
+        // Show VPA target with current resources
+        if (scalingType === 'vpa' || scalingType === 'both') {
+            if (rec.target_cpu || rec.target_memory) {
+                targetInfoText += `<br><div style="margin-top: 0.5rem;"><strong>📊 Vertical Scaling (VPA):</strong>`;
+                
+                // Show current resources if available
+                if (currentResources.cpu_request || currentResources.memory_request) {
+                    targetInfoText += `<br><strong>Current Resources:</strong>`;
+                    targetInfoText += `<br>&nbsp;&nbsp;• CPU Request: ${currentResources.cpu_request || 'N/A'}`;
+                    targetInfoText += ` | Limit: ${currentResources.cpu_limit || 'N/A'}`;
+                    targetInfoText += `<br>&nbsp;&nbsp;• Memory Request: ${currentResources.memory_request || 'N/A'}`;
+                    targetInfoText += ` | Limit: ${currentResources.memory_limit || 'N/A'}`;
+                }
+                
+                // Show target resources
+                targetInfoText += `<br><strong>Target Resources:</strong>`;
+                if (rec.target_cpu) {
+                    targetInfoText += `<br>&nbsp;&nbsp;• CPU: ${rec.target_cpu}`;
+                    if (currentResources.cpu_request && currentResources.cpu_request !== 'N/A') {
+                        const currentCpu = parseFloat(currentResources.cpu_request.replace('m', '')) || 0;
+                        const targetCpu = parseFloat(rec.target_cpu.replace('m', '')) || 0;
+                        if (targetCpu > currentCpu) {
+                            targetInfoText += ` <span style="color: #10b981;">↑ +${((targetCpu - currentCpu) / currentCpu * 100).toFixed(0)}%</span>`;
+                        } else if (targetCpu < currentCpu) {
+                            targetInfoText += ` <span style="color: #ef4444;">↓ ${((targetCpu - currentCpu) / currentCpu * 100).toFixed(0)}%</span>`;
+                        }
+                    }
+                }
+                if (rec.target_memory) {
+                    targetInfoText += `<br>&nbsp;&nbsp;• Memory: ${rec.target_memory}`;
+                    if (currentResources.memory_request && currentResources.memory_request !== 'N/A') {
+                        // Simple comparison (could be improved with proper unit conversion)
+                        const currentMem = currentResources.memory_request;
+                        const targetMem = rec.target_memory;
+                        if (targetMem !== currentMem) {
+                            targetInfoText += ` <span style="color: #10b981;">(from ${currentMem})</span>`;
+                        }
+                    }
+                }
+                targetInfoText += `</div>`;
+            }
+        }
+        
+        // Get deployment info - try multiple sources
+        let deploymentName = '';
+        let namespace = 'default';
+        
+        // Try to get from recommendation data
+        if (data.deployment) {
+            deploymentName = data.deployment;
+            namespace = data.namespace || 'default';
+        }
+        // Try to get from current recommendation cache
+        else if (recommendationCache.deployment) {
+            deploymentName = recommendationCache.deployment;
+            namespace = recommendationCache.namespace || 'default';
+        }
+        // Fallback: get from first enabled deployment
+        else {
+            // This will be set when loadPredictiveForecast is called with deployment/namespace
+            // For now, we'll get it from the global scope if available
+            const firstDeployment = window.currentPredictiveDeployment;
+            if (firstDeployment) {
+                deploymentName = firstDeployment.deployment_name;
+                namespace = firstDeployment.namespace || 'default';
             }
         }
         
         // Build recommendation HTML
         let recommendationHTML = '';
         
+        // Initialize targetReplicasText early to avoid undefined errors
+        let targetReplicasText = '';
+        
+        // Add "Apply Recommendation" button if we have valid targets
+        let applyButtonHTML = '';
+        const hasHpaTarget = (scalingType === 'hpa' || scalingType === 'both') && 
+                            rec.target_replicas !== undefined && rec.target_replicas !== null;
+        const hasVpaTarget = (scalingType === 'vpa' || scalingType === 'both') && 
+                            (rec.target_cpu || rec.target_memory);
+        
+        if (rec.action &&
+            rec.action !== 'none' &&
+            deploymentName &&
+            (hasHpaTarget || hasVpaTarget)) {
+
+            // Build button text based on scaling type
+            let buttonText = 'Apply Recommendation';
+            if (scalingType === 'hpa') {
+                buttonText = `Apply HPA (${rec.target_replicas} replicas)`;
+            } else if (scalingType === 'vpa') {
+                buttonText = `Apply VPA (CPU: ${rec.target_cpu || 'N/A'}, Memory: ${rec.target_memory || 'N/A'})`;
+            } else if (scalingType === 'both') {
+                buttonText = `Apply HPA + VPA`;
+            }
+
+            applyButtonHTML = `
+                <div style="margin-top: 1rem; text-align: right;">
+                    <button class="btn btn-primary"
+                        onclick="applyPredictiveRecommendation('${deploymentName}', '${namespace}', ${rec.target_replicas || 'null'}, '${rec.target_cpu || ''}', '${rec.target_memory || ''}', '${scalingType}')"
+                        style="min-width: 150px;">
+                        <i class="fas fa-check-circle"></i> ${buttonText}
+                    </button>
+                </div>
+            `;
+        }
+        
         if (isLLMRecommendation) {
             const confidence = (rec.confidence || 0) * 100;
+            const scalingTypeBadge = scalingType === 'vpa' ? '📊 VPA' : scalingType === 'both' ? '🔄 HPA+VPA' : '↔️ HPA';
             recommendationHTML += `
                 <div class="alert ${alertClass}" style="border-left: 4px solid #8b5cf6;">
                     <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
-                        <strong style="flex: 1;">🤖 LLM-Powered Recommendation: ${actionText}</strong>
+                        <strong style="flex: 1;">🤖 LLM-Powered Recommendation: ${actionText} ${scalingTypeBadge}</strong>
                         <span class="badge" style="background: ${confidence > 70 ? '#10b981' : confidence > 40 ? '#f59e0b' : '#ef4444'}; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
                             ${confidence.toFixed(0)}% Confidence
                         </span>
@@ -862,15 +1445,22 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
                         <strong>Reasoning:</strong>
                         <p style="margin: 0.5rem 0; white-space: pre-wrap;">${rec.reasoning || rec.reason || 'No reasoning provided'}</p>
                     </div>
-                    ${targetReplicasText}
+                    ${targetInfoText}
+                    ${applyButtonHTML}
                 </div>
             `;
         } else {
+            // Build target info for non-LLM recommendations
+            if (rec.target_replicas !== undefined && rec.target_replicas !== null) {
+                targetReplicasText = `<br><strong>Target Replicas:</strong> ${rec.target_replicas}`;
+            }
+            
             recommendationHTML = `
                 <div class="alert ${alertClass}">
                     <strong>Recommendation:</strong> ${actionText}
                     <br><small>${rec.reason || 'No specific recommendation'}</small>
                     ${targetReplicasText}
+                    ${applyButtonHTML}
                 </div>
             `;
         }
@@ -982,6 +1572,183 @@ async function analyzePatterns() {
     }
 }
 
+// Delete HPA
+async function deleteHPA(hpaName, namespace) {
+    if (!confirm(`Are you sure you want to delete HPA "${hpaName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/autoscaling/hpa/delete/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                hpa_name: hpaName,
+                namespace: namespace
+            })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('HPA deleted successfully!');
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to delete HPA'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Disable Predictive Autoscaling
+async function disablePredictiveAutoscaling(deploymentName, namespace) {
+    if (!confirm(`Are you sure you want to disable predictive autoscaling for "${deploymentName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/autoscaling/predictive/disable/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                deployment_name: deploymentName,
+                namespace: namespace
+            })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Predictive autoscaling disabled successfully!');
+            refreshAutoscaling();
+            // Clear recommendations cache
+            recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null, lastMetrics: null };
+            lastRecommendationFetchTime = 0;
+            // Clear displayed recommendations
+            const recommendationsContainer = document.getElementById('predictive-recommendations');
+            if (recommendationsContainer) {
+                recommendationsContainer.innerHTML = '<p class="text-muted text-center">No recommendations available. Enable predictive autoscaling to get recommendations.</p>';
+            }
+            const chartContainer = document.getElementById('predictive-forecast-chart');
+            if (chartContainer) {
+                chartContainer.innerHTML = '<p class="text-muted text-center">No forecast data available. Enable predictive autoscaling for a deployment to see forecasts.</p>';
+            }
+        } else {
+            alert('Error: ' + (result.error || 'Failed to disable predictive autoscaling'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Delete Schedule
+async function deleteSchedule(deploymentName, namespace) {
+    if (!confirm(`Are you sure you want to delete the schedule for "${deploymentName}"?`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/autoscaling/schedule/delete/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                deployment_name: deploymentName,
+                namespace: namespace
+            })
+        });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Schedule deleted successfully!');
+            refreshAutoscaling();
+        } else {
+            alert('Error: ' + (result.error || 'Failed to delete schedule'));
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+// Apply Predictive Recommendation (force apply target replicas)
+async function applyPredictiveRecommendation(deploymentName, namespace, targetReplicas, targetCpu, targetMemory, scalingType) {
+    // Build confirmation message based on scaling type
+    let confirmMsg = '';
+    if (scalingType === 'hpa' || scalingType === 'both') {
+        confirmMsg += `Scale "${deploymentName}" to ${targetReplicas} replicas (HPA)`;
+    }
+    if (scalingType === 'vpa' || scalingType === 'both') {
+        if (confirmMsg) confirmMsg += ' and ';
+        confirmMsg += `set resources to CPU: ${targetCpu}, Memory: ${targetMemory} (VPA)`;
+    }
+    
+    if (!confirm(`Apply recommendation: ${confirmMsg}?`)) {
+        return;
+    }
+    
+    try {
+        // Trim deployment name to remove any whitespace
+        const trimmedDeploymentName = deploymentName.trim();
+        console.log(`🔄 Applying recommendation: ${trimmedDeploymentName} -> Scaling Type: ${scalingType}`);
+        if (scalingType === 'hpa' || scalingType === 'both') {
+            console.log(`  HPA: ${targetReplicas} replicas`);
+        }
+        if (scalingType === 'vpa' || scalingType === 'both') {
+            console.log(`  VPA: CPU=${targetCpu}, Memory=${targetMemory}`);
+        }
+        
+        const response = await fetch(`/api/autoscaling/predictive/apply/${serverId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                deployment_name: trimmedDeploymentName,
+                namespace: namespace || 'default',
+                target_replicas: targetReplicas !== null && targetReplicas !== undefined ? parseInt(targetReplicas) : null,
+                target_cpu: targetCpu || null,
+                target_memory: targetMemory || null,
+                scaling_type: scalingType || 'hpa'
+            })
+        });
+        const result = await response.json();
+        
+        console.log('📊 Apply recommendation response:', result);
+        
+        if (result.success) {
+            // Use backend message if available, otherwise build one
+            let successMsg = result.message || '';
+            if (!successMsg) {
+                if (scalingType === 'hpa' || scalingType === 'both') {
+                    successMsg += `Scaled to ${targetReplicas} replicas. `;
+                }
+                if (scalingType === 'vpa' || scalingType === 'both') {
+                    successMsg += `Set resources to CPU: ${targetCpu}, Memory: ${targetMemory}. `;
+                }
+            }
+            // Note: We no longer patch HPAs - Predictive Autoscaling scales independently
+            if (result.hpa_exists && !result.hpa_modified) {
+                successMsg += ' (HPA exists but was not modified - consider deleting HPA to avoid conflicts)';
+            }
+            alert(successMsg.trim());
+            
+            // Wait 2 seconds for Kubernetes to apply the changes before refreshing
+            console.log('⏳ Waiting 2 seconds for Kubernetes to apply changes...');
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Refresh to show updated replica count
+            await refreshAutoscaling(false);
+        } else {
+            let errorMsg = result.error || 'Failed to apply recommendation';
+            // Check if VPA is not installed
+            if (result.vpa_not_installed) {
+                errorMsg += '\n\nVPA (Vertical Pod Autoscaler) is not installed in your cluster. To use VPA recommendations, you need to install the VPA controller first.\n\nInstallation guide: https://github.com/kubernetes/autoscaler/tree/master/vertical-pod-autoscaler';
+            }
+            alert('Error: ' + errorMsg);
+            console.error('❌ Apply recommendation failed:', result);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+        console.error('❌ Exception in applyPredictiveRecommendation:', error);
+    }
+}
+
 // Track if initial load has happened
 let initialLoadComplete = false;
 
@@ -1034,10 +1801,20 @@ refreshIntervalId = setInterval(() => {
                     document.getElementById('hpa-count').textContent = data.hpa_count || 0;
                     document.getElementById('predictive-enabled').textContent = data.predictive_count || 0;
                     document.getElementById('scheduled-count').textContent = data.schedule_count || 0;
-                    const totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
+                    document.getElementById('vpa-count').textContent = data.vpa_count || 0;
+                    // Use backend-calculated total_replicas if available, otherwise sum HPAs
+                    let totalReplicas = 0;
+                    if (data.total_replicas !== undefined) {
+                        totalReplicas = data.total_replicas;
+                    } else {
+                        totalReplicas = (data.hpas || []).reduce((sum, hpa) => sum + (hpa.current_replicas || 0), 0);
+                    }
                     document.getElementById('total-replicas').textContent = totalReplicas;
+                    // Update lists for consistency, but DO NOT touch recommendations
                     updateHPAList(data.hpas || []);
                     updateScheduleList(data.schedules || []);
+                    updatePredictiveDeploymentsList(data.predictive_deployments || []);
+                    updateVPAList(data.vpas || []);
                     // DO NOT call loadPredictiveForecast - recommendations stay as-is
                 }
             })

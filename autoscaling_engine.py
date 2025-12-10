@@ -78,6 +78,10 @@ class HorizontalPodAutoscaler:
                    cpu_target: int = 70, memory_target: int = 80,
                    custom_metrics: Optional[List[Dict]] = None) -> Dict[str, Any]:
         """Create HPA resource"""
+        # Trim deployment name and namespace to remove any whitespace
+        deployment_name = deployment_name.strip()
+        namespace = namespace.strip()
+        
         hpa_name = f"{deployment_name}-hpa"
         
         # Build HPA YAML
@@ -201,6 +205,10 @@ class HorizontalPodAutoscaler:
     
     def get_hpa(self, hpa_name: str, namespace: str = "default") -> Dict[str, Any]:
         """Get HPA resource"""
+        # Trim names to remove any whitespace
+        hpa_name = hpa_name.strip()
+        namespace = namespace.strip()
+        
         result = self._execute_kubectl(
             f"get hpa {hpa_name} -n {namespace} -o json"
         )
@@ -309,6 +317,51 @@ class HorizontalPodAutoscaler:
             return {
                 'success': False,
                 'error': f'Failed to update HPA: {str(e)}'
+            }
+    
+    def patch_hpa_replicas(self, hpa_name: str, namespace: str, min_replicas: int, max_replicas: int) -> Dict[str, Any]:
+        """Patch HPA min/max replicas to allow predictive scaling"""
+        try:
+            # Use kubectl patch to update min/max replicas
+            env = os.environ.copy()
+            if self.kubeconfig_path:
+                env['KUBECONFIG'] = self.kubeconfig_path
+            
+            # Patch minReplicas
+            result_min = subprocess.run(
+                ['kubectl', 'patch', 'hpa', hpa_name, '-n', namespace,
+                 '--type=json', '-p', f'[{{"op": "replace", "path": "/spec/minReplicas", "value": {min_replicas}}}]'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env
+            )
+            
+            # Patch maxReplicas
+            result_max = subprocess.run(
+                ['kubectl', 'patch', 'hpa', hpa_name, '-n', namespace,
+                 '--type=json', '-p', f'[{{"op": "replace", "path": "/spec/maxReplicas", "value": {max_replicas}}}]'],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env
+            )
+            
+            if result_min.returncode == 0 and result_max.returncode == 0:
+                return {
+                    'success': True,
+                    'message': f'HPA {hpa_name} updated: min={min_replicas}, max={max_replicas}'
+                }
+            else:
+                error_msg = result_min.stderr if result_min.returncode != 0 else result_max.stderr
+                return {
+                    'success': False,
+                    'error': f'Failed to patch HPA: {error_msg}'
+                }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f'Failed to patch HPA: {str(e)}'
             }
     
     def delete_hpa(self, hpa_name: str, namespace: str = "default") -> Dict[str, Any]:
@@ -445,9 +498,13 @@ class HorizontalPodAutoscaler:
         
         result = self._execute_kubectl(cmd)
         
-        if result['success']:
-            deployments = result['result']
-            items = deployments.get('items', [])
+        if result.get('success'):
+            deployments = result.get('result')
+            if deployments is None:
+                deployments = {}
+            items = deployments.get('items')
+            if items is None:
+                items = []
             return {
                 'success': True,
                 'deployments': items,

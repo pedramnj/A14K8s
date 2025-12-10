@@ -2117,9 +2117,14 @@ if True:
             if not autoscaling:
                 return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
             
+            # Trim deployment name to remove any leading/trailing whitespace
+            deployment_name = data.get('deployment_name', '').strip()
+            if not deployment_name:
+                return jsonify({'error': 'deployment_name is required'}), 400
+            
             result = autoscaling.enable_predictive_autoscaling(
-                deployment_name=data.get('deployment_name'),
-                namespace=data.get('namespace', 'default'),
+                deployment_name=deployment_name,
+                namespace=data.get('namespace', 'default').strip(),
                 min_replicas=data.get('min_replicas', 2),
                 max_replicas=data.get('max_replicas', 10)
             )
@@ -2127,6 +2132,92 @@ if True:
         except Exception as e:
             import traceback
             print(f"❌ Error in enable_predictive_autoscaling: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/autoscaling/predictive/apply/<int:server_id>', methods=['POST'])
+    def apply_predictive_target(server_id):
+        """Force-apply a specific predictive target (HPA or VPA)."""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+
+            scaling_type = data.get('scaling_type', 'hpa')  # Default to HPA for backward compatibility
+            
+            result = autoscaling.apply_predictive_target(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                target_replicas=int(data.get('target_replicas', 0)) if scaling_type in ['hpa', 'both'] else None,
+                target_cpu=data.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
+                target_memory=data.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
+                scaling_type=scaling_type
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in apply_predictive_target: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/vpa/create/<int:server_id>', methods=['POST'])
+    def create_vpa(server_id):
+        """Create VPA for deployment"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+
+            result = autoscaling.create_vpa(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default'),
+                min_cpu=data.get('min_cpu', '100m'),
+                max_cpu=data.get('max_cpu', '1000m'),
+                min_memory=data.get('min_memory', '128Mi'),
+                max_memory=data.get('max_memory', '512Mi'),
+                update_mode=data.get('update_mode', 'Auto')
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in create_vpa: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/vpa/delete/<int:server_id>', methods=['POST'])
+    def delete_vpa(server_id):
+        """Delete VPA"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+
+            result = autoscaling.delete_vpa(
+                vpa_name=data.get('vpa_name'),
+                namespace=data.get('namespace', 'default')
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in delete_vpa: {e}")
             print(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
     
@@ -2137,8 +2228,8 @@ if True:
             return jsonify({'error': 'Unauthorized'}), 401
         
         server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
-        deployment_name = request.args.get('deployment')
-        namespace = request.args.get('namespace', 'default')
+        deployment_name = request.args.get('deployment', '').strip()
+        namespace = request.args.get('namespace', 'default').strip()
         
         if not deployment_name:
             return jsonify({'error': 'deployment parameter required'}), 400
@@ -2179,6 +2270,81 @@ if True:
         except Exception as e:
             import traceback
             print(f"❌ Error in create_schedule: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/hpa/delete/<int:server_id>', methods=['POST'])
+    def delete_hpa(server_id):
+        """Delete HPA"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.delete_hpa(
+                hpa_name=data.get('hpa_name'),
+                namespace=data.get('namespace', 'default')
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in delete_hpa: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/predictive/disable/<int:server_id>', methods=['POST'])
+    def disable_predictive_autoscaling(server_id):
+        """Disable predictive autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.disable_predictive_autoscaling(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default')
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in disable_predictive_autoscaling: {e}")
+            print(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/autoscaling/schedule/delete/<int:server_id>', methods=['POST'])
+    def delete_schedule(server_id):
+        """Delete scheduled autoscaling"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        data = request.get_json()
+        
+        try:
+            autoscaling = get_autoscaling_instance(server_id)
+            if not autoscaling:
+                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            
+            result = autoscaling.delete_schedule(
+                deployment_name=data.get('deployment_name'),
+                namespace=data.get('namespace', 'default')
+            )
+            return jsonify(result)
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in delete_schedule: {e}")
             print(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
     

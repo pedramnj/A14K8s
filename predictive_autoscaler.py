@@ -31,10 +31,12 @@ class PredictiveAutoscaler:
     
     def __init__(self, monitoring_system: PredictiveMonitoringSystem,
                  hpa_manager: HorizontalPodAutoscaler,
+                 vpa_manager=None,  # Optional VPA manager
                  prediction_horizon: int = 6,
                  use_llm: bool = True):
         self.monitoring_system = monitoring_system
         self.hpa_manager = hpa_manager
+        self.vpa_manager = vpa_manager  # VPA manager for vertical scaling
         self.prediction_horizon = prediction_horizon  # hours ahead
         self.scaling_history = []
         self.enabled_deployments = {}  # Track enabled deployments: {f"{namespace}/{deployment_name}": {...}}
@@ -63,6 +65,10 @@ class PredictiveAutoscaler:
                          min_replicas: int = 2, max_replicas: int = 10) -> Dict[str, Any]:
         """Predict future load and scale proactively"""
         try:
+            # Trim deployment name and namespace to remove any whitespace
+            deployment_name = deployment_name.strip()
+            namespace = namespace.strip()
+            
             # Mark deployment as enabled in Kubernetes annotations
             enabled_at = datetime.now().isoformat()
             config_json = json.dumps({
@@ -139,57 +145,274 @@ class PredictiveAutoscaler:
             
             # Find peak predicted usage
             # Use current_value if predicted_values is empty or all zeros
-            if cpu_forecast.predicted_values and any(v > 0 for v in cpu_forecast.predicted_values):
-                max_predicted_cpu = max(cpu_forecast.predicted_values)
+            # Safely handle None predicted_values
+            cpu_predicted = cpu_forecast.predicted_values if cpu_forecast.predicted_values is not None else []
+            memory_predicted = memory_forecast.predicted_values if memory_forecast.predicted_values is not None else []
+            
+            if cpu_predicted and any(v > 0 for v in cpu_predicted):
+                max_predicted_cpu = max(cpu_predicted)
             else:
-                max_predicted_cpu = cpu_forecast.current_value
+                max_predicted_cpu = cpu_forecast.current_value if cpu_forecast.current_value is not None else 0
             
-            if memory_forecast.predicted_values and any(v > 0 for v in memory_forecast.predicted_values):
-                max_predicted_memory = max(memory_forecast.predicted_values)
+            if memory_predicted and any(v > 0 for v in memory_predicted):
+                max_predicted_memory = max(memory_predicted)
             else:
-                max_predicted_memory = memory_forecast.current_value
+                max_predicted_memory = memory_forecast.current_value if memory_forecast.current_value is not None else 0
             
-            logger.info(f"Forecast values - CPU: current={cpu_forecast.current_value}, predicted={cpu_forecast.predicted_values}, max={max_predicted_cpu}")
-            logger.info(f"Forecast values - Memory: current={memory_forecast.current_value}, predicted={memory_forecast.predicted_values}, max={max_predicted_memory}")
+            logger.info(f"Forecast values - CPU: current={cpu_forecast.current_value}, predicted={cpu_predicted}, max={max_predicted_cpu}")
+            logger.info(f"Forecast values - Memory: current={memory_forecast.current_value}, predicted={memory_predicted}, max={max_predicted_memory}")
             
-            # Determine scaling action
-            action = self._determine_scaling_action(
-                max_predicted_cpu,
-                max_predicted_memory,
-                current_replicas,
-                min_replicas,
-                max_replicas
-            )
-            
-            if action['action'] == 'scale_up' or action['action'] == 'at_max':
-                # Calculate required replicas
-                required_replicas = action['target_replicas']
-                
-                # Check if HPA exists
-                hpa_name = f"{deployment_name}-hpa"
-                hpa_exists = self.hpa_manager.get_hpa(hpa_name, namespace)['success']
-                
-                if not hpa_exists:
-                    # Create HPA with predictive settings
-                    hpa_result = self.hpa_manager.create_hpa(
+            # Try LLM-based recommendation first (if enabled)
+            llm_recommendation = None
+            if self.use_llm and self.llm_advisor:
+                try:
+                    # Get HPA status if exists
+                    hpa_name = f"{deployment_name}-hpa"
+                    hpa_status = None
+                    hpa_result = self.hpa_manager.get_hpa(hpa_name, namespace)
+                    if hpa_result.get('success'):
+                        hpa_status = hpa_result.get('status', {})
+                    
+                    # Get VPA status if exists
+                    vpa_status = None
+                    current_resources = None
+                    if self.vpa_manager:
+                        vpa_name = f"{deployment_name}-vpa"
+                        vpa_result = self.vpa_manager.get_vpa(vpa_name, namespace)
+                        if vpa_result.get('success'):
+                            vpa_status = vpa_result.get('status', {})
+                        
+                        # Get current resource requests/limits
+                        try:
+                            resources_result = self.vpa_manager.get_deployment_resources(deployment_name, namespace)
+                            if resources_result.get('success') and resources_result.get('resources'):
+                                resources_list = resources_result.get('resources', [])
+                                if resources_list and len(resources_list) > 0:
+                                    # Use first container's resources
+                                    first_container = resources_list[0]
+                                    current_resources = {
+                                        'cpu_request': first_container.get('cpu_request', 'N/A'),
+                                        'memory_request': first_container.get('memory_request', 'N/A'),
+                                        'cpu_limit': first_container.get('cpu_limit', 'N/A'),
+                                        'memory_limit': first_container.get('memory_limit', 'N/A')
+                                    }
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to get deployment resources: {e}")
+                            current_resources = None
+                    
+                    # Prepare metrics
+                    current_metrics = {
+                        'cpu_usage': cpu_current,
+                        'memory_usage': memory_current,
+                        'pod_count': current_replicas,
+                        'running_pod_count': current_replicas
+                    }
+                    
+                    # Prepare forecast (safely handle None values)
+                    forecast_data = {
+                        'cpu': {
+                            'current': cpu_forecast.current_value if cpu_forecast.current_value is not None else 0,
+                            'peak': max_predicted_cpu,
+                            'trend': cpu_forecast.trend if cpu_forecast.trend else 'stable',
+                            'predictions': cpu_predicted  # Use the safe variable we created above
+                        },
+                        'memory': {
+                            'current': memory_forecast.current_value if memory_forecast.current_value is not None else 0,
+                            'peak': max_predicted_memory,
+                            'trend': memory_forecast.trend if memory_forecast.trend else 'stable',
+                            'predictions': memory_predicted  # Use the safe variable we created above
+                        }
+                    }
+                    
+                    # Get LLM recommendation (now includes VPA support)
+                    llm_result = self.llm_advisor.get_intelligent_recommendation(
                         deployment_name=deployment_name,
                         namespace=namespace,
+                        current_metrics=current_metrics,
+                        forecast=forecast_data,
+                        hpa_status=hpa_status,
+                        vpa_status=vpa_status,
+                        current_resources=current_resources,
+                        current_replicas=current_replicas,
                         min_replicas=min_replicas,
-                        max_replicas=max_replicas,
-                        cpu_target=70,
-                        memory_target=80
+                        max_replicas=max_replicas
                     )
                     
-                    if hpa_result['success']:
-                        # Update HPA to desired replicas immediately (proactive scaling)
-                        update_result = self.hpa_manager.update_hpa(
-                            hpa_name=hpa_name,
+                    # Additional validation: Ensure LLM recommendation respects min/max replicas
+                    if llm_result.get('success') and llm_result.get('recommendation'):
+                        llm_rec = llm_result['recommendation']
+                        if llm_rec.get('target_replicas') is not None:
+                            target = llm_rec['target_replicas']
+                            if target > max_replicas:
+                                logger.warning(f"⚠️ LLM recommended {target} replicas, capping to max_replicas={max_replicas}")
+                                llm_rec['target_replicas'] = max_replicas
+                                llm_rec['action'] = 'at_max'
+                            elif target < min_replicas:
+                                logger.warning(f"⚠️ LLM recommended {target} replicas, setting to min_replicas={min_replicas}")
+                                llm_rec['target_replicas'] = min_replicas
+                                llm_rec['action'] = 'maintain'
+                    
+                    if llm_result.get('success'):
+                        llm_recommendation = llm_result.get('recommendation', {})
+                        scaling_type = llm_recommendation.get('scaling_type', 'hpa')
+                        if scaling_type == 'vpa':
+                            logger.info(f"✅ Using LLM recommendation for VPA scaling: {llm_recommendation.get('action')} -> CPU: {llm_recommendation.get('target_cpu')}, Memory: {llm_recommendation.get('target_memory')}")
+                        else:
+                            logger.info(f"✅ Using LLM recommendation for HPA scaling: {llm_recommendation.get('action')} -> {llm_recommendation.get('target_replicas')} replicas")
+                    elif llm_result.get('rate_limited'):
+                        logger.info(f"⏸️  LLM rate-limited, using rule-based scaling")
+                        llm_recommendation = None
+                    else:
+                        logger.warning(f"⚠️  LLM recommendation failed: {llm_result.get('error')}, using rule-based scaling")
+                except Exception as e:
+                    logger.warning(f"⚠️  Error getting LLM recommendation: {e}, using rule-based scaling")
+            
+            # Use LLM recommendation if available, otherwise fallback to rule-based
+            if llm_recommendation:
+                scaling_type = llm_recommendation.get('scaling_type', 'hpa')  # Default to HPA for backward compatibility
+                action = {
+                    'action': llm_recommendation.get('action', 'none'),
+                    'scaling_type': scaling_type,  # 'hpa', 'vpa', 'both', or 'maintain'
+                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas) if scaling_type in ['hpa', 'both'] else None,
+                    'target_cpu': llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
+                    'target_memory': llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
+                    'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
+                    'confidence': llm_recommendation.get('confidence', 0.5),
+                    'llm_recommendation': llm_recommendation
+                }
+                if scaling_type == 'vpa':
+                    logger.info(f"🤖 Using LLM recommendation: {action['action']} (VPA) - CPU: {action.get('target_cpu')}, Memory: {action.get('target_memory')}")
+                elif scaling_type == 'both':
+                    logger.info(f"🤖 Using LLM recommendation: {action['action']} (HPA+VPA) - Replicas: {action.get('target_replicas')}, CPU: {action.get('target_cpu')}, Memory: {action.get('target_memory')}")
+                else:
+                    logger.info(f"🤖 Using LLM recommendation: {action['action']} (HPA) to {action['target_replicas']} replicas")
+            else:
+                # Fallback to rule-based recommendation (HPA only)
+                action = self._determine_scaling_action(
+                    max_predicted_cpu,
+                    max_predicted_memory,
+                    current_replicas,
+                    min_replicas,
+                    max_replicas
+                )
+                action['scaling_type'] = 'hpa'  # Rule-based defaults to HPA
+                logger.info(f"📊 Using rule-based recommendation: {action['action']} to {action['target_replicas']} replicas")
+            
+            # Handle VPA scaling (vertical - resources per pod)
+            # Predictive Autoscaling should patch deployment resources directly (like HPA)
+            # We do NOT create VPA resources - Predictive Autoscaling controls scaling independently
+            scaling_type = action.get('scaling_type', 'hpa')
+            if scaling_type in ['vpa', 'both'] and action.get('target_cpu') and action.get('target_memory'):
+                if self.vpa_manager and (action['action'] == 'scale_up' or action['action'] == 'scale_down'):
+                    # Check if VPA exists - warn but don't modify it
+                    vpa_name = f"{deployment_name}-vpa"
+                    vpa_result = self.vpa_manager.get_vpa(vpa_name, namespace)
+                    vpa_exists = vpa_result.get('success')
+                    
+                    if vpa_exists:
+                        logger.warning(f"⚠️ VPA {vpa_name} exists for {deployment_name}. "
+                                     f"Predictive Autoscaling will patch deployment resources directly, "
+                                     f"but VPA may override this.")
+                    
+                    # Patch deployment resources directly (Predictive Autoscaling, not VPA controller)
+                    # Calculate limits (2x CPU, 1.5x Memory for headroom)
+                    try:
+                        cpu_request_m = int(action['target_cpu'][:-1]) if action['target_cpu'].endswith('m') else int(float(action['target_cpu']) * 1000)
+                        cpu_limit_m = min(cpu_request_m * 2, 4000)
+                        cpu_limit = f"{cpu_limit_m}m"
+                        
+                        if action['target_memory'].endswith('Mi'):
+                            memory_request_mi = int(action['target_memory'][:-2])
+                            memory_limit_mi = min(int(memory_request_mi * 1.5), 4096)
+                            memory_limit = f"{memory_limit_mi}Mi"
+                        elif action['target_memory'].endswith('Gi'):
+                            memory_request_gi = int(action['target_memory'][:-2])
+                            memory_limit_gi = min(int(memory_request_gi * 1.5), 4)
+                            memory_limit = f"{memory_limit_gi}Gi"
+                        else:
+                            memory_limit = action['target_memory']
+                    except:
+                        cpu_limit = action['target_cpu']
+                        memory_limit = action['target_memory']
+                    
+                    patch_result = self.vpa_manager.patch_deployment_resources(
+                        deployment_name, namespace,
+                        cpu_request=action['target_cpu'],
+                        memory_request=action['target_memory'],
+                        cpu_limit=cpu_limit,
+                        memory_limit=memory_limit
+                    )
+                    
+                    if patch_result.get('success'):
+                        logger.info(f"✅ Predictive Autoscaling patched deployment {deployment_name} resources: CPU={action['target_cpu']}, Memory={action['target_memory']} (direct)")
+                    else:
+                        logger.warning(f"⚠️ Failed to patch deployment resources: {patch_result.get('error')}")
+            
+            # Handle HPA scaling (horizontal - replica count)
+            # Only process HPA scaling if scaling_type is 'hpa' or 'both', and we have target_replicas
+            if (scaling_type == 'hpa' or scaling_type == 'both') and (action['action'] == 'scale_up' or action['action'] == 'at_max'):
+                # Calculate required replicas
+                required_replicas = action.get('target_replicas')
+                
+                # Skip if target_replicas is None (shouldn't happen for HPA, but safety check)
+                if required_replicas is None:
+                    logger.warning(f"⚠️ Skipping HPA scaling - target_replicas is None for scaling_type={scaling_type}")
+                else:
+                    # Check if HPA exists
+                    hpa_name = f"{deployment_name}-hpa"
+                    hpa_exists = self.hpa_manager.get_hpa(hpa_name, namespace)['success']
+                    
+                    if not hpa_exists:
+                        # Create HPA with predictive settings
+                        hpa_result = self.hpa_manager.create_hpa(
+                            deployment_name=deployment_name,
                             namespace=namespace,
                             min_replicas=min_replicas,
-                            max_replicas=max(required_replicas, max_replicas)
+                            max_replicas=max_replicas,
+                            cpu_target=70,
+                            memory_target=80
                         )
                         
-                        # Also scale deployment directly for immediate effect
+                        if hpa_result['success']:
+                            # Update HPA to desired replicas immediately (proactive scaling)
+                            update_result = self.hpa_manager.update_hpa(
+                                hpa_name=hpa_name,
+                                namespace=namespace,
+                                min_replicas=min_replicas,
+                                max_replicas=max(required_replicas, max_replicas)
+                            )
+                            
+                            # Also scale deployment directly for immediate effect
+                            self._scale_deployment(deployment_name, namespace, required_replicas)
+                            
+                            return {
+                                'success': True,
+                                'action': 'scale_up',
+                                'current_replicas': current_replicas,
+                                'target_replicas': required_replicas,
+                                'reason': f'Predicted CPU: {max_predicted_cpu:.1f}%, Memory: {max_predicted_memory:.1f}%',
+                                'forecast': {
+                                    'cpu': {
+                                        'current': cpu_forecast.current_value,
+                                        'peak': max_predicted_cpu,
+                                        'trend': cpu_forecast.trend
+                                    },
+                                    'memory': {
+                                        'current': memory_forecast.current_value,
+                                        'peak': max_predicted_memory,
+                                        'trend': memory_forecast.trend
+                                    }
+                                },
+                                'hpa_created': True
+                            }
+                        else:
+                            return {
+                                'success': False,
+                                'error': f'Failed to create HPA: {hpa_result.get("error")}',
+                                'action': 'none'
+                            }
+                    else:
+                        # Update existing HPA
                         self._scale_deployment(deployment_name, namespace, required_replicas)
                         
                         return {
@@ -210,21 +433,35 @@ class PredictiveAutoscaler:
                                     'trend': memory_forecast.trend
                                 }
                             },
-                            'hpa_created': True
+                            'hpa_updated': True
                         }
-                    else:
-                        return {
-                            'success': False,
-                            'error': f'Failed to create HPA: {hpa_result.get("error")}',
-                            'action': 'none'
-                        }
+            
+            elif (scaling_type == 'hpa' or scaling_type == 'both') and action['action'] == 'scale_down':
+                required_replicas = action.get('target_replicas')
+                
+                # Skip if target_replicas is None (VPA-only scaling)
+                if required_replicas is None:
+                    logger.warning(f"⚠️ Skipping HPA scale_down - target_replicas is None for scaling_type={scaling_type}")
                 else:
-                    # Update existing HPA
-                    self._scale_deployment(deployment_name, namespace, required_replicas)
+                    # Check if HPA exists - if so, we need to update HPA instead of scaling directly
+                    hpa_name = f"{deployment_name}-hpa"
+                    hpa_exists = self.hpa_manager.get_hpa(hpa_name, namespace)['success']
+                    
+                    # Predictive Autoscaling should scale directly WITHOUT modifying HPAs
+                    # If HPA exists, warn but scale directly (HPA may override)
+                    if hpa_exists:
+                        logger.warning(f"⚠️ HPA {hpa_name} exists for {deployment_name}. "
+                                     f"Predictive Autoscaling will scale directly, but HPA may override it.")
+                    
+                    # Scale directly (Predictive Autoscaling controls scaling)
+                    scale_result = self._scale_deployment(deployment_name, namespace, required_replicas)
+                    
+                    if not scale_result.get('success'):
+                        logger.warning(f"⚠️ Failed to scale down: {scale_result.get('error')}")
                     
                     return {
                         'success': True,
-                        'action': 'scale_up',
+                        'action': 'scale_down',
                         'current_replicas': current_replicas,
                         'target_replicas': required_replicas,
                         'reason': f'Predicted CPU: {max_predicted_cpu:.1f}%, Memory: {max_predicted_memory:.1f}%',
@@ -239,33 +476,8 @@ class PredictiveAutoscaler:
                                 'peak': max_predicted_memory,
                                 'trend': memory_forecast.trend
                             }
-                        },
-                        'hpa_updated': True
-                    }
-            
-            elif action['action'] == 'scale_down':
-                required_replicas = action['target_replicas']
-                self._scale_deployment(deployment_name, namespace, required_replicas)
-                
-                return {
-                    'success': True,
-                    'action': 'scale_down',
-                    'current_replicas': current_replicas,
-                    'target_replicas': required_replicas,
-                    'reason': f'Predicted CPU: {max_predicted_cpu:.1f}%, Memory: {max_predicted_memory:.1f}%',
-                    'forecast': {
-                        'cpu': {
-                            'current': cpu_forecast.current_value,
-                            'peak': max_predicted_cpu,
-                            'trend': cpu_forecast.trend
-                        },
-                        'memory': {
-                            'current': memory_forecast.current_value,
-                            'peak': max_predicted_memory,
-                            'trend': memory_forecast.trend
                         }
                     }
-                }
             
             elif action['action'] == 'at_max':
                 # Already at max replicas but high usage detected
@@ -401,8 +613,22 @@ class PredictiveAutoscaler:
             if top_result.returncode != 0:
                 return {'cpu_usage': 0, 'memory_usage': 0}
             
+            # Safely handle None or empty stdout
+            stdout_text = top_result.stdout.strip() if top_result.stdout else ''
+            if not stdout_text:
+                return {'cpu_usage': 0, 'memory_usage': 0}
+            
             # Parse kubectl top output
-            lines = top_result.stdout.strip().split('\n')[1:]  # Skip header
+            lines = stdout_text.split('\n')
+            # Skip header if present, filter out empty lines
+            if len(lines) > 1:
+                lines = [line for line in lines[1:] if line.strip()]
+            else:
+                lines = [line for line in lines if line.strip()]
+            
+            if not lines:
+                return {'cpu_usage': 0, 'memory_usage': 0}
+            
             total_cpu_m = 0
             total_memory_mi = 0
             pod_count = 0
@@ -501,16 +727,19 @@ class PredictiveAutoscaler:
     
     def list_enabled_deployments(self, namespace: Optional[str] = None) -> Dict[str, Any]:
         """List all deployments with predictive autoscaling enabled"""
-        # Query Kubernetes for deployments with the label
+        enabled_deployments = []
+        
+        # Method 1: Query Kubernetes for deployments with the label
         result = self.hpa_manager.list_deployments_with_label(
             'ai4k8s.io/predictive-autoscaling=enabled',
             namespace
         )
         
-        enabled_deployments = []
-        
-        if result.get('success'):
-            for deployment in result.get('deployments', []):
+        if result and result.get('success'):
+            deployments_list = result.get('deployments')
+            if deployments_list is None:
+                deployments_list = []
+            for deployment in deployments_list:
                 metadata = deployment.get('metadata', {})
                 annotations = metadata.get('annotations', {})
                 
@@ -524,15 +753,71 @@ class PredictiveAutoscaler:
                 except:
                     config = {}
                 
+                # Get actual replica count from deployment status
+                deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, deployment_namespace)
+                actual_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
+                
                 enabled_deployments.append({
                     'deployment_name': deployment_name,
                     'namespace': deployment_namespace,
                     'min_replicas': config.get('min_replicas', 2),
                     'max_replicas': config.get('max_replicas', 10),
+                    'replicas': actual_replicas,  # Add actual replica count
                     'enabled_at': annotations.get('ai4k8s.io/predictive-autoscaling-enabled-at', '')
                 })
         
-        # Merge with in-memory cache (for backward compatibility)
+        # Method 2: Query all deployments and check annotations (fallback if labels missing)
+        # This catches deployments where labels weren't added but annotations exist
+        try:
+            cmd = "get deployments --all-namespaces -o json" if not namespace else f"get deployments -n {namespace} -o json"
+            all_deployments_result = self.hpa_manager._execute_kubectl(cmd)
+            
+            if all_deployments_result and all_deployments_result.get('success'):
+                result_data = all_deployments_result.get('result')
+                if result_data is None:
+                    result_data = {}
+                all_deployments = result_data.get('items')
+                if all_deployments is None:
+                    all_deployments = []
+                for deployment in all_deployments:
+                    metadata = deployment.get('metadata', {})
+                    annotations = metadata.get('annotations', {})
+                    deployment_name = metadata.get('name')
+                    deployment_namespace = metadata.get('namespace', 'default')
+                    
+                    # Check if this deployment has predictive autoscaling annotation
+                    if annotations.get('ai4k8s.io/predictive-autoscaling-enabled') == 'true':
+                        # Check if already in list
+                        found = any(
+                            d['deployment_name'] == deployment_name and
+                            d['namespace'] == deployment_namespace
+                            for d in enabled_deployments
+                        )
+                        if not found:
+                            # Parse config from annotations
+                            config_json = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
+                            try:
+                                config = json.loads(config_json)
+                            except:
+                                config = {}
+                            
+                            # Get actual replica count
+                            deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, deployment_namespace)
+                            actual_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
+                            
+                            enabled_deployments.append({
+                                'deployment_name': deployment_name,
+                                'namespace': deployment_namespace,
+                                'min_replicas': config.get('min_replicas', 2),
+                                'max_replicas': config.get('max_replicas', 10),
+                                'replicas': actual_replicas,
+                                'enabled_at': annotations.get('ai4k8s.io/predictive-autoscaling-enabled-at', '')
+                            })
+        except Exception as e:
+            logger.warning(f"Failed to query all deployments for predictive autoscaling: {e}")
+        
+        # Method 3: Merge with in-memory cache (for backward compatibility)
+        # Include both enabled and recently disabled deployments (for replica counting)
         for key, deployment in self.enabled_deployments.items():
             # Check if already in list
             found = any(
@@ -541,7 +826,26 @@ class PredictiveAutoscaler:
                 for d in enabled_deployments
             )
             if not found:
-                enabled_deployments.append(deployment)
+                # Get actual replica count for in-memory cache entries
+                deployment_status = self.hpa_manager.get_deployment_replicas(
+                    deployment['deployment_name'], deployment['namespace']
+                )
+                actual_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
+                
+                # Use cached replicas if available and deployment is disabled
+                if deployment.get('disabled') and 'replicas' in deployment:
+                    actual_replicas = deployment.get('replicas', actual_replicas)
+                
+                # Add to list with replica count (even if disabled, for stat calculation)
+                enabled_deployments.append({
+                    'deployment_name': deployment['deployment_name'],
+                    'namespace': deployment['namespace'],
+                    'min_replicas': deployment.get('min_replicas', 2),
+                    'max_replicas': deployment.get('max_replicas', 10),
+                    'replicas': actual_replicas,  # Add actual replica count
+                    'enabled_at': deployment.get('enabled_at', ''),
+                    'disabled': deployment.get('disabled', False)  # Track if disabled
+                })
         
         return {
             'success': True,
@@ -589,14 +893,32 @@ class PredictiveAutoscaler:
             if result.returncode != 0 and 'not found' not in result.stderr.lower():
                 logger.warning(f"Failed to remove label: {result.stderr}")
             
-            # Remove from in-memory cache
+            # Get current replica count before disabling (for stat calculation)
+            deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
+            current_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
+            
+            # Keep in in-memory cache temporarily with a "disabled" flag so we can still count replicas
+            # This ensures Total Replicas stat doesn't drop to 0 immediately after disabling
             key = f"{namespace}/{deployment_name}"
             if key in self.enabled_deployments:
-                del self.enabled_deployments[key]
+                # Mark as disabled but keep replica count
+                self.enabled_deployments[key]['disabled'] = True
+                self.enabled_deployments[key]['replicas'] = current_replicas
+            else:
+                # Add to cache with disabled flag (in case it wasn't tracked before)
+                self.enabled_deployments[key] = {
+                    'deployment_name': deployment_name,
+                    'namespace': namespace,
+                    'min_replicas': 2,
+                    'max_replicas': 10,
+                    'replicas': current_replicas,
+                    'disabled': True
+                }
             
             return {
                 'success': True,
-                'message': f'Predictive autoscaling disabled for {deployment_name}'
+                'message': f'Predictive autoscaling disabled for {deployment_name}',
+                'replicas': current_replicas  # Return current replicas for UI
             }
         except Exception as e:
             logger.error(f"Error disabling predictive autoscaling: {e}")
@@ -612,9 +934,18 @@ class PredictiveAutoscaler:
             if self.hpa_manager.kubeconfig_path:
                 env['KUBECONFIG'] = self.hpa_manager.kubeconfig_path
             
+            # Trim deployment name to remove any whitespace
+            deployment_name = deployment_name.strip()
+            
+            logger.info(f"🔄 Scaling deployment {namespace}/{deployment_name} to {replicas} replicas")
+            
+            cmd = ['kubectl', 'scale', 'deployment', deployment_name,
+                   f'--replicas={replicas}', '-n', namespace]
+            
+            logger.debug(f"Executing: {' '.join(cmd)}")
+            
             result = subprocess.run(
-                ['kubectl', 'scale', 'deployment', deployment_name,
-                 f'--replicas={replicas}', '-n', namespace],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -622,15 +953,26 @@ class PredictiveAutoscaler:
             )
             
             if result.returncode == 0:
-                return {'success': True, 'message': f'Scaled to {replicas} replicas'}
+                logger.info(f"✅ Successfully scaled {namespace}/{deployment_name} to {replicas} replicas")
+                logger.debug(f"kubectl output: {result.stdout}")
+                return {'success': True, 'message': f'Scaled to {replicas} replicas', 'stdout': result.stdout}
             else:
-                return {'success': False, 'error': result.stderr}
+                error_msg = result.stderr or result.stdout or 'Unknown error'
+                logger.error(f"❌ Failed to scale {namespace}/{deployment_name}: {error_msg}")
+                return {'success': False, 'error': error_msg, 'stdout': result.stdout, 'stderr': result.stderr}
         except Exception as e:
+            logger.error(f"❌ Exception in _scale_deployment: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {'success': False, 'error': str(e)}
     
     def get_scaling_recommendation(self, deployment_name: str, namespace: str = "default") -> Dict[str, Any]:
         """Get scaling recommendation without executing"""
         try:
+            # Trim deployment name and namespace to remove any whitespace
+            deployment_name = deployment_name.strip()
+            namespace = namespace.strip()
+            
             # Get current status
             deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
             if not deployment_status['success']:
@@ -664,18 +1006,22 @@ class PredictiveAutoscaler:
             
             # Find peak predicted usage
             # Use current_value if predicted_values is empty or all zeros
-            if cpu_forecast.predicted_values and any(v > 0 for v in cpu_forecast.predicted_values):
-                max_predicted_cpu = max(cpu_forecast.predicted_values)
-            else:
-                max_predicted_cpu = cpu_forecast.current_value
+            # Safely handle None predicted_values
+            cpu_predicted = cpu_forecast.predicted_values if cpu_forecast.predicted_values is not None else []
+            memory_predicted = memory_forecast.predicted_values if memory_forecast.predicted_values is not None else []
             
-            if memory_forecast.predicted_values and any(v > 0 for v in memory_forecast.predicted_values):
-                max_predicted_memory = max(memory_forecast.predicted_values)
+            if cpu_predicted and any(v > 0 for v in cpu_predicted):
+                max_predicted_cpu = max(cpu_predicted)
             else:
-                max_predicted_memory = memory_forecast.current_value
+                max_predicted_cpu = cpu_forecast.current_value if cpu_forecast.current_value is not None else 0
             
-            logger.info(f"Recommendation forecast - CPU: current={cpu_forecast.current_value}, predicted={cpu_forecast.predicted_values}, max={max_predicted_cpu}")
-            logger.info(f"Recommendation forecast - Memory: current={memory_forecast.current_value}, predicted={memory_forecast.predicted_values}, max={max_predicted_memory}")
+            if memory_predicted and any(v > 0 for v in memory_predicted):
+                max_predicted_memory = max(memory_predicted)
+            else:
+                max_predicted_memory = memory_forecast.current_value if memory_forecast.current_value is not None else 0
+            
+            logger.info(f"Recommendation forecast - CPU: current={cpu_forecast.current_value}, predicted={cpu_predicted}, max={max_predicted_cpu}")
+            logger.info(f"Recommendation forecast - Memory: current={memory_forecast.current_value}, predicted={memory_predicted}, max={max_predicted_memory}")
             
             # Try LLM-based recommendation first
             llm_recommendation = None
@@ -688,6 +1034,33 @@ class PredictiveAutoscaler:
                     if hpa_result.get('success'):
                         hpa_status = hpa_result.get('status', {})
                     
+                    # Get VPA status if exists
+                    vpa_status = None
+                    current_resources = None
+                    if self.vpa_manager:
+                        vpa_name = f"{deployment_name}-vpa"
+                        vpa_result = self.vpa_manager.get_vpa(vpa_name, namespace)
+                        if vpa_result.get('success'):
+                            vpa_status = vpa_result.get('status', {})
+                        
+                        # Get current resource requests/limits
+                        try:
+                            resources_result = self.vpa_manager.get_deployment_resources(deployment_name, namespace)
+                            if resources_result.get('success') and resources_result.get('resources'):
+                                resources_list = resources_result.get('resources', [])
+                                if resources_list and len(resources_list) > 0:
+                                    # Use first container's resources
+                                    first_container = resources_list[0]
+                                    current_resources = {
+                                        'cpu_request': first_container.get('cpu_request', 'N/A'),
+                                        'memory_request': first_container.get('memory_request', 'N/A'),
+                                        'cpu_limit': first_container.get('cpu_limit', 'N/A'),
+                                        'memory_limit': first_container.get('memory_limit', 'N/A')
+                                    }
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to get deployment resources: {e}")
+                            current_resources = None
+                    
                     # Prepare metrics
                     current_metrics = {
                         'cpu_usage': cpu_current,
@@ -696,29 +1069,31 @@ class PredictiveAutoscaler:
                         'running_pod_count': current_replicas
                     }
                     
-                    # Prepare forecast
+                    # Prepare forecast (safely handle None values)
                     forecast_data = {
                         'cpu': {
-                            'current': cpu_forecast.current_value,
+                            'current': cpu_forecast.current_value if cpu_forecast.current_value is not None else 0,
                             'peak': max_predicted_cpu,
-                            'trend': cpu_forecast.trend,
-                            'predictions': cpu_forecast.predicted_values
+                            'trend': cpu_forecast.trend if cpu_forecast.trend else 'stable',
+                            'predictions': cpu_predicted  # Use the safe variable we created above
                         },
                         'memory': {
-                            'current': memory_forecast.current_value,
+                            'current': memory_forecast.current_value if memory_forecast.current_value is not None else 0,
                             'peak': max_predicted_memory,
-                            'trend': memory_forecast.trend,
-                            'predictions': memory_forecast.predicted_values
+                            'trend': memory_forecast.trend if memory_forecast.trend else 'stable',
+                            'predictions': memory_predicted  # Use the safe variable we created above
                         }
                     }
                     
-                    # Get LLM recommendation
+                    # Get LLM recommendation (now includes VPA support)
                     llm_result = self.llm_advisor.get_intelligent_recommendation(
                         deployment_name=deployment_name,
                         namespace=namespace,
                         current_metrics=current_metrics,
                         forecast=forecast_data,
                         hpa_status=hpa_status,
+                        vpa_status=vpa_status,
+                        current_resources=current_resources,
                         current_replicas=current_replicas,
                         min_replicas=2,  # default min
                         max_replicas=10  # default max
@@ -726,7 +1101,11 @@ class PredictiveAutoscaler:
                     
                     if llm_result.get('success'):
                         llm_recommendation = llm_result.get('recommendation', {})
-                        logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} -> {llm_recommendation.get('target_replicas')} replicas")
+                        scaling_type = llm_recommendation.get('scaling_type', 'hpa')
+                        if scaling_type == 'vpa':
+                            logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} (VPA) -> CPU: {llm_recommendation.get('target_cpu')}, Memory: {llm_recommendation.get('target_memory')}")
+                        else:
+                            logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} (HPA) -> {llm_recommendation.get('target_replicas')} replicas")
                     elif llm_result.get('rate_limited'):
                         # Rate-limited, use cached recommendation if available, otherwise fallback
                         logger.info(f"⏸️  LLM rate-limited, using fallback recommendation")
@@ -738,9 +1117,13 @@ class PredictiveAutoscaler:
             
             # Use LLM recommendation if available, otherwise fallback to rule-based
             if llm_recommendation:
+                scaling_type = llm_recommendation.get('scaling_type', 'hpa')  # Default to HPA for backward compatibility
                 action = {
                     'action': llm_recommendation.get('action', 'none'),
-                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas),
+                    'scaling_type': scaling_type,  # 'hpa', 'vpa', 'both', or 'maintain'
+                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas) if scaling_type in ['hpa', 'both'] else None,
+                    'target_cpu': llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
+                    'target_memory': llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
                     'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
                     'confidence': llm_recommendation.get('confidence', 0.5),
                     'llm_recommendation': llm_recommendation
@@ -755,24 +1138,54 @@ class PredictiveAutoscaler:
                     10  # default max
                 )
             
+            # Get deployment status for resource stats
+            deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
+            ready_replicas = deployment_status.get('ready_replicas', 0) if deployment_status.get('success') else 0
+            available_replicas = deployment_status.get('available_replicas', 0) if deployment_status.get('success') else 0
+            
+            # Safely get predicted values (handle None)
+            cpu_predicted_safe = cpu_forecast.predicted_values if cpu_forecast.predicted_values is not None else []
+            memory_predicted_safe = memory_forecast.predicted_values if memory_forecast.predicted_values is not None else []
+            
+            # Create a clean message for UI (without full LLM reasoning)
+            clean_message = "Predictive autoscaling enabled successfully"
+            if action.get('action') == 'scale_up' and action.get('target_replicas'):
+                clean_message = f"Predictive autoscaling enabled. Scaling to {action.get('target_replicas')} replicas."
+            elif action.get('action') == 'scale_down' and action.get('target_replicas'):
+                clean_message = f"Predictive autoscaling enabled. Scaling to {action.get('target_replicas')} replicas."
+            elif action.get('action') == 'at_max':
+                clean_message = "Predictive autoscaling enabled. Already at max replicas."
+            elif action.get('scaling_type') == 'vpa' and (action.get('target_cpu') or action.get('target_memory')):
+                clean_message = "Predictive autoscaling enabled. VPA recommendation will be applied."
+            elif action.get('action') == 'maintain' or action.get('action') == 'none':
+                clean_message = "Predictive autoscaling enabled. No scaling needed at this time."
+            
             return {
                 'success': True,
+                'message': clean_message,  # Clean message for UI alerts
                 'recommendation': action,
                 'forecast': {
                     'cpu': {
-                        'current': cpu_forecast.current_value,
+                        'current': cpu_forecast.current_value if cpu_forecast.current_value is not None else 0,
                         'peak': max_predicted_cpu,
-                        'trend': cpu_forecast.trend,
-                        'predictions': cpu_forecast.predicted_values
+                        'trend': cpu_forecast.trend if cpu_forecast.trend else 'stable',
+                        'predictions': cpu_predicted_safe
                     },
                     'memory': {
-                        'current': memory_forecast.current_value,
+                        'current': memory_forecast.current_value if memory_forecast.current_value is not None else 0,
                         'peak': max_predicted_memory,
-                        'trend': memory_forecast.trend,
-                        'predictions': memory_forecast.predicted_values
+                        'trend': memory_forecast.trend if memory_forecast.trend else 'stable',
+                        'predictions': memory_predicted_safe
                     }
                 },
                 'current_replicas': current_replicas,
+                'ready_replicas': ready_replicas,
+                'available_replicas': available_replicas,
+                'current_resources': current_resources,  # Add current resource requests/limits for VPA display
+                'current_metrics': {
+                    'cpu_usage': cpu_current,
+                    'memory_usage': memory_current
+                },
                 'llm_enabled': self.use_llm and self.llm_advisor is not None,
                 'llm_used': llm_recommendation is not None
             }
