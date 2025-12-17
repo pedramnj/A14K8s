@@ -2126,7 +2126,8 @@ if True:
                 deployment_name=deployment_name,
                 namespace=data.get('namespace', 'default').strip(),
                 min_replicas=data.get('min_replicas', 2),
-                max_replicas=data.get('max_replicas', 10)
+                max_replicas=data.get('max_replicas', 10),
+                state_management=data.get('state_management')  # Optional: 'stateless', 'stateful', or None
             )
             return jsonify(result)
         except Exception as e:
@@ -2239,7 +2240,54 @@ if True:
             if not autoscaling:
                 return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
             
+            print(f"🔍🔍🔍 WEB APP: Getting recommendations for {deployment_name} in {namespace}")
             result = autoscaling.get_scaling_recommendations(deployment_name, namespace)
+            
+            # Log the result to see what's being returned
+            if result.get('predictive') and result['predictive'].get('recommendation'):
+                rec = result['predictive']['recommendation']
+                target_replicas = rec.get('target_replicas')
+                print(f"🔍🔍🔍 WEB APP RESULT: target_replicas={target_replicas}, action={rec.get('action')}, scaling_type={rec.get('scaling_type')}")
+                
+                # CRITICAL: Final validation at web app layer - get min/max from deployment
+                if target_replicas is not None:
+                    try:
+                        # Get deployment to read min/max from annotation
+                        import subprocess
+                        kubectl_cmd = ['kubectl', 'get', 'deployment', deployment_name, '-n', namespace, '-o', 'json']
+                        if server.kubeconfig_path:
+                            kubectl_cmd.extend(['--kubeconfig', server.kubeconfig_path])
+                        
+                        kubectl_result = subprocess.run(kubectl_cmd, capture_output=True, text=True, timeout=10)
+                        if kubectl_result.returncode == 0:
+                            deployment_json = json.loads(kubectl_result.stdout)
+                            annotations = deployment_json.get('metadata', {}).get('annotations', {})
+                            config_str = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
+                            config = json.loads(config_str) if config_str else {}
+                            min_replicas = config.get('min_replicas', 2)
+                            max_replicas = config.get('max_replicas', 10)
+                            
+                            print(f"🔍🔍🔍 WEB APP VALIDATION: target_replicas={target_replicas}, min={min_replicas}, max={max_replicas}")
+                            
+                            if target_replicas > max_replicas:
+                                print(f"🚨🚨🚨 WEB APP LAYER: target_replicas={target_replicas} > max={max_replicas}, FORCING to {max_replicas}")
+                                rec['target_replicas'] = max_replicas
+                                result['predictive']['recommendation'] = rec
+                            elif target_replicas < min_replicas:
+                                print(f"🚨🚨🚨 WEB APP LAYER: target_replicas={target_replicas} < min={min_replicas}, FORCING to {min_replicas}")
+                                rec['target_replicas'] = min_replicas
+                                result['predictive']['recommendation'] = rec
+                            
+                            print(f"🔍🔍🔍 WEB APP FINAL: target_replicas={rec.get('target_replicas')}")
+                        else:
+                            print(f"⚠️ Could not get deployment for validation: {kubectl_result.stderr}")
+                    except Exception as e:
+                        print(f"⚠️ Error in web app validation: {e}")
+                        import traceback
+                        traceback.print_exc()
+                
+                print(f"🔍🔍🔍 WEB APP FULL REC: {json.dumps(rec, indent=2)}")
+            
             return jsonify(result)
         except Exception as e:
             import traceback

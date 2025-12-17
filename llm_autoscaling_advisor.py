@@ -17,12 +17,32 @@ Thesis: AI Agent for Kubernetes Management
 import json
 import os
 import logging
+import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import groq
 import hashlib
 
+# Configure logger with both file and console handlers
 logger = logging.getLogger(__name__)
+if not logger.handlers:  # Only configure if not already configured
+    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Console handler (stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    # File handler
+    try:
+        file_handler = logging.FileHandler('/home1/pedramnj/ai4k8s/llm_advisor.log', mode='a')
+        file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        # If file logging fails, continue with console only
+        logger.warning(f"Could not set up file logging: {e}")
 
 class LLMAutoscalingAdvisor:
     """LLM-powered autoscaling advisor using Groq"""
@@ -46,7 +66,7 @@ class LLMAutoscalingAdvisor:
         self.recommendation_cache: Dict[str, Dict[str, Any]] = {}
         # Track last LLM call time to enforce minimum interval
         self.last_llm_call_time: Dict[str, datetime] = {}
-        self.min_llm_interval = 300  # Minimum 5 minutes between LLM calls for same deployment
+        self.min_llm_interval = 30  # Minimum 30 seconds between LLM calls for same deployment (reduced from 300s to allow more frequent calls)
         
         if self.groq_api_key:
             try:
@@ -60,7 +80,7 @@ class LLMAutoscalingAdvisor:
     
     def _get_cache_key(self, deployment_name: str, namespace: str, 
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
-                      current_replicas: int) -> str:
+                      current_replicas: int, state_management: Optional[str] = None) -> str:
         """Generate cache key from input parameters
         
         Uses very aggressive rounding to create stable cache keys that don't change
@@ -92,7 +112,9 @@ class LLMAutoscalingAdvisor:
             'memory_peak': round_to_5_percent(forecast.get('memory', {}).get('peak', 0)),
             # Also include trend to differentiate between increasing/decreasing patterns
             'cpu_trend': forecast.get('cpu', {}).get('trend', 'unknown'),
-            'memory_trend': forecast.get('memory', {}).get('trend', 'unknown')
+            'memory_trend': forecast.get('memory', {}).get('trend', 'unknown'),
+            # Include state management in cache key to ensure cache invalidation when state changes
+            'state_management': state_management or 'unknown'
         }
         key_str = json.dumps(key_data, sort_keys=True)
         cache_key = hashlib.md5(key_str.encode()).hexdigest()
@@ -111,7 +133,8 @@ class LLMAutoscalingAdvisor:
                                  current_replicas: int = 1,
                                  min_replicas: int = 1,
                                  max_replicas: int = 10,
-                                 use_cache: bool = True) -> Dict[str, Any]:
+                                 use_cache: bool = True,
+                                 hpa_manager=None) -> Dict[str, Any]:
         """
         Use LLM to analyze and recommend scaling decisions
         
@@ -136,9 +159,25 @@ class LLMAutoscalingAdvisor:
                 'fallback': True
             }
         
+        # CRITICAL: Detect state management FIRST (before cache check) to include in cache key
+        # This ensures cache is invalidated when state management changes
+        # Get hpa_manager from parameter or temporary reference
+        effective_hpa_manager = hpa_manager or getattr(self, '_temp_hpa_manager', None)
+        state_management_for_cache = None
+        if effective_hpa_manager:
+            try:
+                temp_state_info = self._detect_state_management(deployment_name, namespace, effective_hpa_manager)
+                if temp_state_info.get('detected') and temp_state_info.get('type'):
+                    state_management_for_cache = f"{temp_state_info.get('type')}_{temp_state_info.get('source', 'unknown')}"
+                    logger.warning(f"🔍🔍🔍 CACHE: Detected state_management for cache key: {state_management_for_cache}")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to detect state management for cache key: {e}")
+        else:
+            logger.error(f"❌❌❌ CRITICAL: No hpa_manager available for state detection! hpa_manager param={hpa_manager}, _temp_hpa_manager={getattr(self, '_temp_hpa_manager', None)}")
+        
         # Check cache and enforce minimum interval between LLM calls
         if use_cache:
-            cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+            cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas, state_management_for_cache)
             deployment_key = f"{namespace}/{deployment_name}"
             now = datetime.now()
             
@@ -161,9 +200,42 @@ class LLMAutoscalingAdvisor:
                     del self.recommendation_cache[cache_key]
             
             # Enforce minimum interval between LLM calls for same deployment
+            # BUT: Check if we have ANY cached result for this deployment first (even if cache key doesn't match exactly)
+            # This allows us to return cached results even if metrics changed slightly
+            deployment_has_recent_cache = False
+            for cached_key, cached_data in self.recommendation_cache.items():
+                if deployment_key in cached_key or cached_key.startswith(deployment_key.split('/')[0]):  # Check if cache key is for this deployment
+                    cache_age = (now - cached_data['timestamp']).total_seconds()
+                    if cache_age < self.cache_ttl:
+                        deployment_has_recent_cache = True
+                        logger.info(f"✅ Found recent cache for deployment {deployment_key} (age: {cache_age:.1f}s), will use it if needed")
+                        break
+            
             if deployment_key in self.last_llm_call_time:
                 time_since_last_call = (now - self.last_llm_call_time[deployment_key]).total_seconds()
                 if time_since_last_call < self.min_llm_interval:
+                    # If we have a recent cache, return it instead of blocking
+                    if deployment_has_recent_cache:
+                        logger.info(f"⏸️ Rate-limited but found cached result - returning cached recommendation")
+                        # Find and return the most recent cached result for this deployment
+                        best_cache = None
+                        best_age = float('inf')
+                        for cached_key, cached_data in self.recommendation_cache.items():
+                            if deployment_key in cached_key or cached_key.startswith(deployment_key.split('/')[0]):
+                                cache_age = (now - cached_data['timestamp']).total_seconds()
+                                if cache_age < best_age and cache_age < self.cache_ttl:
+                                    best_age = cache_age
+                                    best_cache = cached_data
+                        if best_cache:
+                            return {
+                                'success': True,
+                                'recommendation': best_cache['recommendation'],
+                                'llm_model': best_cache.get('llm_model', self.model),
+                                'timestamp': best_cache['timestamp'].isoformat(),
+                                'cached': True,
+                                'rate_limited': True  # Indicate this was rate-limited but we used cache
+                            }
+                    
                     logger.info(f"⏸️ Skipping LLM call - only {time_since_last_call:.1f}s since last call (min: {self.min_llm_interval}s)")
                     # Return a fallback recommendation indicating we're rate-limiting
                     return {
@@ -174,11 +246,15 @@ class LLMAutoscalingAdvisor:
                     }
         
         try:
-            # Prepare context for LLM
+            # Prepare context for LLM (need hpa_manager for state detection)
+            # Use effective_hpa_manager we determined above (from parameter or temporary reference)
+            # effective_hpa_manager was already set in the cache detection section above
+            logger.warning(f"🔍🔍🔍 Using effective_hpa_manager for context: {effective_hpa_manager is not None}")
+            
             context = self._prepare_context(
                 deployment_name, namespace, current_metrics, forecast,
                 hpa_status, vpa_status, current_resources, historical_patterns, 
-                current_replicas, min_replicas, max_replicas
+                current_replicas, min_replicas, max_replicas, effective_hpa_manager
             )
             
             # Create system prompt
@@ -188,8 +264,17 @@ class LLMAutoscalingAdvisor:
             user_prompt = self._create_user_prompt(context)
             
             # Call Groq LLM
+            print(f"🔍🔍🔍 CALLING GROQ API: model={self.model}, client={self.client is not None}")
+            logger.warning(f"🔍🔍🔍 CALLING GROQ API: model={self.model}, client={self.client is not None}")
+            print(f"🔍🔍🔍 SYSTEM PROMPT (first 200 chars): {system_prompt[:200]}...")
+            logger.warning(f"🔍🔍🔍 SYSTEM PROMPT (first 200 chars): {system_prompt[:200]}...")
+            print(f"🔍🔍🔍 USER PROMPT (first 200 chars): {user_prompt[:200]}...")
+            logger.warning(f"🔍🔍🔍 USER PROMPT (first 200 chars): {user_prompt[:200]}...")
+            
             # Try with preferred model first, fallback if needed
             try:
+                print(f"🔍🔍🔍 Making Groq API call to {self.model}...")
+                logger.warning(f"🔍🔍🔍 Making Groq API call to {self.model}...")
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
@@ -199,9 +284,14 @@ class LLMAutoscalingAdvisor:
                     temperature=0.3,  # Lower temperature for more consistent decisions
                     max_tokens=1000
                 )
+                response_text = response.choices[0].message.content if response.choices else ""
+                print(f"✅✅✅ GROQ API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
+                logger.warning(f"✅✅✅ GROQ API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
+                print(f"✅✅✅ GROQ RESPONSE (first 500 chars): {response_text[:500]}...")
+                logger.warning(f"✅✅✅ GROQ RESPONSE (first 500 chars): {response_text[:500]}...")
             except Exception as e:
                 # Fallback to 8b model if 70b not available
-                logger.warning(f"Model {self.model} not available, trying fallback: {e}")
+                logger.error(f"❌❌❌ Model {self.model} failed: {e}, trying fallback: {self.fallback_model}")
                 try:
                     response = self.client.chat.completions.create(
                         model=self.fallback_model,
@@ -213,16 +303,23 @@ class LLMAutoscalingAdvisor:
                         max_tokens=1000
                     )
                     self.model = self.fallback_model  # Use fallback for future calls
+                    logger.warning(f"✅✅✅ GROQ API CALL SUCCESSFUL with fallback! Model: {self.fallback_model}")
                 except Exception as e2:
-                    logger.error(f"Failed to call Groq API: {e2}")
+                    print(f"❌❌❌ CRITICAL: Failed to call Groq API with both models: {e2}")
+                    logger.error(f"❌❌❌ CRITICAL: Failed to call Groq API with both models: {e2}")
                     raise
             
             # Parse LLM response
             llm_output = response.choices[0].message.content
+            logger.warning(f"🔍🔍🔍 LLM RAW RESPONSE (first 500 chars): {llm_output[:500]}...")
+            logger.warning(f"🔍🔍🔍 LLM MODEL USED: {self.model}")
+            logger.warning(f"🔍🔍🔍 CONTEXT PASSED TO _parse_llm_response: state_info={context.get('state_management_info', {})}, state_note={context.get('state_management_note', '')[:200]}...")
             
             # Try to extract JSON from response (handle both JSON and text responses)
             # Pass min/max replicas for validation and context for state management check
-            recommendation = self._parse_llm_response(llm_output, min_replicas, max_replicas, current_metrics, current_resources, context)
+            # Also pass deployment_name, namespace, and hpa_manager for fallback state detection in enforcement
+            recommendation = self._parse_llm_response(llm_output, min_replicas, max_replicas, current_metrics, current_resources, context, deployment_name, namespace, effective_hpa_manager)
+            logger.warning(f"🔍🔍🔍 PARSED RECOMMENDATION: scaling_type={recommendation.get('scaling_type') if recommendation else None}, target_replicas={recommendation.get('target_replicas') if recommendation else None}")
             
             now = datetime.now()
             result = {
@@ -235,7 +332,7 @@ class LLMAutoscalingAdvisor:
             
             # Cache the result and track LLM call time
             if use_cache:
-                cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas)
+                cache_key = self._get_cache_key(deployment_name, namespace, current_metrics, forecast, current_replicas, state_management_for_cache)
                 deployment_key = f"{namespace}/{deployment_name}"
                 
                 self.recommendation_cache[cache_key] = {
@@ -275,7 +372,10 @@ class LLMAutoscalingAdvisor:
     def _parse_llm_response(self, llm_output: str, min_replicas: int = 1, max_replicas: int = 10,
                            current_metrics: Optional[Dict[str, Any]] = None,
                            current_resources: Optional[Dict[str, Any]] = None,
-                           context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                           context: Optional[Dict[str, Any]] = None,
+                           deployment_name: Optional[str] = None,
+                           namespace: Optional[str] = None,
+                           hpa_manager=None) -> Dict[str, Any]:
         """Parse LLM response, extracting JSON if present and validate against constraints"""
         import re
         
@@ -341,13 +441,22 @@ class LLMAutoscalingAdvisor:
             
             # Check if no explicit state information was provided
             no_state_info_provided = False
+            user_explicitly_stateless = False
             if context:
                 state_note = context.get('state_management_note', '')
-                no_state_info_provided = not state_note or 'no explicit state' in state_note.lower() or 'not provided' in state_note.lower()
+                state_info = context.get('state_management_info', {})
+                
+                # Check if user explicitly selected stateless (high confidence from annotation)
+                if state_info.get('detected') and state_info.get('type') == 'stateless' and \
+                   state_info.get('source') == 'annotation' and state_info.get('confidence') == 'high':
+                    user_explicitly_stateless = True
+                
+                no_state_info_provided = not state_note or 'no explicit state' in state_note.lower() or 'not provided' in state_note.lower() or 'no state management information detected' in state_note.lower()
             
             # CRITICAL: If no state info provided and LLM chose HPA, correct to VPA for safety
-            if (has_state_inside and not has_state_externalized and scaling_type == 'hpa') or \
-               (no_state_info_provided and scaling_type == 'hpa' and not has_state_externalized):
+            # BUT: Respect user's explicit stateless selection (don't override)
+            if (has_state_inside and not has_state_externalized and scaling_type == 'hpa' and not user_explicitly_stateless) or \
+               (no_state_info_provided and scaling_type == 'hpa' and not has_state_externalized and not user_explicitly_stateless):
                 logger.warning(f"⚠️ LLM recommended HPA but state is uncertain or inside pod. Correcting to VPA.")
                 recommendation['scaling_type'] = 'vpa'
                 # Clear target_replicas for VPA
@@ -402,22 +511,112 @@ class LLMAutoscalingAdvisor:
                 recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
                     f' [Corrected: Changed from HPA to VPA because state is stored inside the pod. Calculated VPA targets: CPU={recommendation["target_cpu"]}, Memory={recommendation["target_memory"]} based on current usage]')
         
+        # CRITICAL: If user explicitly selected stateless or detection found stateless, enforce HPA
+        # Also check the annotation directly if context doesn't have it (fallback)
+        if recommendation:
+            state_info = {}
+            state_note = ''
+            detected_type = None
+            detected_source = None
+            detected_confidence = None
+            
+            if context:
+                state_info = context.get('state_management_info', {})
+                detected_type = state_info.get('type')
+                detected_source = state_info.get('source')
+                detected_confidence = state_info.get('confidence')
+                state_note = context.get('state_management_note', '')
+            
+            # FALLBACK: If context doesn't have state info but we have hpa_manager parameter, detect directly
+            # Note: hpa_manager, deployment_name, and namespace are function parameters passed to _parse_llm_response
+            if not state_info.get('detected') and hpa_manager and deployment_name and namespace:
+                try:
+                    logger.warning(f"🔍🔍🔍 ENFORCEMENT FALLBACK: Context missing state info, detecting directly...")
+                    direct_state_info = self._detect_state_management(deployment_name, namespace, hpa_manager)
+                    if direct_state_info.get('detected'):
+                        state_info = direct_state_info
+                        detected_type = state_info.get('type')
+                        detected_source = state_info.get('source')
+                        detected_confidence = state_info.get('confidence')
+                        logger.warning(f"🔍🔍🔍 ENFORCEMENT FALLBACK: Direct detection found: type={detected_type}, source={detected_source}, confidence={detected_confidence}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to detect state in enforcement fallback: {e}")
+            
+            logger.warning(f"🔍🔍🔍 ENFORCEMENT DEBUG: State management check: type={detected_type}, source={detected_source}, confidence={detected_confidence}")
+            logger.warning(f"🔍🔍🔍 ENFORCEMENT DEBUG: Full state_info: {state_info}")
+            logger.warning(f"🔍🔍🔍 ENFORCEMENT DEBUG: State note (first 500 chars): {state_note[:500] if state_note else 'N/A'}...")
+            logger.warning(f"🔍🔍🔍 ENFORCEMENT DEBUG: Current recommendation: scaling_type={recommendation.get('scaling_type')}, target_replicas={recommendation.get('target_replicas')}")
+            
+            # Check multiple indicators for stateless:
+            # 1. Direct detection (annotation/label) - HIGHEST PRIORITY
+            # 2. State note contains "stateless" and "HPA"
+            # 3. State note contains "STATELESS" (uppercase)
+            is_stateless_detected = detected_type == 'stateless' and detected_confidence in ['high', 'medium']
+            is_stateless_in_note = state_note and 'stateless' in state_note.lower() and ('hpa' in state_note.lower() or 'horizontal' in state_note.lower())
+            is_stateless_uppercase = state_note and 'STATELESS' in state_note
+            
+            logger.warning(f"🔍🔍🔍 ENFORCEMENT DEBUG: Stateless indicators: detected={is_stateless_detected}, in_note={is_stateless_in_note}, uppercase={is_stateless_uppercase}")
+            
+            # If ANY indicator suggests stateless, enforce HPA
+            if is_stateless_detected or is_stateless_in_note or is_stateless_uppercase:
+                scaling_type = recommendation.get('scaling_type', 'hpa').lower()
+                logger.warning(f"✅✅✅ STATELESS DETECTED! (detected={is_stateless_detected}, in_note={is_stateless_in_note}, uppercase={is_stateless_uppercase}) LLM recommended: {scaling_type}")
+                logger.warning(f"🔍🔍🔍 ENFORCEMENT: Checking if correction needed. scaling_type={scaling_type}, is_stateless_detected={is_stateless_detected}")
+                
+                if scaling_type in ['vpa', 'both']:
+                    logger.warning(f"⚠️⚠️⚠️ FORCING HPA: User selected/detected STATELESS but LLM recommended {scaling_type.upper()}. Correcting to HPA.")
+                    logger.warning(f"🔍🔍🔍 ENFORCEMENT: BEFORE correction - scaling_type={recommendation.get('scaling_type')}, target_cpu={recommendation.get('target_cpu')}, target_memory={recommendation.get('target_memory')}")
+                    recommendation['scaling_type'] = 'hpa'
+                    recommendation['target_cpu'] = None
+                    recommendation['target_memory'] = None
+                    
+                    # Calculate HPA target based on current metrics and forecast
+                    current_replicas = context.get('deployment', {}).get('current_replicas', 1)
+                    effective_max_replicas = max_replicas  # From function parameter
+                    
+                    # Suggest scaling up if CPU/memory usage is high
+                    cpu_usage = current_metrics.get('cpu_usage', 0) if current_metrics else 0
+                    if cpu_usage > 70:
+                        recommendation['target_replicas'] = min(current_replicas + 2, effective_max_replicas)
+                    elif cpu_usage > 50:
+                        recommendation['target_replicas'] = min(current_replicas + 1, effective_max_replicas)
+                    else:
+                        recommendation['target_replicas'] = min(current_replicas, effective_max_replicas)
+                    
+                    # Ensure target_replicas respects min/max
+                    recommendation['target_replicas'] = max(min_replicas, min(recommendation['target_replicas'], effective_max_replicas))
+                    
+                    recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
+                        f' [FORCED CORRECTION: Changed from {scaling_type.upper()} to HPA because application is STATELESS. Stateless applications MUST scale horizontally, not vertically.]')
+                else:
+                    logger.info(f"✅ Stateless detected and LLM already recommended HPA - no correction needed")
+        
         # Validate and enforce min/max replica constraints (only for HPA)
+        logger.warning(f"🔍🔍🔍 VALIDATION DEBUG: recommendation={recommendation is not None}, scaling_type={recommendation.get('scaling_type') if recommendation else None}, target_replicas={recommendation.get('target_replicas') if recommendation else None}, min_replicas={min_replicas}, max_replicas={max_replicas}")
         if recommendation and recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both']:
             if 'target_replicas' in recommendation and recommendation['target_replicas'] is not None:
                 target = recommendation['target_replicas']
+                logger.warning(f"🔍🔍🔍 VALIDATION: Checking target={target} against min={min_replicas}, max={max_replicas}")
                 if target > max_replicas:
-                    logger.warning(f"⚠️ LLM recommended {target} replicas but max is {max_replicas}. Capping to {max_replicas}.")
+                    logger.error(f"❌❌❌ CRITICAL: LLM recommended {target} replicas but max is {max_replicas}. Capping to {max_replicas}.")
                     recommendation['target_replicas'] = max_replicas
-                    recommendation['action'] = 'at_max' if target > max_replicas else recommendation.get('action', 'maintain')
+                    recommendation['action'] = 'at_max'
                     recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
-                        f" [Note: Original recommendation was {target} replicas, but capped to max_replicas={max_replicas}]")
+                        f" [CRITICAL: Original recommendation was {target} replicas, but capped to max_replicas={max_replicas}]")
+                    logger.warning(f"🔍🔍🔍 VALIDATION: After capping, target_replicas={recommendation['target_replicas']}")
                 elif target < min_replicas:
-                    logger.warning(f"⚠️ LLM recommended {target} replicas but min is {min_replicas}. Setting to {min_replicas}.")
+                    logger.error(f"❌❌❌ CRITICAL: LLM recommended {target} replicas but min is {min_replicas}. Setting to {min_replicas}.")
                     recommendation['target_replicas'] = min_replicas
-                    recommendation['action'] = 'maintain' if target < min_replicas else recommendation.get('action', 'maintain')
+                    recommendation['action'] = 'maintain'
                     recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
-                        f" [Note: Original recommendation was {target} replicas, but set to min_replicas={min_replicas}]")
+                        f" [CRITICAL: Original recommendation was {target} replicas, but set to min_replicas={min_replicas}]")
+                    logger.warning(f"🔍🔍🔍 VALIDATION: After setting min, target_replicas={recommendation['target_replicas']}")
+                else:
+                    logger.warning(f"✅ VALIDATION: target_replicas={target} is within range [{min_replicas}, {max_replicas}]")
+            else:
+                logger.warning(f"⚠️ VALIDATION: No target_replicas in recommendation or it's None")
+        else:
+            logger.warning(f"⚠️ VALIDATION: Skipping validation - scaling_type={recommendation.get('scaling_type') if recommendation else None} is not HPA/both")
         
         return recommendation
     
@@ -444,13 +643,199 @@ class LLMAutoscalingAdvisor:
             'recommended_timing': 'immediate'
         }
     
+    def _detect_state_management(self, deployment_name: str, namespace: str, 
+                                 hpa_manager) -> Dict[str, Any]:
+        """
+        Detect state management information from multiple sources:
+        1. Deployment annotations
+        2. Environment variables
+        3. Service dependencies
+        4. Volume mounts (persistent storage)
+        5. Deployment labels
+        """
+        state_info = {
+            'detected': False,
+            'source': None,
+            'type': None,  # 'stateless', 'stateful', 'unknown'
+            'details': [],
+            'confidence': 'low'
+        }
+        
+        try:
+            # 1. Get deployment details
+            deployment_result = hpa_manager._execute_kubectl(
+                f"get deployment {deployment_name} -n {namespace} -o json"
+            )
+            
+            if not deployment_result.get('success'):
+                return state_info
+            
+            deployment = deployment_result.get('result', {})
+            if not deployment:
+                return state_info
+            
+            metadata = deployment.get('metadata', {})
+            annotations = metadata.get('annotations', {})
+            labels = metadata.get('labels', {})
+            spec = deployment.get('spec', {})
+            template = spec.get('template', {})
+            pod_spec = template.get('spec', {})
+            containers = pod_spec.get('containers', []) if pod_spec else []
+            # Safety check: ensure containers is a list, not None
+            if containers is None:
+                containers = []
+            
+            # 2. Check deployment annotations (user-provided or explicit) - HIGHEST PRIORITY
+            state_annotation = annotations.get('ai4k8s.io/state-management')
+            logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: Checking annotation 'ai4k8s.io/state-management': {state_annotation}")
+            logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: All annotations keys: {list(annotations.keys())}")
+            logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: Full annotations dict: {annotations}")
+            if state_annotation:
+                state_info['detected'] = True
+                state_info['source'] = 'annotation'
+                state_info['confidence'] = 'high'  # User selection is always high confidence
+                annotation_lower = state_annotation.lower().strip()
+                logger.info(f"✅ Found state-management annotation: '{state_annotation}' (lowercase: '{annotation_lower}')")
+                if annotation_lower in ['stateless', 'external', 'redis', 'database', 'db']:
+                    state_info['type'] = 'stateless'
+                    state_info['details'].append(f"User annotation indicates STATELESS: {state_annotation}")
+                    logger.info(f"✅✅✅ Detected STATELESS from user annotation: {state_annotation}")
+                elif annotation_lower in ['stateful', 'internal', 'local']:
+                    state_info['type'] = 'stateful'
+                    state_info['details'].append(f"User annotation indicates STATEFUL: {state_annotation}")
+                    logger.info(f"✅✅✅ Detected STATEFUL from user annotation: {state_annotation}")
+                else:
+                    # Unknown value, but still detected
+                    state_info['type'] = 'unknown'
+                    state_info['details'].append(f"Annotation value: {state_annotation}")
+                    logger.warning(f"⚠️ Unknown annotation value: {state_annotation}")
+                return state_info
+            else:
+                logger.debug(f"ℹ️ No 'ai4k8s.io/state-management' annotation found")
+            
+            # 3. Check environment variables for external state indicators
+            env_indicators = {
+                'stateless': ['REDIS', 'DATABASE', 'DB_', 'POSTGRES', 'MYSQL', 'MONGO', 
+                             'CASSANDRA', 'ELASTICSEARCH', 'EXTERNAL', 'CACHE_'],
+                'stateful': ['LOCAL_STORAGE', 'PERSISTENT', 'VOLUME', 'STATE_DIR']
+            }
+            
+            for container in containers:
+                env = container.get('env', [])
+                env_str = ' '.join([str(e) for e in env]).upper()
+                
+                # Check for stateless indicators
+                for indicator in env_indicators['stateless']:
+                    if indicator in env_str:
+                        state_info['detected'] = True
+                        state_info['source'] = 'environment_variables'
+                        state_info['type'] = 'stateless'
+                        state_info['confidence'] = 'medium'
+                        state_info['details'].append(f"Environment variable indicates external state: {indicator}")
+                        break
+                
+                # Check for stateful indicators
+                if not state_info['detected']:
+                    for indicator in env_indicators['stateful']:
+                        if indicator in env_str:
+                            state_info['detected'] = True
+                            state_info['source'] = 'environment_variables'
+                            state_info['type'] = 'stateful'
+                            state_info['confidence'] = 'medium'
+                            state_info['details'].append(f"Environment variable indicates internal state: {indicator}")
+                            break
+                
+                if state_info['detected']:
+                    break
+            
+            # 4. Check volume mounts for persistent storage
+            volumes = pod_spec.get('volumes', []) if pod_spec else []
+            # Safety check: ensure volumes is a list, not None
+            if volumes is None:
+                volumes = []
+            volume_mounts = []
+            for container in containers:
+                volume_mounts_list = container.get('volumeMounts', [])
+                if volume_mounts_list:  # Only extend if not None/empty
+                    volume_mounts.extend(volume_mounts_list if isinstance(volume_mounts_list, list) else [])
+            
+            persistent_volume_types = ['persistentVolumeClaim', 'hostPath', 'local']
+            for volume in volumes:
+                volume_type = None
+                if 'persistentVolumeClaim' in volume:
+                    volume_type = 'persistentVolumeClaim'
+                elif 'hostPath' in volume:
+                    volume_type = 'hostPath'
+                elif 'emptyDir' in volume:
+                    # emptyDir is ephemeral, not persistent
+                    continue
+                
+                if volume_type in persistent_volume_types:
+                    state_info['detected'] = True
+                    state_info['source'] = 'volume_mounts'
+                    state_info['type'] = 'stateful'
+                    state_info['confidence'] = 'high'
+                    state_info['details'].append(f"Persistent volume detected: {volume_type}")
+                    break
+            
+            # 5. Check service dependencies (look for Redis, DB services in namespace)
+            if not state_info['detected']:
+                services_result = hpa_manager._execute_kubectl(
+                    f"get services -n {namespace} -o json"
+                )
+                
+                if services_result.get('success'):
+                    result_data = services_result.get('result', {})
+                    services = result_data.get('items', []) if result_data else []
+                    # Safety check: ensure services is a list, not None
+                    if services is None:
+                        services = []
+                    service_names = [svc.get('metadata', {}).get('name', '').lower() for svc in services]
+                    
+                    # Check for common external state services
+                    external_state_services = ['redis', 'postgres', 'mysql', 'mongo', 'cassandra', 
+                                              'elasticsearch', 'database', 'db', 'cache']
+                    
+                    for service_name in service_names:
+                        for indicator in external_state_services:
+                            if indicator in service_name:
+                                state_info['detected'] = True
+                                state_info['source'] = 'service_dependencies'
+                                state_info['type'] = 'stateless'
+                                state_info['confidence'] = 'medium'
+                                state_info['details'].append(f"External state service detected: {service_name}")
+                                break
+                        if state_info['detected']:
+                            break
+            
+            # 6. Check deployment labels
+            if not state_info['detected']:
+                state_label = labels.get('ai4k8s.io/state-management')
+                if state_label:
+                    state_info['detected'] = True
+                    state_info['source'] = 'label'
+                    state_info['confidence'] = 'high'
+                    if state_label.lower() in ['stateless', 'external']:
+                        state_info['type'] = 'stateless'
+                    elif state_label.lower() in ['stateful', 'internal']:
+                        state_info['type'] = 'stateful'
+                    state_info['details'].append(f"Label indicates: {state_label}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error detecting state management: {e}")
+            # Return unknown state on error
+            state_info['type'] = 'unknown'
+        
+        return state_info
+    
     def _prepare_context(self, deployment_name: str, namespace: str,
                         current_metrics: Dict[str, Any], forecast: Dict[str, Any],
                         hpa_status: Optional[Dict[str, Any]],
                         vpa_status: Optional[Dict[str, Any]],
                         current_resources: Optional[Dict[str, Any]],
                         historical_patterns: Optional[List[Dict[str, Any]]],
-                        current_replicas: int, min_replicas: int, max_replicas: int) -> Dict[str, Any]:
+                        current_replicas: int, min_replicas: int, max_replicas: int,
+                        hpa_manager=None) -> Dict[str, Any]:
         """Prepare context dictionary for LLM"""
         context = {
             'deployment': {
@@ -493,13 +878,46 @@ class LLMAutoscalingAdvisor:
                 'memory_limit': 'N/A'
             }
         
-        # Add explicit note about state management detection
-        # We don't have automatic detection, so we need to be conservative
-        context['state_management_note'] = (
-            "IMPORTANT: No explicit state management information is available. "
-            "DO NOT assume the application uses Redis, external databases, or externalized state. "
-            "When uncertain, prefer VPA (vertical scaling) as it's safer for applications that may store state inside pods."
-        )
+        # Detect state management from multiple sources
+        state_info = {
+            'detected': False,
+            'type': 'unknown',
+            'note': 'No explicit state management information available. DO NOT assume external state (Redis, DB) unless explicitly mentioned.'
+        }
+        
+        if hpa_manager:
+            state_info = self._detect_state_management(deployment_name, namespace, hpa_manager)
+            logger.info(f"🔍 State detection result: detected={state_info.get('detected')}, type={state_info.get('type')}, source={state_info.get('source')}, confidence={state_info.get('confidence')}")
+        else:
+            logger.warning(f"⚠️ No hpa_manager provided, cannot detect state management")
+        
+        # Build state management note based on detection
+        if state_info['detected']:
+            if state_info['type'] == 'stateless':
+                state_note = (
+                    f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
+                    f"Application is STATELESS - state is externalized (Redis, DB, external cache, etc.). "
+                    f"Details: {', '.join(state_info['details'])}. "
+                    f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                )
+            elif state_info['type'] == 'stateful':
+                state_note = (
+                    f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
+                    f"Application is STATEFUL - state is stored inside the pod. "
+                    f"Details: {', '.join(state_info['details'])}. "
+                    f"**YOU MUST RECOMMEND VPA (vertical scaling) - DO NOT recommend HPA for stateful applications.**"
+                )
+            else:
+                state_note = state_info['note']
+        else:
+            state_note = (
+                "⚠️ No state management information detected from deployment analysis. "
+                "Checked: annotations, environment variables, volume mounts, service dependencies, labels. "
+                "When uncertain, prefer VPA (vertical scaling) as it's safer for applications that may store state inside pods."
+            )
+        
+        context['state_management_note'] = state_note
+        context['state_management_info'] = state_info
         
         if hpa_status:
             context['hpa'] = {
@@ -620,6 +1038,12 @@ Respond in JSON format with:
 **State Management Information:**
 {context.get('state_management_note', 'No explicit state management information available. DO NOT assume external state (Redis, DB) unless explicitly mentioned.')}
 
+**CRITICAL STATE MANAGEMENT RULES:**
+- If the state management information above says "STATELESS" or "state is externalized" → YOU MUST RECOMMEND HPA (horizontal scaling)
+- If the state management information above says "STATEFUL" or "state is stored inside the pod" → YOU MUST RECOMMEND VPA (vertical scaling)
+- If the state management information says "No state management information detected" → Default to VPA for safety (but prefer HPA if you have evidence of external state)
+- DO NOT ignore the state management information provided above - it is critical for choosing between HPA and VPA
+
 **HPA Status:**
 """
         
@@ -727,7 +1151,8 @@ Provide your recommendation in the specified JSON format with scaling_type field
                                       current_resources: Optional[Dict[str, Any]] = None,
                                       current_replicas: int = 1,
                                       min_replicas: int = 1,
-                                      max_replicas: int = 10) -> Dict[str, Any]:
+                                      max_replicas: int = 10,
+                                      hpa_manager=None) -> Dict[str, Any]:
         """
         Get intelligent LLM-based scaling recommendation
         
@@ -744,7 +1169,8 @@ Provide your recommendation in the specified JSON format with scaling_type field
             historical_patterns=None,  # Can be added later
             current_replicas=current_replicas,
             min_replicas=min_replicas,
-            max_replicas=max_replicas
+            max_replicas=max_replicas,
+            hpa_manager=hpa_manager
         )
     
     def explain_scaling_decision(self, recommendation: Dict[str, Any]) -> str:
