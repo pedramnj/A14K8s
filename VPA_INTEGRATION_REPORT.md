@@ -15,7 +15,7 @@ This report documents the comprehensive integration of Vertical Pod Autoscaler (
 - ✅ **VPA Engine Implementation**: Complete VPA resource management system
 - ✅ **LLM Decision Making**: Enhanced LLM advisor to choose between HPA and VPA
 - ✅ **Direct Resource Patching**: Predictive Autoscaling patches deployment resources directly (no VPA controller dependency)
-- ✅ **State Management Detection**: Advanced prompt engineering to detect application state patterns
+- ✅ **State Management Detection**: Multi-source detection system analyzing annotations, environment variables, volume mounts, service dependencies, and labels to determine stateless vs stateful applications
 - ✅ **UI Integration**: Comprehensive VPA management interface with real-time stats
 - ✅ **Conflict Resolution**: Clear separation between Predictive Autoscaling and VPA controller
 
@@ -26,11 +26,12 @@ This report documents the comprehensive integration of Vertical Pod Autoscaler (
 1. [Architecture Overview](#architecture-overview)
 2. [System Flow](#system-flow)
 3. [LLM Prompt Engineering](#llm-prompt-engineering)
-4. [Implementation Details](#implementation-details)
-5. [Files Modified/Created](#files-modifiedcreated)
-6. [Technical Specifications](#technical-specifications)
-7. [Testing & Validation](#testing--validation)
-8. [Known Limitations & Future Work](#known-limitations--future-work)
+4. [State Management Detection System](#state-management-detection-system)
+5. [Implementation Details](#implementation-details)
+6. [Files Modified/Created](#files-modifiedcreated)
+7. [Technical Specifications](#technical-specifications)
+8. [Testing & Validation](#testing--validation)
+9. [Known Limitations & Future Work](#known-limitations--future-work)
 
 ---
 
@@ -401,6 +402,285 @@ if no_state_info_provided and scaling_type == 'hpa':
     target_replicas = None
     # Calculate VPA targets
 ```
+
+---
+
+## State Management Detection System
+
+### Overview
+
+The State Management Detection system is a critical component that analyzes Kubernetes deployments from multiple sources to determine whether an application is **stateless** (state externalized) or **stateful** (state inside pod). This information directly influences the LLM's decision between HPA (horizontal scaling) and VPA (vertical scaling).
+
+### Detection Sources (Priority Order)
+
+The system checks multiple sources in priority order, stopping at the first successful detection:
+
+#### 1. **Deployment Annotations** (Highest Priority, High Confidence)
+- **Annotation Key**: `ai4k8s.io/state-management`
+- **Values**:
+  - `stateless`, `external`, `redis`, `database`, `db` → **Stateless** (prefer HPA)
+  - `stateful`, `internal`, `local` → **Stateful** (prefer VPA)
+- **Confidence**: **High** (explicit user declaration)
+- **Example**:
+  ```yaml
+  metadata:
+    annotations:
+      ai4k8s.io/state-management: "stateless"
+  ```
+
+#### 2. **Environment Variables** (Medium Priority, Medium Confidence)
+- **Stateless Indicators** (external state):
+  - `REDIS`, `DATABASE`, `DB_`, `POSTGRES`, `MYSQL`, `MONGO`, `CASSANDRA`, `ELASTICSEARCH`, `EXTERNAL`, `CACHE_`
+- **Stateful Indicators** (internal state):
+  - `LOCAL_STORAGE`, `PERSISTENT`, `VOLUME`, `STATE_DIR`
+- **Confidence**: **Medium** (inferred from configuration)
+- **Example**:
+  ```yaml
+  env:
+    - name: REDIS_HOST
+      value: "redis-service"
+    - name: DATABASE_URL
+      value: "postgres://..."
+  ```
+
+#### 3. **Volume Mounts** (High Priority, High Confidence)
+- **Persistent Volume Types**:
+  - `persistentVolumeClaim` (PVC)
+  - `hostPath` (host filesystem)
+  - `local` (local storage)
+- **Note**: `emptyDir` volumes are **ignored** (ephemeral, not persistent)
+- **Confidence**: **High** (persistent storage indicates stateful)
+- **Example**:
+  ```yaml
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: app-data-pvc
+  volumeMounts:
+    - name: data
+      mountPath: /app/data
+  ```
+
+#### 4. **Service Dependencies** (Medium Priority, Medium Confidence)
+- **External State Services** (in same namespace):
+  - `redis`, `postgres`, `mysql`, `mongo`, `cassandra`, `elasticsearch`, `database`, `db`, `cache`
+- **Detection Method**: Scans all services in the deployment's namespace
+- **Confidence**: **Medium** (presence suggests external state, but not definitive)
+- **Example**:
+  ```yaml
+  # If namespace contains:
+  services:
+    - name: redis-service
+    - name: postgres-db
+  # → Likely stateless (uses external services)
+  ```
+
+#### 5. **Deployment Labels** (High Priority, High Confidence)
+- **Label Key**: `ai4k8s.io/state-management`
+- **Values**: Same as annotations
+- **Confidence**: **High** (explicit user declaration)
+- **Example**:
+  ```yaml
+  metadata:
+    labels:
+      ai4k8s.io/state-management: "stateful"
+  ```
+
+### Detection Algorithm Flow
+
+```
+┌─────────────────────────────────────────┐
+│  Start State Detection                  │
+└─────────────────────────────────────────┘
+              │
+              ▼
+┌─────────────────────────────────────────┐
+│  1. Check Annotations                    │
+│     ai4k8s.io/state-management          │
+└─────────────────────────────────────────┘
+              │
+        ┌─────┴─────┐
+        │ Found?   │
+        └─────┬─────┘
+              │ No
+              ▼
+┌─────────────────────────────────────────┐
+│  2. Check Environment Variables          │
+│     REDIS, DATABASE, etc.                │
+└─────────────────────────────────────────┘
+              │
+        ┌─────┴─────┐
+        │ Found?   │
+        └─────┬─────┘
+              │ No
+              ▼
+┌─────────────────────────────────────────┐
+│  3. Check Volume Mounts                 │
+│     PVC, hostPath, local                │
+└─────────────────────────────────────────┘
+              │
+        ┌─────┴─────┐
+        │ Found?    │
+        └─────┬─────┘
+              │ No
+              ▼
+┌─────────────────────────────────────────┐
+│  4. Check Service Dependencies          │
+│     Redis, DB services in namespace     │
+└─────────────────────────────────────────┘
+              │
+        ┌─────┴─────┐
+        │ Found?   │
+        └─────┬─────┘
+              │ No
+              ▼
+┌─────────────────────────────────────────┐
+│  5. Check Labels                        │
+│     ai4k8s.io/state-management          │
+└─────────────────────────────────────────┘
+              │
+        ┌─────┴─────┐
+        │ Found?   │
+        └─────┬─────┘
+              │ No
+              ▼
+┌─────────────────────────────────────────┐
+│  Return: detected=False, type='unknown' │
+│  Confidence: 'low'                      │
+└─────────────────────────────────────────┘
+```
+
+### Detection Result Structure
+
+```python
+{
+    'detected': bool,           # True if state management detected
+    'source': str,              # 'annotation', 'environment_variables', 
+                                # 'volume_mounts', 'service_dependencies', 'label'
+    'type': str,                # 'stateless', 'stateful', 'unknown'
+    'details': List[str],       # List of detection details/evidence
+    'confidence': str           # 'high', 'medium', 'low'
+}
+```
+
+### Integration with LLM Decision Making
+
+The detected state management information is passed to the LLM in the context:
+
+```python
+# In _prepare_context()
+state_info = self._detect_state_management(deployment_name, namespace, hpa_manager)
+
+if state_info['detected']:
+    state_note = f"""
+    State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}):
+    - Type: {state_info['type']}
+    - Details: {', '.join(state_info['details'])}
+    """
+else:
+    state_note = """
+    No explicit state management information available.
+    DO NOT assume external state (Redis, DB) unless explicitly mentioned.
+    """
+```
+
+### Post-Processing Validation
+
+Even after LLM analysis, the system validates and corrects recommendations based on detected state:
+
+```python
+# In _parse_llm_response()
+detected_state_type = context.get('state_management_type')
+
+# CRITICAL CORRECTION LOGIC
+if (detected_state_type == 'stateful' or detected_state_type == 'uncertain') and \
+   scaling_type == 'hpa' and not has_state_externalized:
+    logger.warning("⚠️ Detected state is 'stateful' but LLM recommended HPA. Correcting to VPA.")
+    recommendation['scaling_type'] = 'vpa'
+    recommendation['target_replicas'] = None
+    # Recalculate VPA targets based on current usage
+```
+
+### User Input Override
+
+Users can manually specify state management via the UI dropdown:
+
+- **Auto-detect** (default): System uses detection algorithm
+- **Stateless**: Force stateless (prefer HPA)
+- **Stateful**: Force stateful (prefer VPA)
+
+The user preference takes precedence over automatic detection:
+
+```python
+if user_preference:
+    state_info['type'] = user_preference
+    state_info['source'] = 'user_input'
+    state_info['confidence'] = 'high'
+```
+
+### Example Scenarios
+
+#### Scenario 1: Stateless Web Application
+```yaml
+# Deployment with Redis dependency
+env:
+  - name: REDIS_HOST
+    value: "redis-service:6379"
+```
+**Detection Result**:
+- `detected: True`
+- `source: 'environment_variables'`
+- `type: 'stateless'`
+- `confidence: 'medium'`
+- **LLM Decision**: HPA (horizontal scaling)
+
+#### Scenario 2: Stateful Database Application
+```yaml
+# Deployment with persistent volume
+volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: db-data-pvc
+```
+**Detection Result**:
+- `detected: True`
+- `source: 'volume_mounts'`
+- `type: 'stateful'`
+- `confidence: 'high'`
+- **LLM Decision**: VPA (vertical scaling)
+
+#### Scenario 3: Unknown State (No Detection)
+```yaml
+# Deployment with no state indicators
+# (no annotations, no external services, no volumes)
+```
+**Detection Result**:
+- `detected: False`
+- `source: None`
+- `type: 'unknown'`
+- `confidence: 'low'`
+- **LLM Decision**: VPA (safer default, avoids breaking stateful apps)
+
+### Benefits of Multi-Source Detection
+
+1. **Robustness**: Multiple sources increase detection accuracy
+2. **Flexibility**: Users can explicitly declare via annotations/labels
+3. **Automatic Inference**: System can detect from configuration without user input
+4. **Confidence Levels**: Different sources provide different confidence levels
+5. **Fallback Safety**: Unknown state defaults to VPA (safer for stateful apps)
+
+### Code Implementation
+
+**Location**: `llm_autoscaling_advisor.py`
+
+**Key Method**: `_detect_state_management(deployment_name, namespace, hpa_manager)`
+
+**Lines**: 451-608
+
+**Dependencies**:
+- `hpa_manager._execute_kubectl()`: For querying Kubernetes resources
+- Deployment JSON structure parsing
+- Service and volume analysis
 
 ---
 

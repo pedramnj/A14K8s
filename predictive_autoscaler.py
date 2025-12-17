@@ -11,6 +11,7 @@ Thesis: AI Agent for Kubernetes Management
 """
 
 import logging
+import sys
 import json
 import os
 import subprocess
@@ -25,6 +26,24 @@ from autoscaling_engine import HorizontalPodAutoscaler
 from llm_autoscaling_advisor import LLMAutoscalingAdvisor
 
 logger = logging.getLogger(__name__)
+if not logger.handlers:  # Only configure if not already configured
+    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Console handler (stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    # File handler
+    try:
+        file_handler = logging.FileHandler('/home1/pedramnj/ai4k8s/predictive_autoscaler.log', mode='a')
+        file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        # If file logging fails, continue with console only
+        logger.warning(f"Could not set up file logging: {e}")
 
 class PredictiveAutoscaler:
     """Predictive autoscaling based on ML forecasts"""
@@ -62,7 +81,8 @@ class PredictiveAutoscaler:
         self.safety_buffer = 1.2  # 20% buffer for safety
         
     def predict_and_scale(self, deployment_name: str, namespace: str = "default",
-                         min_replicas: int = 2, max_replicas: int = 10) -> Dict[str, Any]:
+                         min_replicas: int = 2, max_replicas: int = 10,
+                         state_management: Optional[str] = None) -> Dict[str, Any]:
         """Predict future load and scale proactively"""
         try:
             # Trim deployment name and namespace to remove any whitespace
@@ -83,6 +103,13 @@ class PredictiveAutoscaler:
                 'ai4k8s.io/predictive-autoscaling-config': config_json
             }
             
+            # Add state management annotation if provided by user
+            if state_management:
+                annotations['ai4k8s.io/state-management'] = state_management
+                logger.info(f"✅ Setting state-management annotation to: {state_management}")
+            else:
+                logger.debug(f"ℹ️ No state_management provided, skipping annotation")
+            
             labels = {
                 'ai4k8s.io/predictive-autoscaling': 'enabled'
             }
@@ -92,7 +119,36 @@ class PredictiveAutoscaler:
                 deployment_name, namespace, annotations
             )
             if not annot_result.get('success'):
-                logger.warning(f"Failed to add annotations: {annot_result.get('error')}")
+                logger.error(f"❌ Failed to add annotations: {annot_result.get('error')}")
+                return {
+                    'success': False,
+                    'error': f"Failed to set predictive autoscaling annotations: {annot_result.get('error')}"
+                }
+            else:
+                logger.info(f"✅ Successfully set annotations: {list(annotations.keys())}")
+            
+            # Verify annotations were set correctly
+            try:
+                deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
+                if deployment_status.get('success'):
+                    verify_annotations = deployment_status.get('annotations', {})
+                    verify_config_str = verify_annotations.get('ai4k8s.io/predictive-autoscaling-config', '')
+                    if verify_config_str:
+                        try:
+                            verify_config = json.loads(verify_config_str)
+                            expected_config = json.loads(config_json)
+                            # Compare key fields instead of exact string match (JSON formatting might differ)
+                            if (verify_config.get('min_replicas') == expected_config.get('min_replicas') and
+                                verify_config.get('max_replicas') == expected_config.get('max_replicas')):
+                                logger.info(f"✅ Verified annotation ai4k8s.io/predictive-autoscaling-config is set correctly (min={verify_config.get('min_replicas')}, max={verify_config.get('max_replicas')})")
+                            else:
+                                logger.warning(f"⚠️ Annotation verification failed - config mismatch: expected min={expected_config.get('min_replicas')}, max={expected_config.get('max_replicas')}, got min={verify_config.get('min_replicas')}, max={verify_config.get('max_replicas')}")
+                        except json.JSONDecodeError:
+                            logger.warning(f"⚠️ Annotation verification failed - invalid JSON in annotation")
+                    else:
+                        logger.warning(f"⚠️ Annotation verification failed - annotation not found after setting")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not verify annotations: {e}")
             
             # Patch labels
             label_result = self.hpa_manager.patch_deployment_labels(
@@ -224,7 +280,7 @@ class PredictiveAutoscaler:
                         }
                     }
                     
-                    # Get LLM recommendation (now includes VPA support)
+                    # Get LLM recommendation (now includes VPA support and state detection)
                     llm_result = self.llm_advisor.get_intelligent_recommendation(
                         deployment_name=deployment_name,
                         namespace=namespace,
@@ -235,7 +291,8 @@ class PredictiveAutoscaler:
                         current_resources=current_resources,
                         current_replicas=current_replicas,
                         min_replicas=min_replicas,
-                        max_replicas=max_replicas
+                        max_replicas=max_replicas,
+                        hpa_manager=self.hpa_manager
                     )
                     
                     # Additional validation: Ensure LLM recommendation respects min/max replicas
@@ -502,11 +559,16 @@ class PredictiveAutoscaler:
                     }
                 }
             else:
+                # CRITICAL: Cap target_replicas to max_replicas even for 'none' action
+                target_replicas_capped = min(current_replicas, max_replicas)
+                if target_replicas_capped != current_replicas:
+                    logger.warning(f"🔍🔍🔍 PREDICT_AND_SCALE: Capping current_replicas={current_replicas} to max={max_replicas} for 'none' action")
+                
                 return {
                     'success': True,
                     'action': 'none',
                     'current_replicas': current_replicas,
-                    'target_replicas': current_replicas,
+                    'target_replicas': target_replicas_capped,  # Capped to max_replicas
                     'reason': action.get('reason', 'No scaling needed based on predictions'),
                     'forecast': {
                         'cpu': {
@@ -573,9 +635,14 @@ class PredictiveAutoscaler:
                     'reason': f'Predicted usage is low (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%)'
                 }
         
+        # CRITICAL: Cap current_replicas to max_replicas even for "no scaling needed"
+        target_replicas = min(current_replicas, max_replicas)
+        if target_replicas != current_replicas:
+            logger.warning(f"🔍🔍🔍 RULE-BASED: Capping current_replicas={current_replicas} to max={max_replicas} for 'none' action")
+        
         return {
             'action': 'none',
-            'target_replicas': current_replicas,
+            'target_replicas': target_replicas,  # Capped to max_replicas
             'reason': f'No scaling needed. Current usage: CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%'
         }
     
@@ -728,6 +795,7 @@ class PredictiveAutoscaler:
     def list_enabled_deployments(self, namespace: Optional[str] = None) -> Dict[str, Any]:
         """List all deployments with predictive autoscaling enabled"""
         enabled_deployments = []
+        logger.debug(f"🔍 Listing enabled deployments for namespace: {namespace or 'all'}")
         
         # Method 1: Query Kubernetes for deployments with the label
         result = self.hpa_manager.list_deployments_with_label(
@@ -745,6 +813,12 @@ class PredictiveAutoscaler:
                 
                 deployment_name = metadata.get('name')
                 deployment_namespace = metadata.get('namespace', 'default')
+                
+                # CRITICAL: Verify annotation actually exists and is set to 'true'
+                # This prevents including deployments that are being disabled
+                if annotations.get('ai4k8s.io/predictive-autoscaling-enabled') != 'true':
+                    logger.debug(f"Skipping {deployment_namespace}/{deployment_name}: annotation not set to 'true'")
+                    continue
                 
                 # Parse config from annotations
                 config_json = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
@@ -782,11 +856,21 @@ class PredictiveAutoscaler:
                 for deployment in all_deployments:
                     metadata = deployment.get('metadata', {})
                     annotations = metadata.get('annotations', {})
+                    labels = metadata.get('labels', {})
                     deployment_name = metadata.get('name')
                     deployment_namespace = metadata.get('namespace', 'default')
                     
-                    # Check if this deployment has predictive autoscaling annotation
-                    if annotations.get('ai4k8s.io/predictive-autoscaling-enabled') == 'true':
+                    # CRITICAL: Check if this deployment has predictive autoscaling annotation set to 'true'
+                    # This prevents including deployments that are being disabled or have stale annotations
+                    has_annotation = annotations.get('ai4k8s.io/predictive-autoscaling-enabled') == 'true'
+                    
+                    if not has_annotation:
+                        logger.debug(f"Skipping {deployment_namespace}/{deployment_name}: annotation not set to 'true' (value: {annotations.get('ai4k8s.io/predictive-autoscaling-enabled')})")
+                        continue
+                    
+                    # Double-check: verify annotation exists and is set to 'true'
+                    # This prevents including deployments that are in the process of being disabled
+                    if has_annotation:
                         # Check if already in list
                         found = any(
                             d['deployment_name'] == deployment_name and
@@ -817,8 +901,12 @@ class PredictiveAutoscaler:
             logger.warning(f"Failed to query all deployments for predictive autoscaling: {e}")
         
         # Method 3: Merge with in-memory cache (for backward compatibility)
-        # Include both enabled and recently disabled deployments (for replica counting)
+        # Only include deployments that are still enabled (have annotations in Kubernetes)
         for key, deployment in self.enabled_deployments.items():
+            # Skip if disabled (shouldn't happen after fix, but safety check)
+            if deployment.get('disabled'):
+                continue
+                
             # Check if already in list
             found = any(
                 d['deployment_name'] == deployment['deployment_name'] and
@@ -826,25 +914,25 @@ class PredictiveAutoscaler:
                 for d in enabled_deployments
             )
             if not found:
-                # Get actual replica count for in-memory cache entries
+                # Verify deployment still has annotation (double-check)
                 deployment_status = self.hpa_manager.get_deployment_replicas(
                     deployment['deployment_name'], deployment['namespace']
                 )
+                if not deployment_status.get('success'):
+                    # Deployment doesn't exist, skip
+                    continue
+                
+                # Get actual replica count for in-memory cache entries
                 actual_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
                 
-                # Use cached replicas if available and deployment is disabled
-                if deployment.get('disabled') and 'replicas' in deployment:
-                    actual_replicas = deployment.get('replicas', actual_replicas)
-                
-                # Add to list with replica count (even if disabled, for stat calculation)
+                # Add to list with replica count
                 enabled_deployments.append({
                     'deployment_name': deployment['deployment_name'],
                     'namespace': deployment['namespace'],
                     'min_replicas': deployment.get('min_replicas', 2),
                     'max_replicas': deployment.get('max_replicas', 10),
                     'replicas': actual_replicas,  # Add actual replica count
-                    'enabled_at': deployment.get('enabled_at', ''),
-                    'disabled': deployment.get('disabled', False)  # Track if disabled
+                    'enabled_at': deployment.get('enabled_at', '')
                 })
         
         return {
@@ -856,72 +944,189 @@ class PredictiveAutoscaler:
     def disable_predictive_autoscaling(self, deployment_name: str, namespace: str = "default") -> Dict[str, Any]:
         """Disable predictive autoscaling for a deployment"""
         try:
-            # Use kubectl annotate to remove annotations (using - suffix)
             import subprocess
             env = os.environ.copy()
             if self.hpa_manager.kubeconfig_path:
                 env['KUBECONFIG'] = self.hpa_manager.kubeconfig_path
             
-            # Remove annotations one by one using kubectl annotate with - suffix
-            annotations_to_remove = [
-                'ai4k8s.io/predictive-autoscaling-enabled',
-                'ai4k8s.io/predictive-autoscaling-enabled-at',
-                'ai4k8s.io/predictive-autoscaling-config'
+            # Use kubectl patch with JSON patch to remove annotations and labels
+            # This is more reliable than annotate/label with - suffix
+            patch_operations = [
+                {'op': 'remove', 'path': '/metadata/annotations/ai4k8s.io~1predictive-autoscaling-enabled'},
+                {'op': 'remove', 'path': '/metadata/annotations/ai4k8s.io~1predictive-autoscaling-enabled-at'},
+                {'op': 'remove', 'path': '/metadata/annotations/ai4k8s.io~1predictive-autoscaling-config'},
+                {'op': 'remove', 'path': '/metadata/annotations/ai4k8s.io~1state-management'},  # Also remove state-management annotation
+                {'op': 'remove', 'path': '/metadata/labels/ai4k8s.io~1predictive-autoscaling'}
             ]
             
-            for key in annotations_to_remove:
-                result = subprocess.run(
-                    ['kubectl', 'annotate', 'deployment', deployment_name,
-                     f'-n', namespace, f'{key}-'],
-                    capture_output=True,
-                    text=True,
-                    timeout=10,
-                    env=env
-                )
-                if result.returncode != 0 and 'not found' not in result.stderr.lower():
-                    logger.warning(f"Failed to remove annotation {key}: {result.stderr}")
+            # Filter out operations for annotations/labels that don't exist (to avoid errors)
+            # First, get the deployment to see what exists
+            get_result = self.hpa_manager._execute_kubectl(
+                f"get deployment {deployment_name} -n {namespace} -o json"
+            )
+            
+            if not get_result.get('success'):
+                logger.error(f"❌ Failed to get deployment {deployment_name} in {namespace}: {get_result.get('error')}")
+                return {
+                    'success': False,
+                    'error': f'Deployment {deployment_name} not found in namespace {namespace}'
+                }
+            
+            deployment_data = get_result.get('result', {})
+            annotations = deployment_data.get('metadata', {}).get('annotations', {})
+            labels = deployment_data.get('metadata', {}).get('labels', {})
+            
+            # Remove annotations using kubectl annotate with - suffix (most reliable method)
+            # Use --overwrite flag to ensure removal even if annotation doesn't exist
+            annotations_removed = []
+            for key in ['ai4k8s.io/predictive-autoscaling-enabled', 
+                       'ai4k8s.io/predictive-autoscaling-enabled-at',
+                       'ai4k8s.io/predictive-autoscaling-config']:
+                if key in annotations:
+                    annotate_cmd = [
+                        'kubectl', 'annotate', 'deployment', deployment_name,
+                        f'-n', namespace, '--overwrite', f'{key}-'
+                    ]
+                    logger.info(f"🔄 Removing annotation {key} using: {' '.join(annotate_cmd)}")
+                    result = subprocess.run(annotate_cmd, capture_output=True, text=True, timeout=10, env=env)
+                    logger.info(f"Annotation removal result: returncode={result.returncode}, stdout={result.stdout}, stderr={result.stderr}")
+                    if result.returncode == 0:
+                        annotations_removed.append(key)
+                        logger.info(f"✅ Removed annotation: {key}")
+                    else:
+                        logger.error(f"❌ Failed to remove annotation {key}: {result.stderr}")
+                        # Try alternative method: use kubectl patch with strategic merge
+                        try:
+                            patch_cmd = [
+                                'kubectl', 'patch', 'deployment', deployment_name,
+                                f'-n', namespace,
+                                '--type', 'merge',
+                                '-p', json.dumps({'metadata': {'annotations': {key: None}}})
+                            ]
+                            logger.info(f"🔄 Trying alternative patch method: {' '.join(patch_cmd)}")
+                            patch_result = subprocess.run(patch_cmd, capture_output=True, text=True, timeout=10, env=env)
+                            if patch_result.returncode == 0:
+                                logger.info(f"✅ Removed annotation {key} using patch method")
+                                annotations_removed.append(key)
+                            else:
+                                logger.error(f"❌ Patch method also failed: {patch_result.stderr}")
+                        except Exception as e:
+                            logger.error(f"❌ Exception trying patch method: {e}")
             
             # Remove label using kubectl label with - suffix
-            result = subprocess.run(
-                ['kubectl', 'label', 'deployment', deployment_name,
-                 f'-n', namespace, 'ai4k8s.io/predictive-autoscaling-'],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                env=env
-            )
-            if result.returncode != 0 and 'not found' not in result.stderr.lower():
-                logger.warning(f"Failed to remove label: {result.stderr}")
+            if 'ai4k8s.io/predictive-autoscaling' in labels:
+                label_cmd = [
+                    'kubectl', 'label', 'deployment', deployment_name,
+                    f'-n', namespace, '--overwrite', 'ai4k8s.io/predictive-autoscaling-'
+                ]
+                logger.info(f"🔄 Removing label using: {' '.join(label_cmd)}")
+                result = subprocess.run(label_cmd, capture_output=True, text=True, timeout=10, env=env)
+                logger.info(f"Label removal result: returncode={result.returncode}, stdout={result.stdout}, stderr={result.stderr}")
+                if result.returncode == 0:
+                    logger.info(f"✅ Removed label: ai4k8s.io/predictive-autoscaling")
+                else:
+                    logger.error(f"❌ Failed to remove label: {result.stderr}")
             
-            # Get current replica count before disabling (for stat calculation)
-            deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
-            current_replicas = deployment_status.get('replicas', 0) if deployment_status.get('success') else 0
+            if not annotations_removed and 'ai4k8s.io/predictive-autoscaling' not in labels:
+                logger.info(f"ℹ️ No annotations/labels to remove for {namespace}/{deployment_name}")
             
-            # Keep in in-memory cache temporarily with a "disabled" flag so we can still count replicas
-            # This ensures Total Replicas stat doesn't drop to 0 immediately after disabling
+            # If annotate commands failed, try strategic merge patch as fallback
+            if len(annotations_removed) < len([k for k in ['ai4k8s.io/predictive-autoscaling-enabled', 
+                                                          'ai4k8s.io/predictive-autoscaling-enabled-at',
+                                                          'ai4k8s.io/predictive-autoscaling-config'] if k in annotations]):
+                logger.warning(f"⚠️ Some annotations were not removed, trying strategic merge patch as fallback")
+                # Build patch to remove all annotations and label at once
+                patch_dict = {'metadata': {'annotations': {}, 'labels': {}}}
+                for key in ['ai4k8s.io/predictive-autoscaling-enabled', 
+                           'ai4k8s.io/predictive-autoscaling-enabled-at',
+                           'ai4k8s.io/predictive-autoscaling-config',
+                           'ai4k8s.io/state-management']:  # Also remove state-management annotation
+                    if key in annotations:
+                        patch_dict['metadata']['annotations'][key] = None
+                if 'ai4k8s.io/predictive-autoscaling' in labels:
+                    patch_dict['metadata']['labels']['ai4k8s.io/predictive-autoscaling'] = None
+                
+                patch_cmd = [
+                    'kubectl', 'patch', 'deployment', deployment_name,
+                    f'-n', namespace,
+                    '--type', 'merge',
+                    '-p', json.dumps(patch_dict)
+                ]
+                logger.info(f"🔄 Trying strategic merge patch: {' '.join(patch_cmd)}")
+                patch_result = subprocess.run(patch_cmd, capture_output=True, text=True, timeout=10, env=env)
+                logger.info(f"Patch result: returncode={patch_result.returncode}, stdout={patch_result.stdout}, stderr={patch_result.stderr}")
+                if patch_result.returncode == 0:
+                    logger.info(f"✅ Successfully removed annotations/labels using strategic merge patch")
+                else:
+                    logger.error(f"❌ Strategic merge patch also failed: {patch_result.stderr}")
+            
+            # Verify removal with retry (Kubernetes API might have slight delay)
+            import time
+            max_retries = 5  # Increased retries
+            removal_verified = False
+            
+            for attempt in range(max_retries):
+                time.sleep(1)  # Increased delay to 1 second
+                verify_result = self.hpa_manager._execute_kubectl(
+                    f"get deployment {deployment_name} -n {namespace} -o json"
+                )
+                if verify_result.get('success'):
+                    verify_data = verify_result.get('result', {})
+                    verify_annotations = verify_data.get('metadata', {}).get('annotations', {})
+                    verify_labels = verify_data.get('metadata', {}).get('labels', {})
+                    
+                    annotation_exists = verify_annotations.get('ai4k8s.io/predictive-autoscaling-enabled') == 'true'
+                    label_exists = verify_labels.get('ai4k8s.io/predictive-autoscaling') == 'enabled'
+                    
+                    if not annotation_exists and not label_exists:
+                        removal_verified = True
+                        logger.info(f"✅ Verified removal of annotations/labels for {namespace}/{deployment_name} (attempt {attempt + 1})")
+                        break
+                    else:
+                        logger.warning(f"⚠️ Annotations/labels still exist (attempt {attempt + 1}/{max_retries}): annotation={annotation_exists}, label={label_exists}")
+                        # If still exists after 2 attempts, try patch again
+                        if attempt == 1:
+                            logger.info(f"🔄 Retrying patch removal...")
+                            patch_dict = {'metadata': {'annotations': {}, 'labels': {}}}
+                            for key in ['ai4k8s.io/predictive-autoscaling-enabled', 
+                                       'ai4k8s.io/predictive-autoscaling-enabled-at',
+                                       'ai4k8s.io/predictive-autoscaling-config']:
+                                if verify_annotations.get(key):
+                                    patch_dict['metadata']['annotations'][key] = None
+                            if verify_labels.get('ai4k8s.io/predictive-autoscaling'):
+                                patch_dict['metadata']['labels']['ai4k8s.io/predictive-autoscaling'] = None
+                            
+                            retry_patch_cmd = [
+                                'kubectl', 'patch', 'deployment', deployment_name,
+                                f'-n', namespace,
+                                '--type', 'merge',
+                                '-p', json.dumps(patch_dict)
+                            ]
+                            retry_result = subprocess.run(retry_patch_cmd, capture_output=True, text=True, timeout=10, env=env)
+                            logger.info(f"Retry patch result: returncode={retry_result.returncode}, stderr={retry_result.stderr}")
+                else:
+                    logger.warning(f"⚠️ Failed to verify removal (attempt {attempt + 1}/{max_retries}): {verify_result.get('error')}")
+            
+            if not removal_verified:
+                logger.error(f"❌ CRITICAL: Could not verify removal of annotations/labels for {deployment_name} after {max_retries} attempts")
+                # Still continue to remove from cache
+            
+            # Remove from in-memory cache completely
             key = f"{namespace}/{deployment_name}"
             if key in self.enabled_deployments:
-                # Mark as disabled but keep replica count
-                self.enabled_deployments[key]['disabled'] = True
-                self.enabled_deployments[key]['replicas'] = current_replicas
+                del self.enabled_deployments[key]
+                logger.info(f"✅ Removed {key} from enabled_deployments cache")
             else:
-                # Add to cache with disabled flag (in case it wasn't tracked before)
-                self.enabled_deployments[key] = {
-                    'deployment_name': deployment_name,
-                    'namespace': namespace,
-                    'min_replicas': 2,
-                    'max_replicas': 10,
-                    'replicas': current_replicas,
-                    'disabled': True
-                }
+                logger.debug(f"ℹ️ {key} was not in enabled_deployments cache")
             
             return {
                 'success': True,
                 'message': f'Predictive autoscaling disabled for {deployment_name}',
-                'replicas': current_replicas  # Return current replicas for UI
+                'replicas': 0,  # Return 0 since it's disabled
+                'removal_verified': removal_verified
             }
         except Exception as e:
-            logger.error(f"Error disabling predictive autoscaling: {e}")
+            logger.error(f"Error disabling predictive autoscaling: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e)
@@ -983,6 +1188,41 @@ class PredictiveAutoscaler:
             
             current_replicas = deployment_status['replicas']
             
+            # Get min/max replicas from deployment annotations
+            min_replicas = 2  # default
+            max_replicas = 10  # default
+            try:
+                deployment_result = self.hpa_manager._execute_kubectl(
+                    f"get deployment {deployment_name} -n {namespace} -o json"
+                )
+                if deployment_result.get('success'):
+                    deployment_data = deployment_result.get('result', {})
+                    annotations = deployment_data.get('metadata', {}).get('annotations', {})
+                    config_json = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
+                    try:
+                        if config_json and config_json != '{}':
+                            config = json.loads(config_json)
+                            min_replicas = config.get('min_replicas', 2)
+                            max_replicas = config.get('max_replicas', 10)
+                            logger.warning(f"📊📊📊 Retrieved min/max replicas from annotation: min={min_replicas}, max={max_replicas}")
+                            print(f"📊📊📊 Retrieved min/max replicas from annotation: min={min_replicas}, max={max_replicas}")
+                        else:
+                            # Annotation is missing or empty - this shouldn't happen if predictive autoscaling is enabled
+                            logger.warning(f"⚠️ Annotation ai4k8s.io/predictive-autoscaling-config is missing or empty! Deployment might not be properly enabled.")
+                            logger.warning(f"⚠️ Using defaults: min=2, max=10. Please re-enable predictive autoscaling to set correct values.")
+                            min_replicas = 2
+                            max_replicas = 10
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"⚠️ Failed to parse config annotation (invalid JSON): {e}, using defaults")
+                        min_replicas = 2
+                        max_replicas = 10
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to parse config annotation: {e}, using defaults")
+                        min_replicas = 2
+                        max_replicas = 10
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to get deployment annotations: {e}, using defaults")
+            
             # Try to get deployment-specific metrics
             deployment_metrics = self._get_deployment_metrics(deployment_name, namespace)
             logger.info(f"Getting recommendation for {deployment_name}: metrics={deployment_metrics}")
@@ -1025,6 +1265,7 @@ class PredictiveAutoscaler:
             
             # Try LLM-based recommendation first
             llm_recommendation = None
+            logger.warning(f"🔍🔍🔍 LLM CHECK: use_llm={self.use_llm}, llm_advisor={self.llm_advisor is not None}, client={self.llm_advisor.client is not None if self.llm_advisor else False}")
             if self.use_llm and self.llm_advisor:
                 try:
                     # Get HPA status if exists
@@ -1086,6 +1327,9 @@ class PredictiveAutoscaler:
                     }
                     
                     # Get LLM recommendation (now includes VPA support)
+                    # Use min/max replicas from deployment annotations (retrieved above)
+                    logger.warning(f"📊📊📊 Calling LLM advisor with min_replicas={min_replicas}, max_replicas={max_replicas}")
+                    print(f"📊📊📊 Calling LLM advisor with min_replicas={min_replicas}, max_replicas={max_replicas}")
                     llm_result = self.llm_advisor.get_intelligent_recommendation(
                         deployment_name=deployment_name,
                         namespace=namespace,
@@ -1095,17 +1339,38 @@ class PredictiveAutoscaler:
                         vpa_status=vpa_status,
                         current_resources=current_resources,
                         current_replicas=current_replicas,
-                        min_replicas=2,  # default min
-                        max_replicas=10  # default max
+                        min_replicas=min_replicas,  # From deployment annotation
+                        max_replicas=max_replicas,  # From deployment annotation
+                        hpa_manager=self.hpa_manager
                     )
                     
+                    logger.warning(f"🔍🔍🔍 LLM RESULT: success={llm_result.get('success')}, cached={llm_result.get('cached', False)}, rate_limited={llm_result.get('rate_limited', False)}, error={llm_result.get('error', 'none')}")
                     if llm_result.get('success'):
                         llm_recommendation = llm_result.get('recommendation', {})
                         scaling_type = llm_recommendation.get('scaling_type', 'hpa')
+                        logger.warning(f"🔍🔍🔍 LLM RECOMMENDATION RECEIVED: scaling_type={scaling_type}, action={llm_recommendation.get('action')}, target_replicas={llm_recommendation.get('target_replicas')}, cached={llm_result.get('cached', False)}")
+                        
+                        # CRITICAL: Validate and enforce min/max replica constraints as safety net
+                        if scaling_type in ['hpa', 'both'] and 'target_replicas' in llm_recommendation and llm_recommendation['target_replicas'] is not None:
+                            target = llm_recommendation['target_replicas']
+                            logger.warning(f"🔍🔍🔍 SAFETY VALIDATION CHECK: target={target}, max_replicas={max_replicas}, min_replicas={min_replicas}")
+                            if target > max_replicas:
+                                logger.error(f"❌❌❌ SAFETY VALIDATION: LLM recommended {target} replicas but max is {max_replicas}. Capping to {max_replicas}.")
+                                llm_recommendation['target_replicas'] = max_replicas
+                                llm_recommendation['action'] = 'at_max'
+                                llm_recommendation['reasoning'] = (llm_recommendation.get('reasoning', '') + 
+                                    f" [SAFETY: Capped from {target} to max_replicas={max_replicas}]")
+                            elif target < min_replicas:
+                                logger.error(f"❌❌❌ SAFETY VALIDATION: LLM recommended {target} replicas but min is {min_replicas}. Setting to {min_replicas}.")
+                                llm_recommendation['target_replicas'] = min_replicas
+                                llm_recommendation['action'] = 'maintain'
+                                llm_recommendation['reasoning'] = (llm_recommendation.get('reasoning', '') + 
+                                    f" [SAFETY: Set from {target} to min_replicas={min_replicas}]")
+                        
                         if scaling_type == 'vpa':
                             logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} (VPA) -> CPU: {llm_recommendation.get('target_cpu')}, Memory: {llm_recommendation.get('target_memory')}")
                         else:
-                            logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} (HPA) -> {llm_recommendation.get('target_replicas')} replicas")
+                            logger.info(f"✅ LLM recommendation: {llm_recommendation.get('action')} (HPA) -> {llm_recommendation.get('target_replicas')} replicas (min={min_replicas}, max={max_replicas})")
                     elif llm_result.get('rate_limited'):
                         # Rate-limited, use cached recommendation if available, otherwise fallback
                         logger.info(f"⏸️  LLM rate-limited, using fallback recommendation")
@@ -1116,12 +1381,50 @@ class PredictiveAutoscaler:
                     logger.warning(f"⚠️  Error getting LLM recommendation: {e}, using fallback")
             
             # Use LLM recommendation if available, otherwise fallback to rule-based
+            logger.warning(f"🔍🔍🔍 FINAL CHECK: llm_recommendation={llm_recommendation is not None}, will use {'LLM' if llm_recommendation else 'RULE-BASED FALLBACK'}")
             if llm_recommendation:
                 scaling_type = llm_recommendation.get('scaling_type', 'hpa')  # Default to HPA for backward compatibility
+                action_type = llm_recommendation.get('action', 'none')
+                
+                # CRITICAL: For "maintain" or "none" actions, use current_replicas but ensure it's within bounds
+                # For other actions, use LLM's target_replicas or default to current_replicas
+                if action_type in ['maintain', 'none']:
+                    # For maintain actions, check if LLM explicitly set target_replicas
+                    llm_target = llm_recommendation.get('target_replicas')
+                    if llm_target is not None:
+                        # LLM explicitly set target_replicas - use it but cap to max
+                        target_replicas_raw = min(llm_target, max_replicas) if scaling_type in ['hpa', 'both'] else None
+                        print(f"🔍🔍🔍 MAINTAIN ACTION: LLM set target_replicas={llm_target}, capped to max={max_replicas}, result={target_replicas_raw}")
+                        logger.warning(f"🔍🔍🔍 MAINTAIN ACTION: LLM set target_replicas={llm_target}, capped to max={max_replicas}, result={target_replicas_raw}")
+                    else:
+                        # LLM didn't set target_replicas - use current_replicas but capped to max
+                        target_replicas_raw = min(current_replicas, max_replicas) if scaling_type in ['hpa', 'both'] else None
+                        print(f"🔍🔍🔍 MAINTAIN ACTION: Using current_replicas={current_replicas} capped to max={max_replicas}, result={target_replicas_raw}")
+                        logger.warning(f"🔍🔍🔍 MAINTAIN ACTION: Using current_replicas={current_replicas} capped to max={max_replicas}, result={target_replicas_raw}")
+                else:
+                    # For scale_up/scale_down, use LLM's target_replicas or default to current_replicas
+                    target_replicas_raw = llm_recommendation.get('target_replicas', current_replicas) if scaling_type in ['hpa', 'both'] else None
+                
+                print(f"🔍🔍🔍 LLM RECOMMENDATION PROCESSING: action={action_type}, target_replicas_raw={target_replicas_raw}, current_replicas={current_replicas}, min={min_replicas}, max={max_replicas}")
+                logger.warning(f"🔍🔍🔍 LLM RECOMMENDATION PROCESSING: action={action_type}, target_replicas_raw={target_replicas_raw}, current_replicas={current_replicas}, min={min_replicas}, max={max_replicas}")
+                
+                # CRITICAL: Final validation - cap target_replicas to min/max
+                if target_replicas_raw is not None:
+                    if target_replicas_raw > max_replicas:
+                        print(f"❌❌❌ FINAL VALIDATION: target_replicas={target_replicas_raw} exceeds max={max_replicas}, capping to {max_replicas}")
+                        logger.error(f"❌❌❌ FINAL VALIDATION: target_replicas={target_replicas_raw} exceeds max={max_replicas}, capping to {max_replicas}")
+                        target_replicas_raw = max_replicas
+                    elif target_replicas_raw < min_replicas:
+                        print(f"❌❌❌ FINAL VALIDATION: target_replicas={target_replicas_raw} below min={min_replicas}, setting to {min_replicas}")
+                        logger.error(f"❌❌❌ FINAL VALIDATION: target_replicas={target_replicas_raw} below min={min_replicas}, setting to {min_replicas}")
+                        target_replicas_raw = min_replicas
+                    print(f"🔍🔍🔍 FINAL VALIDATION RESULT: target_replicas={target_replicas_raw} (min={min_replicas}, max={max_replicas})")
+                    logger.warning(f"🔍🔍🔍 FINAL VALIDATION: target_replicas={target_replicas_raw} (min={min_replicas}, max={max_replicas})")
+                
                 action = {
                     'action': llm_recommendation.get('action', 'none'),
                     'scaling_type': scaling_type,  # 'hpa', 'vpa', 'both', or 'maintain'
-                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas) if scaling_type in ['hpa', 'both'] else None,
+                    'target_replicas': target_replicas_raw,
                     'target_cpu': llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
                     'target_memory': llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
                     'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
@@ -1129,14 +1432,32 @@ class PredictiveAutoscaler:
                     'llm_recommendation': llm_recommendation
                 }
             else:
-                # Fallback to rule-based recommendation
+                # Fallback to rule-based recommendation - USE ACTUAL min/max from annotations!
+                print(f"🔍🔍🔍 Using RULE-BASED FALLBACK with min={min_replicas}, max={max_replicas}, current_replicas={current_replicas}")
+                logger.warning(f"🔍🔍🔍 Using RULE-BASED FALLBACK with min={min_replicas}, max={max_replicas}, current_replicas={current_replicas}")
                 action = self._determine_scaling_action(
                     max_predicted_cpu,
                     max_predicted_memory,
                     current_replicas,
-                    2,  # default min
-                    10  # default max
+                    min_replicas,  # Use actual min from deployment annotation
+                    max_replicas   # Use actual max from deployment annotation
                 )
+                print(f"🔍🔍🔍 RULE-BASED RESULT: action={action.get('action')}, target_replicas={action.get('target_replicas')}")
+                logger.warning(f"🔍🔍🔍 RULE-BASED RESULT: action={action.get('action')}, target_replicas={action.get('target_replicas')}")
+                
+                # CRITICAL: Ensure rule-based fallback also respects max_replicas
+                if action.get('target_replicas') is not None:
+                    target = action['target_replicas']
+                    if target > max_replicas:
+                        print(f"❌❌❌ RULE-BASED VALIDATION: target_replicas={target} exceeds max={max_replicas}, capping to {max_replicas}")
+                        logger.error(f"❌❌❌ RULE-BASED VALIDATION: target_replicas={target} exceeds max={max_replicas}, capping to {max_replicas}")
+                        action['target_replicas'] = max_replicas
+                        action['action'] = 'at_max'
+                    elif target < min_replicas:
+                        print(f"❌❌❌ RULE-BASED VALIDATION: target_replicas={target} below min={min_replicas}, setting to {min_replicas}")
+                        logger.error(f"❌❌❌ RULE-BASED VALIDATION: target_replicas={target} below min={min_replicas}, setting to {min_replicas}")
+                        action['target_replicas'] = min_replicas
+                        action['action'] = 'maintain'
             
             # Get deployment status for resource stats
             deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
@@ -1146,6 +1467,45 @@ class PredictiveAutoscaler:
             # Safely get predicted values (handle None)
             cpu_predicted_safe = cpu_forecast.predicted_values if cpu_forecast.predicted_values is not None else []
             memory_predicted_safe = memory_forecast.predicted_values if memory_forecast.predicted_values is not None else []
+            
+            # CRITICAL: Final safety check - ensure target_replicas respects min/max before returning
+            if action.get('target_replicas') is not None:
+                target = action['target_replicas']
+                print(f"🔍🔍🔍 RETURN VALIDATION CHECK: target={target}, min={min_replicas}, max={max_replicas}")
+                logger.warning(f"🔍🔍🔍 RETURN VALIDATION CHECK: target={target}, min={min_replicas}, max={max_replicas}")
+                if target > max_replicas:
+                    print(f"❌❌❌ RETURN VALIDATION: target_replicas={target} exceeds max={max_replicas}, capping to {max_replicas}")
+                    logger.error(f"❌❌❌ RETURN VALIDATION: target_replicas={target} exceeds max={max_replicas}, capping to {max_replicas}")
+                    action['target_replicas'] = max_replicas
+                    action['action'] = 'at_max'
+                elif target < min_replicas:
+                    print(f"❌❌❌ RETURN VALIDATION: target_replicas={target} below min={min_replicas}, setting to {min_replicas}")
+                    logger.error(f"❌❌❌ RETURN VALIDATION: target_replicas={target} below min={min_replicas}, setting to {min_replicas}")
+                    action['target_replicas'] = min_replicas
+                    action['action'] = 'maintain'
+                print(f"🔍🔍🔍 RETURN VALIDATION RESULT: Final target_replicas={action['target_replicas']} (min={min_replicas}, max={max_replicas})")
+                logger.warning(f"🔍🔍🔍 RETURN VALIDATION: Final target_replicas={action['target_replicas']} (min={min_replicas}, max={max_replicas})")
+            else:
+                print(f"🔍🔍🔍 RETURN VALIDATION: target_replicas is None, skipping validation")
+                logger.warning(f"🔍🔍🔍 RETURN VALIDATION: target_replicas is None, skipping validation")
+            
+            # ABSOLUTE FINAL CHECK: Ensure target_replicas is ALWAYS within bounds before returning
+            if action.get('target_replicas') is not None:
+                final_target = action['target_replicas']
+                if final_target > max_replicas:
+                    print(f"🚨🚨🚨 ABSOLUTE FINAL CHECK: target_replicas={final_target} > max={max_replicas}, FORCING to {max_replicas}")
+                    logger.error(f"🚨🚨🚨 ABSOLUTE FINAL CHECK: target_replicas={final_target} > max={max_replicas}, FORCING to {max_replicas}")
+                    action['target_replicas'] = max_replicas
+                    if action.get('action') in ['maintain', 'none']:
+                        action['action'] = 'at_max'
+                elif final_target < min_replicas:
+                    print(f"🚨🚨🚨 ABSOLUTE FINAL CHECK: target_replicas={final_target} < min={min_replicas}, FORCING to {min_replicas}")
+                    logger.error(f"🚨🚨🚨 ABSOLUTE FINAL CHECK: target_replicas={final_target} < min={min_replicas}, FORCING to {min_replicas}")
+                    action['target_replicas'] = min_replicas
+                    action['action'] = 'maintain'
+            
+            print(f"🔍🔍🔍 FINAL ACTION BEFORE RETURN: {action}")
+            logger.warning(f"🔍🔍🔍 FINAL ACTION BEFORE RETURN: target_replicas={action.get('target_replicas')}, action={action.get('action')}, min={min_replicas}, max={max_replicas}")
             
             # Create a clean message for UI (without full LLM reasoning)
             clean_message = "Predictive autoscaling enabled successfully"

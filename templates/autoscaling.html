@@ -199,6 +199,42 @@
                                 <input type="number" id="predictive-max" class="form-control" value="10" min="1" required>
                             </div>
                         </div>
+                        <div style="margin-bottom: 1.5rem; padding: 1.25rem; background: linear-gradient(135deg, rgba(139, 92, 246, 0.05) 0%, rgba(59, 130, 246, 0.05) 100%); border-radius: 12px; border: 1px solid rgba(139, 92, 246, 0.15);">
+                            <label for="predictive-state-management" class="form-label" style="font-weight: 600; color: var(--text-primary); margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: #8b5cf6;">
+                                    <path d="M12 2L2 7L12 12L22 7L12 2Z"/>
+                                    <path d="M2 17L12 22L22 17"/>
+                                    <path d="M2 12L12 17L22 12"/>
+                                </svg>
+                                State Management
+                                <span class="badge" style="background: rgba(139, 92, 246, 0.15); color: #8b5cf6; font-size: 0.7rem; font-weight: 500; padding: 0.25rem 0.5rem; border-radius: 6px; margin-left: auto;">
+                                    Optional
+                                </span>
+                            </label>
+                            <select id="predictive-state-management" class="form-select" style="
+                                padding: 0.875rem 1rem;
+                                font-size: 0.95rem;
+                                border: 2px solid rgba(139, 92, 246, 0.2);
+                                border-radius: 8px;
+                                background: var(--surface);
+                                color: var(--text-primary);
+                                transition: all 0.2s ease;
+                                cursor: pointer;
+                                font-weight: 500;
+                                box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+                            " onmouseover="this.style.borderColor='rgba(139, 92, 246, 0.4)'; this.style.boxShadow='0 4px 8px rgba(139, 92, 246, 0.15)';" onmouseout="this.style.borderColor='rgba(139, 92, 246, 0.2)'; this.style.boxShadow='0 2px 4px rgba(0, 0, 0, 0.05)';" onfocus="this.style.borderColor='#8b5cf6'; this.style.boxShadow='0 4px 12px rgba(139, 92, 246, 0.25)';" onblur="this.style.borderColor='rgba(139, 92, 246, 0.2)'; this.style.boxShadow='0 2px 4px rgba(0, 0, 0, 0.05)';">
+                                <option value="" style="font-weight: 500; padding: 0.5rem; background: var(--surface); color: var(--text-primary);">🔍 Auto-detect (recommended)</option>
+                                <option value="stateless" style="font-weight: 500; padding: 0.5rem; background: var(--surface); color: var(--text-primary);">↔️ Stateless (uses Redis/DB/external state) → Prefer HPA</option>
+                                <option value="stateful" style="font-weight: 500; padding: 0.5rem; background: var(--surface); color: var(--text-primary);">📊 Stateful (state inside pod) → Prefer VPA</option>
+                            </select>
+                            <small class="form-text text-muted" style="font-size: 0.8rem; margin-top: 0.5rem; display: block; line-height: 1.5; color: var(--text-muted);">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; margin-right: 0.25rem;">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <path d="M12 16V12M12 8H12.01"/>
+                                </svg>
+                                Leave as "Auto-detect" to let the system analyze your deployment automatically from annotations, environment variables, and service dependencies.
+                            </small>
+                        </div>
                         <button type="submit" class="btn btn-primary" style="width: 100%;">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="margin-right: 0.5rem;">
                                 <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
@@ -786,7 +822,10 @@ function updatePredictiveDeploymentsList(deployments) {
         }
     }
     
-    if (!deployments || deployments.length === 0) {
+    // Filter out disabled deployments (safety check)
+    const enabledDeployments = (deployments || []).filter(d => !d.disabled);
+    
+    if (!enabledDeployments || enabledDeployments.length === 0) {
         container.innerHTML = '<p class="text-muted">No predictive autoscaling enabled</p>';
         return;
     }
@@ -794,7 +833,7 @@ function updatePredictiveDeploymentsList(deployments) {
     container.innerHTML = `
         <div style="margin-bottom: 1rem;">
             <h5>Enabled Deployments</h5>
-            ${deployments.map(deployment => `
+            ${enabledDeployments.map(deployment => `
                 <div class="card" style="margin-bottom: 0.5rem; padding: 0.75rem;">
                     <div class="d-flex justify-content-between align-items-center">
                         <div style="flex: 1;">
@@ -958,12 +997,18 @@ async function deleteVPA(vpaName, namespace) {
 async function enablePredictiveAutoscaling(event) {
     event.preventDefault();
     const form = event.target;
+    const stateManagement = document.getElementById('predictive-state-management').value;
     const data = {
         deployment_name: document.getElementById('predictive-deployment').value,
         namespace: document.getElementById('predictive-namespace').value,
         min_replicas: parseInt(document.getElementById('predictive-min').value),
         max_replicas: parseInt(document.getElementById('predictive-max').value)
     };
+    
+    // Add state_management if user selected an option (not auto-detect)
+    if (stateManagement) {
+        data.state_management = stateManagement;
+    }
     
     try {
         const response = await fetch(`/api/autoscaling/predictive/enable/${serverId}`, {
@@ -1120,6 +1165,12 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
         if (!data.success || data.error) {
             console.error(`❌ API returned error:`, data.error);
             throw new Error(data.error || 'Failed to get recommendations');
+        }
+        
+        // Log target_replicas from API response for debugging
+        if (data.predictive && data.predictive.recommendation) {
+            const rec = data.predictive.recommendation;
+            console.log(`🔍🔍🔍 FRONTEND: Received target_replicas=${rec.target_replicas} from API, action=${rec.action}, scaling_type=${rec.scaling_type}`);
         }
         
         // Check if recommendations data exists
@@ -1452,7 +1503,10 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
         } else {
             // Build target info for non-LLM recommendations
             if (rec.target_replicas !== undefined && rec.target_replicas !== null) {
+                console.log(`🔍🔍🔍 FRONTEND DISPLAY: Setting targetReplicasText to ${rec.target_replicas}`);
                 targetReplicasText = `<br><strong>Target Replicas:</strong> ${rec.target_replicas}`;
+            } else {
+                console.log(`🔍🔍🔍 FRONTEND DISPLAY: target_replicas is ${rec.target_replicas} (undefined/null)`);
             }
             
             recommendationHTML = `

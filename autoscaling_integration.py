@@ -268,7 +268,8 @@ class AutoscalingIntegration:
             }
     
     def enable_predictive_autoscaling(self, deployment_name: str, namespace: str = "default",
-                                     min_replicas: int = 2, max_replicas: int = 10) -> Dict[str, Any]:
+                                     min_replicas: int = 2, max_replicas: int = 10,
+                                     state_management: Optional[str] = None) -> Dict[str, Any]:
         """Enable predictive autoscaling for a deployment"""
         try:
             # Trim deployment name and namespace to remove any whitespace
@@ -285,7 +286,7 @@ class AutoscalingIntegration:
             
             # Execute predictive scaling immediately (this will also mark it as enabled)
             result = self.predictive_autoscaler.predict_and_scale(
-                deployment_name, namespace, min_replicas, max_replicas
+                deployment_name, namespace, min_replicas, max_replicas, state_management
             )
             
             # The periodic loop will continue to execute scaling every 5 minutes
@@ -540,10 +541,44 @@ class AutoscalingIntegration:
             
             # Predictive recommendation (may include LLM if enabled)
             try:
+                print(f"🔍🔍🔍 INTEGRATION: Calling get_scaling_recommendation for {deployment_name} in {namespace}")
+                logger.warning(f"🔍🔍🔍 INTEGRATION: Calling get_scaling_recommendation for {deployment_name} in {namespace}")
                 pred_rec = self.predictive_autoscaler.get_scaling_recommendation(
                     deployment_name, namespace
                 )
                 if pred_rec['success']:
+                    rec = pred_rec.get('recommendation', {})
+                    target_replicas = rec.get('target_replicas')
+                    print(f"🔍🔍🔍 INTEGRATION RESULT: target_replicas={target_replicas}, action={rec.get('action')}, scaling_type={rec.get('scaling_type')}")
+                    logger.warning(f"🔍🔍🔍 INTEGRATION RESULT: target_replicas={target_replicas}, action={rec.get('action')}, scaling_type={rec.get('scaling_type')}")
+                    
+                    # CRITICAL: Final validation at integration layer - ensure target_replicas respects bounds
+                    # Get min/max from the recommendation if available, or from deployment
+                    if target_replicas is not None:
+                        # Try to get min/max from deployment annotation
+                        try:
+                            deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
+                            if deployment_status.get('success'):
+                                annotations = deployment_status.get('annotations', {})
+                                config_str = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
+                                import json
+                                config = json.loads(config_str) if config_str else {}
+                                min_replicas = config.get('min_replicas', 2)
+                                max_replicas = config.get('max_replicas', 10)
+                                
+                                if target_replicas > max_replicas:
+                                    print(f"🚨🚨🚨 INTEGRATION LAYER: target_replicas={target_replicas} > max={max_replicas}, FORCING to {max_replicas}")
+                                    logger.error(f"🚨🚨🚨 INTEGRATION LAYER: target_replicas={target_replicas} > max={max_replicas}, FORCING to {max_replicas}")
+                                    rec['target_replicas'] = max_replicas
+                                    pred_rec['recommendation'] = rec
+                                elif target_replicas < min_replicas:
+                                    print(f"🚨🚨🚨 INTEGRATION LAYER: target_replicas={target_replicas} < min={min_replicas}, FORCING to {min_replicas}")
+                                    logger.error(f"🚨🚨🚨 INTEGRATION LAYER: target_replicas={target_replicas} < min={min_replicas}, FORCING to {min_replicas}")
+                                    rec['target_replicas'] = min_replicas
+                                    pred_rec['recommendation'] = rec
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not validate target_replicas at integration layer: {e}")
+                    
                     recommendations['predictive'] = pred_rec
                     
                     # Extract LLM recommendation if present
@@ -603,7 +638,8 @@ class AutoscalingIntegration:
                             hpa_status=hpa_status,
                             current_replicas=current_replicas,
                             min_replicas=2,
-                            max_replicas=10
+                            max_replicas=10,
+                            hpa_manager=self.hpa_manager  # Pass hpa_manager so state detection can read annotations
                         )
                         
                         if llm_result.get('success'):

@@ -434,6 +434,7 @@ class HorizontalPodAutoscaler:
                                      annotations: Dict[str, str]) -> Dict[str, Any]:
         """Patch deployment annotations"""
         import json
+        import tempfile
         # Build patch JSON
         patch = {
             'metadata': {
@@ -442,15 +443,29 @@ class HorizontalPodAutoscaler:
         }
         patch_json = json.dumps(patch)
         
-        result = self._execute_kubectl(
-            f"patch deployment {deployment_name} -n {namespace} --type=merge -p '{patch_json}'"
-        )
-        return result
+        # Use temp file to avoid shell escaping issues with JSON
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(patch_json)
+            temp_file = f.name
+        
+        try:
+            # Use --patch-file flag (most reliable method, avoids shell escaping)
+            result = self._execute_kubectl(
+                f"patch deployment {deployment_name} -n {namespace} --type=merge --patch-file={temp_file}"
+            )
+            return result
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
     
     def patch_deployment_labels(self, deployment_name: str, namespace: str,
                                 labels: Dict[str, str]) -> Dict[str, Any]:
         """Patch deployment labels"""
         import json
+        import tempfile
         # Build patch JSON
         patch = {
             'metadata': {
@@ -459,10 +474,23 @@ class HorizontalPodAutoscaler:
         }
         patch_json = json.dumps(patch)
         
-        result = self._execute_kubectl(
-            f"patch deployment {deployment_name} -n {namespace} --type=merge -p '{patch_json}'"
-        )
-        return result
+        # Use temp file to avoid shell escaping issues with JSON
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write(patch_json)
+            temp_file = f.name
+        
+        try:
+            # Use --patch-file flag (most reliable method, avoids shell escaping)
+            result = self._execute_kubectl(
+                f"patch deployment {deployment_name} -n {namespace} --type=merge --patch-file={temp_file}"
+            )
+            return result
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
     
     def get_deployment_annotations(self, deployment_name: str, namespace: str = "default") -> Dict[str, Any]:
         """Get deployment annotations"""
