@@ -10,10 +10,6 @@
 
 **🌐 Live URL:** [https://ai4k8s.online](https://ai4k8s.online)
 
-**🔐 Demo Credentials:**
-- Username: `admin`
-- Password: `admin123`
-
 **📍 Current Infrastructure:** CrownLabs Kubernetes Cluster (Politecnico di Torino)
 
 ---
