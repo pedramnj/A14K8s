@@ -2,6 +2,241 @@
 
 {% block title %}Autoscaling - {{ server.name }} - AI4K8s{% endblock %}
 
+{% block head %}
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<style>
+/* Professional Loading Indicator Styles */
+.recommendation-loader {
+    width: 100%;
+    max-width: 500px;
+    margin: 0 auto;
+    padding: 2rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+}
+
+.loader-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+}
+
+.loader-title {
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.loader-status {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.loader-animation {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 1.5rem;
+    height: 60px;
+}
+
+.loader-spinner {
+    width: 48px;
+    height: 48px;
+    position: relative;
+}
+
+.loader-spinner-ring {
+    position: absolute;
+    width: 48px;
+    height: 48px;
+    border: 3px solid transparent;
+    border-top: 3px solid var(--primary-color);
+    border-right: 3px solid var(--primary-color);
+    border-radius: 50%;
+    animation: loaderSpin 1.2s cubic-bezier(0.5, 0, 0.5, 1) infinite;
+}
+
+.loader-spinner-ring:nth-child(2) {
+    width: 36px;
+    height: 36px;
+    top: 6px;
+    left: 6px;
+    border-top-color: var(--accent-color);
+    border-right-color: var(--accent-color);
+    animation-duration: 0.9s;
+    animation-direction: reverse;
+}
+
+.loader-spinner-ring:nth-child(3) {
+    width: 24px;
+    height: 24px;
+    top: 12px;
+    left: 12px;
+    border-top-color: var(--success-color);
+    border-right-color: var(--success-color);
+    animation-duration: 0.6s;
+}
+
+@keyframes loaderSpin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.loader-progress-container {
+    width: 100%;
+    margin-bottom: 1rem;
+}
+
+.loader-progress-bar {
+    width: 100%;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+.loader-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+    border-radius: 4px;
+    transition: width 0.3s ease-out;
+    position: relative;
+    overflow: hidden;
+}
+
+.loader-progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.3), transparent);
+    animation: progressShine 2s infinite;
+}
+
+@keyframes progressShine {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.loader-progress-text {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.5rem;
+    font-size: 0.8125rem;
+}
+
+.loader-progress-percentage {
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.loader-progress-time {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
+.loader-message {
+    text-align: center;
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+    min-height: 1.5rem;
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-5px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.loader-status-icon {
+    width: 20px;
+    height: 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.loader-status-icon.processing {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--primary-color);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.loader-status-icon.completed {
+    width: 16px;
+    height: 16px;
+    background: var(--success-color);
+    border-radius: 50%;
+    position: relative;
+}
+
+.loader-status-icon.completed::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 6px;
+    height: 3px;
+    border: 2px solid white;
+    border-top: none;
+    border-right: none;
+    transform: translate(-50%, -60%) rotate(-45deg);
+}
+
+.loader-status-icon.failed {
+    width: 16px;
+    height: 16px;
+    background: var(--error-color);
+    border-radius: 50%;
+    position: relative;
+}
+
+.loader-status-icon.failed::before,
+.loader-status-icon.failed::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 2px;
+    background: white;
+    transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.loader-status-icon.failed::after {
+    transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-grid" style="grid-template-columns: 1fr; gap: 2rem;">
     <!-- Header -->
@@ -454,8 +689,10 @@
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js?v=20260101"></script>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js?v=20260101"></script>
 <script>
+console.log('🔍🔍🔍 SCRIPT LOADED - autoscaling.html v20260101-3');
 const serverId = {{ server.id | tojson }};
 let charts = {};
 
@@ -1010,6 +1247,20 @@ async function enablePredictiveAutoscaling(event) {
         data.state_management = stateManagement;
     }
     
+    // Show loading indicator
+    const enableButton = form.querySelector('button[type="submit"]');
+    const originalButtonText = enableButton ? enableButton.innerHTML : '';
+    if (enableButton) {
+        enableButton.disabled = true;
+        enableButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Enabling...';
+    }
+    
+    // Show loading message in recommendations area
+    const recommendationsContainer = document.getElementById('predictive-recommendations');
+    if (recommendationsContainer) {
+        recommendationsContainer.innerHTML = '<div class="recommendation-loader"><div class="loader-header"><div class="loader-title"><div class="loader-status-icon processing"></div><span>Enabling Predictive Autoscaling</span></div></div><div class="loader-animation"><div class="loader-spinner"><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div></div></div><div class="loader-message">Initializing autoscaling engine and generating recommendations...</div></div>';
+    }
+    
     try {
         const response = await fetch(`/api/autoscaling/predictive/enable/${serverId}`, {
             method: 'POST',
@@ -1018,21 +1269,45 @@ async function enablePredictiveAutoscaling(event) {
         });
         const result = await response.json();
         
+        // Restore button
+        if (enableButton) {
+            enableButton.disabled = false;
+            enableButton.innerHTML = originalButtonText;
+        }
+        
         if (result.success) {
-            // Show clean success message (use backend message if available, otherwise create one)
-            let message = result.message || 'Predictive autoscaling enabled!';
-            alert(message);
+            // Success - no alert needed, loading indicator will show progress
             form.reset();
             refreshAutoscaling();
             // Clear cache and force refresh (user action, so allow it)
             recommendationCache = { data: null, timestamp: 0, deployment: null, namespace: null, lastMetrics: null };
             lastRecommendationFetchTime = 0; // Reset fetch time to allow immediate fetch
             isLoadingRecommendations = false; // Reset loading flag
+            
+            // Show loading indicator while fetching recommendations
+            if (recommendationsContainer) {
+                recommendationsContainer.innerHTML = '<div class="recommendation-loader"><div class="loader-header"><div class="loader-title"><div class="loader-status-icon processing"></div><span>Loading Recommendations</span></div></div><div class="loader-animation"><div class="loader-spinner"><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div></div></div><div class="loader-message">Preparing recommendation engine...</div></div>';
+            }
+            
             loadPredictiveForecast(data.deployment_name, data.namespace, true);
         } else {
+            // Show error in recommendations area
+            if (recommendationsContainer) {
+                recommendationsContainer.innerHTML = '<div class="alert alert-danger">Error: ' + (result.error || 'Failed to enable predictive autoscaling') + '</div>';
+            }
             alert('Error: ' + (result.error || 'Failed to enable predictive autoscaling'));
         }
     } catch (error) {
+        // Restore button on error
+        if (enableButton) {
+            enableButton.disabled = false;
+            enableButton.innerHTML = originalButtonText;
+        }
+        
+        // Show error in recommendations area
+        if (recommendationsContainer) {
+            recommendationsContainer.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+        }
         alert('Error: ' + error.message);
     }
 }
@@ -1125,8 +1400,8 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
     
     // Show loading state only if not already showing data
     if (!recommendationCache.data || forceRefresh) {
-        chartContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading forecast...</div>';
-        recommendationsContainer.innerHTML = '<div class="loading"><div class="spinner"></div>Loading recommendations...</div>';
+        chartContainer.innerHTML = '<div class="recommendation-loader"><div class="loader-header"><div class="loader-title"><div class="loader-status-icon processing"></div><span>Loading Forecast</span></div></div><div class="loader-animation"><div class="loader-spinner"><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div></div></div><div class="loader-message">Preparing forecast data...</div></div>';
+        recommendationsContainer.innerHTML = '<div class="recommendation-loader"><div class="loader-header"><div class="loader-title"><div class="loader-status-icon processing"></div><span>Loading Recommendations</span></div></div><div class="loader-animation"><div class="loader-spinner"><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div><div class="loader-spinner-ring"></div></div></div><div class="loader-message">Preparing recommendation engine...</div></div>';
     }
     
     try {
@@ -1145,8 +1420,9 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
         const trimmedDeployment = deployment.trim();
         const trimmedNamespace = (namespace || 'default').trim();
         
-        console.log(`🔄 Fetching recommendations for deployment: "${trimmedDeployment}" in namespace: "${trimmedNamespace}"`);
+        console.log(`🔄 Starting async recommendation job for deployment: "${trimmedDeployment}" in namespace: "${trimmedNamespace}"`);
         
+        // Step 1: Start async job - get job_id
         const url = `/api/autoscaling/recommendations/${serverId}?deployment=${encodeURIComponent(trimmedDeployment)}&namespace=${encodeURIComponent(trimmedNamespace)}`;
         console.log(`📡 API URL: ${url}`);
         
@@ -1158,18 +1434,560 @@ async function loadPredictiveForecast(deployment, namespace, forceRefresh = fals
             throw new Error(`HTTP ${response.status}: ${response.statusText}. ${errorText.substring(0, 200)}`);
         }
         
-        const data = await response.json();
+        const jobResponse = await response.json();
+        console.log(`📊 Job created:`, jobResponse);
+        
+        // Check if we got a job_id (async) or direct result (sync fallback)
+        let jobId = jobResponse.job_id;
+        let data = null;
+        
+        if (jobId) {
+            // Async mode: Use WebSocket for real-time updates
+            console.log(`🔄 Subscribing to job ${jobId} via WebSocket...`);
+            
+            // Fallback to polling function (defined first)
+            async function fallbackToPolling(jobId) {
+                let pollCount = 0;
+                const maxPolls = 135;  // Increased to 135 polls (4.5 minutes at 2s interval) to accommodate Qwen's 240s timeout
+                const pollInterval = 2000;
+                
+                while (pollCount < maxPolls) {
+                    await new Promise(resolve => setTimeout(resolve, pollInterval));
+                    pollCount++;
+                    
+                    try {
+                        const statusUrl = `/api/autoscaling/recommendations/status/${jobId}`;
+                        const statusResponse = await fetch(statusUrl);
+                        
+                        if (!statusResponse.ok) {
+                            throw new Error(`Status check failed: ${statusResponse.statusText}`);
+                        }
+                        
+                        const statusData = await statusResponse.json();
+                        console.log(`📊 Poll ${pollCount}: Status = ${statusData.status}`);
+                        
+                        const loadingMsg = statusData.status === 'processing' 
+                            ? `🔄 Generating LLM recommendations... (${pollCount * 2}s)`
+                            : statusData.status === 'completed'
+                            ? '✅ Processing results...'
+                            : '⏳ Waiting for LLM...';
+                        
+                        if (recommendationsContainer) {
+                            recommendationsContainer.innerHTML = `<div class="loading"><div class="spinner"></div>${loadingMsg}</div>`;
+                        }
+                        
+                        if (statusData.status === 'completed') {
+                            return statusData.result;
+                        } else if (statusData.status === 'failed') {
+                            throw new Error(statusData.error || 'Job failed');
+                        }
+                    } catch (error) {
+                        console.error(`❌ Error polling job status:`, error);
+                        throw error;
+                    }
+                }
+                
+                throw new Error('Job timed out after 4.5 minutes');
+            }
+            
+            // WebSocket subscription with Promise-based waiting
+            data = await new Promise((resolve, reject) => {
+                console.log('🔍 Promise: STARTING WebSocket subscription');
+                let socket;
+                let startTime = Date.now();
+                let resolved = false;
+                
+                // Get recommendationsContainer at the start (use let so it can be reassigned if needed)
+                let recommendationsContainer = document.getElementById('predictive-recommendations');
+                console.log(`🔍 Promise: recommendationsContainer=${!!recommendationsContainer}, element=${recommendationsContainer ? recommendationsContainer.id : 'null'}`);
+                if (!recommendationsContainer) {
+                    console.error('🔍 Promise: ERROR - recommendationsContainer is null! Element may not exist in DOM.');
+                    console.error('🔍 Promise: Available elements:', document.querySelectorAll('[id*="recommendation"]'));
+                }
+                
+                // Try WebSocket first
+                try {
+                    if (typeof io === 'undefined') {
+                        console.warn('⚠️ Socket.IO not loaded, falling back to polling');
+                        fallbackToPolling(jobId).then(resolve).catch(reject);
+                        return;
+                    }
+                    
+                    socket = io();
+                    
+                    socket.on('connect', () => {
+                        console.log('🔌 WebSocket connected');
+                        socket.emit('subscribe_job', { job_id: jobId });
+                    });
+                    
+                    // Store current status for timer updates
+                    let currentStatus = { status: 'processing', progress: 0, message: 'Starting LLM analysis...' };
+                    let elapsedTimer = null;
+                    
+                    // Track animated progress for smooth transitions
+                    let animatedProgress = 0;
+                    let targetProgress = 2; // Start at 2% immediately for visual feedback
+                    let progressAnimationInterval = null;
+                    
+                    // Debounce mechanism to prevent too frequent updates
+                    let lastUpdateTime = 0;
+                    const UPDATE_THROTTLE_MS = 500; // Only update every 500ms max
+                    
+                    // Cache element references to avoid repeated querySelector calls
+                    let cachedElements = {
+                        loaderElement: null,
+                        progressFill: null,
+                        progressPercentage: null,
+                        progressTime: null,
+                        loaderStatus: null,
+                        loaderMessage: null,
+                        statusIcon: null
+                    };
+                    
+                    // Function to update display with current elapsed time (define FIRST so it can be called by animateProgress)
+                    const updateDisplay = () => {
+                        // Throttle updates to prevent flashing
+                        const now = Date.now();
+                        if (now - lastUpdateTime < UPDATE_THROTTLE_MS && lastUpdateTime > 0) {
+                            return; // Skip if called too soon (throttled)
+                        }
+                        lastUpdateTime = now;
+                        
+                        if (resolved) {
+                            return;
+                        }
+                        if (!recommendationsContainer) {
+                            return;
+                        }
+                        
+                        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                        const status = currentStatus.status;
+                        const message = currentStatus.message || 'Analyzing deployment metrics and generating recommendations...';
+                        
+                        // Calculate progress: Use backend progress if available, otherwise time-based
+                        let progress = 0;
+                        
+                        // FIRST: Use backend progress if available (from WebSocket updates)
+                        if (currentStatus.progress !== undefined) {
+                            progress = currentStatus.progress;
+                        } else if (status === 'processing') {
+                            // FALLBACK: Calculate progress based on elapsed time when processing
+                            // This handles the case where backend hasn't sent progress yet
+                            if (elapsed <= 0) {
+                                progress = 1; // Show 1% immediately
+                            } else if (elapsed < 5) {
+                                progress = Math.max(2, Math.floor(elapsed)); // At least 2%, or elapsed seconds
+                            } else if (elapsed < 10) {
+                                progress = 5;
+                            } else if (elapsed < 30) {
+                                progress = 5 + Math.floor((elapsed - 10) / 20 * 25); // 5% to 30%
+                            } else if (elapsed < 60) {
+                                progress = 30 + Math.floor((elapsed - 30) / 30 * 30); // 30% to 60%
+                            } else if (elapsed < 90) {
+                                progress = 60 + Math.floor((elapsed - 60) / 30 * 30); // 60% to 90%
+                            } else if (elapsed < 120) {
+                                progress = 90 + Math.floor((elapsed - 90) / 30 * 5); // 90% to 95%
+                            } else {
+                                progress = 95;
+                            }
+                            
+                            // Ensure minimum 1% progress when processing
+                            progress = Math.max(1, progress);
+                        } else {
+                            // Use animatedProgress for completed/failed states
+                            progress = Math.max(0, Math.min(100, Math.round(animatedProgress)));
+                        }
+                        
+                        // If backend sent 0% but we're processing and time has passed, show time-based instead
+                        if (status === 'processing' && currentStatus.progress === 0 && elapsed > 2) {
+                            // Backend sent 0%, but time has passed - use time-based progress
+                            if (elapsed < 5) {
+                                progress = Math.max(2, Math.floor(elapsed));
+                            } else if (elapsed < 10) {
+                                progress = 5;
+                            } else if (elapsed < 30) {
+                                progress = 5 + Math.floor((elapsed - 10) / 20 * 25);
+                            } else if (elapsed < 60) {
+                                progress = 30 + Math.floor((elapsed - 30) / 30 * 30);
+                            } else if (elapsed < 90) {
+                                progress = 60 + Math.floor((elapsed - 60) / 30 * 30);
+                            } else if (elapsed < 120) {
+                                progress = 90 + Math.floor((elapsed - 90) / 30 * 5);
+                            } else {
+                                progress = 95;
+                            }
+                            progress = Math.max(1, progress);
+                        }
+                        
+                        // Use animatedProgress if it's higher (for smooth animation)
+                        const animated = Math.round(animatedProgress);
+                        if (animated > progress) {
+                            progress = animated;
+                        }
+                        
+                        // Debug log
+                        console.log(`🔍 updateDisplay: elapsed=${elapsed}s, status=${status}, progress=${progress}%, animatedProgress=${animatedProgress.toFixed(1)}%`);
+                        
+                        let statusIcon = '<div class="loader-status-icon processing"></div>';
+                        let statusText = 'Processing';
+                        let statusClass = 'processing';
+                        
+                        if (status === 'completed') {
+                            statusIcon = '<div class="loader-status-icon completed"></div>';
+                            statusText = 'Completed';
+                            statusClass = 'completed';
+                        } else if (status === 'failed') {
+                            statusIcon = '<div class="loader-status-icon failed"></div>';
+                            statusText = 'Failed';
+                            statusClass = 'failed';
+                        }
+                        
+                        const timeDisplay = elapsed > 0 ? `${elapsed}s` : 'Starting...';
+                        
+                        // CRITICAL: Verify container exists before setting innerHTML
+                        if (!recommendationsContainer) {
+                            return;
+                        }
+                        
+                        // Check if loader already exists - use cached elements or query DOM
+                        // Only query DOM if cached elements are null or invalid (removed from DOM)
+                        if (!cachedElements.loaderElement || !cachedElements.loaderElement.parentNode) {
+                            cachedElements.loaderElement = recommendationsContainer.querySelector('.recommendation-loader');
+                            cachedElements.progressFill = recommendationsContainer.querySelector('.loader-progress-fill');
+                            cachedElements.progressPercentage = recommendationsContainer.querySelector('.loader-progress-percentage');
+                            cachedElements.progressTime = recommendationsContainer.querySelector('.loader-progress-time');
+                            cachedElements.loaderStatus = recommendationsContainer.querySelector('.loader-status');
+                            cachedElements.loaderMessage = recommendationsContainer.querySelector('.loader-message');
+                            cachedElements.statusIcon = recommendationsContainer.querySelector('.loader-status-icon');
+                        }
+                        
+                        // ALWAYS try to update existing elements first to prevent flashing
+                        if (cachedElements.loaderElement && cachedElements.progressFill && cachedElements.progressPercentage && cachedElements.progressTime) {
+                            // Elements found in cache - update in place (NO innerHTML replacement = NO FLASHING)
+                            // This path should be taken after first call
+                            cachedElements.progressFill.style.width = `${progress}%`;
+                            cachedElements.progressPercentage.textContent = `${progress}%`;
+                            cachedElements.progressTime.textContent = timeDisplay;
+                            if (cachedElements.loaderStatus) cachedElements.loaderStatus.textContent = statusText;
+                            if (cachedElements.loaderMessage) {
+                                cachedElements.loaderMessage.textContent = message;
+                            }
+                            // Update status icon if status changed
+                            if (cachedElements.statusIcon) {
+                                if (status === 'completed') {
+                                    cachedElements.statusIcon.className = 'loader-status-icon completed';
+                                } else if (status === 'failed') {
+                                    cachedElements.statusIcon.className = 'loader-status-icon failed';
+                                } else {
+                                    cachedElements.statusIcon.className = 'loader-status-icon processing';
+                                }
+                            }
+                            return; // CRITICAL: Skip innerHTML replacement to prevent flashing
+                        }
+                        
+                        // Clear cache when creating new elements (they don't exist yet)
+                        cachedElements = {
+                            loaderElement: null,
+                            progressFill: null,
+                            progressPercentage: null,
+                            progressTime: null,
+                            loaderStatus: null,
+                            loaderMessage: null,
+                            statusIcon: null
+                        };
+                        
+                        // First time only - create the entire structure
+                        recommendationsContainer.innerHTML = `
+                            <div class="recommendation-loader">
+                                <div class="loader-header">
+                                    <div class="loader-title">
+                                        ${statusIcon}
+                                        <span>Generating Recommendations</span>
+                                    </div>
+                                    <div class="loader-status">${statusText}</div>
+                                </div>
+                                
+                                <div class="loader-animation">
+                                    <div class="loader-spinner">
+                                        <div class="loader-spinner-ring"></div>
+                                        <div class="loader-spinner-ring"></div>
+                                        <div class="loader-spinner-ring"></div>
+                                    </div>
+                                </div>
+                                
+                                <div class="loader-progress-container">
+                                    <div class="loader-progress-bar">
+                                        <div class="loader-progress-fill" style="width: ${progress}% !important; transition: width 0.2s linear;"></div>
+                                    </div>
+                                    <div class="loader-progress-text">
+                                        <span class="loader-progress-percentage">${progress}%</span>
+                                        <span class="loader-progress-time">${timeDisplay}</span>
+                                    </div>
+                                </div>
+                                
+                                <div class="loader-message">${message}</div>
+                            </div>
+                        `;
+                        
+                        // CRITICAL: Cache the newly created elements IMMEDIATELY after innerHTML
+                        // This ensures they're found on subsequent calls to prevent flashing
+                        cachedElements.loaderElement = recommendationsContainer.querySelector('.recommendation-loader');
+                        cachedElements.progressFill = recommendationsContainer.querySelector('.loader-progress-fill');
+                        cachedElements.progressPercentage = recommendationsContainer.querySelector('.loader-progress-percentage');
+                        cachedElements.progressTime = recommendationsContainer.querySelector('.loader-progress-time');
+                        cachedElements.loaderStatus = recommendationsContainer.querySelector('.loader-status');
+                        cachedElements.loaderMessage = recommendationsContainer.querySelector('.loader-message');
+                        cachedElements.statusIcon = recommendationsContainer.querySelector('.loader-status-icon');
+                        
+                        // Verify cache was populated (debug only)
+                        if (!cachedElements.loaderElement || !cachedElements.progressFill) {
+                            console.error('🔍 updateDisplay: ERROR - Failed to cache elements after creation!');
+                        } else {
+                            console.log('🔍 updateDisplay: Elements cached successfully - future updates will use cache');
+                        }
+                    };
+                    
+                    // Function to smoothly animate progress bar
+                    const animateProgress = () => {
+                        if (resolved) {
+                            if (progressAnimationInterval) {
+                                clearInterval(progressAnimationInterval);
+                                progressAnimationInterval = null;
+                            }
+                            return;
+                        }
+                        
+                        // Smoothly interpolate towards target
+                        if (Math.abs(animatedProgress - targetProgress) > 0.5) {
+                            const diff = targetProgress - animatedProgress;
+                            animatedProgress += diff * 0.25; // Smooth interpolation (25% per frame)
+                            if (animatedProgress > targetProgress) animatedProgress = targetProgress;
+                        } else {
+                            animatedProgress = targetProgress;
+                        }
+                        
+                        // Don't call updateDisplay() here - it's called from elapsedTimer and job_status events
+                        // This prevents flashing by avoiding too frequent DOM updates
+                    };
+                    
+                    socket.on('subscribed', (msg) => {
+                        console.log(`📡 Subscribed to job ${msg.job_id}`);
+                        console.log(`🔍 subscribed handler: recommendationsContainer=${!!recommendationsContainer}, typeof updateDisplay=${typeof updateDisplay}`);
+                        console.log(`🔍 subscribed handler: startTime=${startTime}, resolved=${resolved}`);
+                        
+                        currentStatus = { status: 'processing', progress: 0, message: 'Initializing analysis engine...' };
+                        targetProgress = 2; // Start at 2% immediately
+                        animatedProgress = 1; // Start at 1% for immediate visual feedback
+                        
+                        // Force immediate display update BEFORE starting intervals
+                        console.log('🔍 subscribed: About to call updateDisplay()');
+                        try {
+                            updateDisplay();
+                            console.log('🔍 subscribed: updateDisplay() called successfully');
+                        } catch (error) {
+                            console.error('🔍 subscribed: ERROR calling updateDisplay():', error);
+                        }
+                        
+                        // Start progress animation immediately (restart if needed)
+                        if (progressAnimationInterval) {
+                            clearInterval(progressAnimationInterval);
+                        }
+                        console.log('🔍 subscribed: About to start progressAnimationInterval');
+                        try {
+                            progressAnimationInterval = setInterval(() => {
+                                try {
+                                    animateProgress();
+                                } catch (error) {
+                                    console.error('🔍 animateProgress ERROR:', error);
+                                }
+                            }, 100); // Update every 100ms
+                            console.log('🔍 subscribed: progressAnimationInterval started');
+                        } catch (error) {
+                            console.error('🔍 subscribed: ERROR starting progressAnimationInterval:', error);
+                        }
+                        
+                        // Also call updateDisplay every second to ensure progress updates based on elapsed time
+                        if (elapsedTimer) {
+                            clearInterval(elapsedTimer);
+                        }
+                        console.log('🔍 subscribed: About to start elapsedTimer');
+                        try {
+                            let lastUpdateTime = 0;
+                            elapsedTimer = setInterval(() => {
+                                if (!resolved) {
+                                    try {
+                                        const now = Date.now();
+                                        // Only update if at least 2 seconds have passed since last update (throttle to reduce flashing)
+                                        if (now - lastUpdateTime >= 2000) {
+                                            lastUpdateTime = now;
+                                            updateDisplay(); // Update every 2 seconds to show time-based progress
+                                        }
+                                    } catch (error) {
+                                        console.error('🔍 elapsedTimer: ERROR calling updateDisplay():', error);
+                                    }
+                                }
+                            }, 1000); // Check every second, but only update every 2 seconds
+                            console.log('🔍 subscribed: elapsedTimer started (throttled to 2s updates)');
+                        } catch (error) {
+                            console.error('🔍 subscribed: ERROR starting elapsedTimer:', error);
+                        }
+                    });
+                    
+                    socket.on('job_status', (statusData) => {
+                        if (resolved) return;
+                        
+                        console.log(`📊 WebSocket update: Status = ${statusData.status}, Progress = ${statusData.progress || 0}%`);
+                        console.log(`🔍 job_status: About to update - targetProgress=${targetProgress}, animatedProgress=${animatedProgress}`);
+                        
+                        // Update current status with proper messages based on progress
+                        let message = statusData.message || 'Analyzing deployment metrics and generating recommendations...';
+                        if (statusData.status === 'processing') {
+                            if (statusData.progress === 0) {
+                                message = 'Initializing analysis engine...';
+                            } else if (statusData.progress === 10) {
+                                message = 'Collecting current metrics and forecast data...';
+                            } else if (statusData.progress === 90) {
+                                message = 'LLM analysis complete, processing results...';
+                            } else if (statusData.progress < 10) {
+                                message = 'Preparing data for analysis...';
+                            } else if (statusData.progress < 90) {
+                                message = 'Running LLM analysis...';
+                            }
+                        } else if (statusData.status === 'completed') {
+                            message = 'Recommendations ready';
+                        } else if (statusData.status === 'failed') {
+                            message = statusData.error || 'Failed to generate recommendations';
+                        }
+                        
+                        // Update target progress for smooth animation (always use the higher value)
+                        const newProgress = statusData.progress || 0;
+                        if (newProgress > targetProgress) {
+                            targetProgress = newProgress;
+                            console.log(`🔍 job_status: Updated targetProgress to ${targetProgress}`);
+                        }
+                        
+                        currentStatus = {
+                            status: statusData.status,
+                            progress: statusData.progress || 0,
+                            message: message
+                        };
+                        
+                        // Update display immediately
+                        console.log(`🔍 job_status: About to call updateDisplay()`);
+                        try {
+                            updateDisplay();
+                            console.log(`🔍 job_status: updateDisplay() called successfully`);
+                        } catch (error) {
+                            console.error(`🔍 job_status: ERROR calling updateDisplay():`, error);
+                        }
+                        
+                        if (statusData.status === 'completed') {
+                            resolved = true;
+                            if (elapsedTimer) {
+                                clearInterval(elapsedTimer);
+                                elapsedTimer = null;
+                            }
+                            if (progressAnimationInterval) {
+                                clearInterval(progressAnimationInterval);
+                                progressAnimationInterval = null;
+                            }
+                            targetProgress = 100;
+                            animatedProgress = 100;
+                            currentStatus = { status: 'completed', progress: 100, message: 'Recommendations ready' };
+                            updateDisplay();
+                            socket.emit('unsubscribe_job', { job_id: jobId });
+                            socket.disconnect();
+                            resolve(statusData.result);
+                        } else if (statusData.status === 'failed') {
+                            resolved = true;
+                            if (elapsedTimer) {
+                                clearInterval(elapsedTimer);
+                                elapsedTimer = null;
+                            }
+                            if (progressAnimationInterval) {
+                                clearInterval(progressAnimationInterval);
+                                progressAnimationInterval = null;
+                            }
+                            currentStatus = { status: 'failed', progress: 0, message: 'Failed to generate recommendations. Please try again.' };
+                            updateDisplay();
+                            socket.emit('unsubscribe_job', { job_id: jobId });
+                            socket.disconnect();
+                            reject(new Error(statusData.error || 'Job failed'));
+                        }
+                    });
+                    
+                    socket.on('disconnect', () => {
+                        console.log('🔌 WebSocket disconnected');
+                    });
+                    
+                    socket.on('connect_error', (error) => {
+                        // Suppress WebSocket frame header errors (Cloudflare/proxy issue, non-critical)
+                        const errorMsg = error?.message || String(error);
+                        if (!errorMsg.includes('Invalid frame header') && !errorMsg.includes('frame')) {
+                            console.error('❌ WebSocket connection error:', error);
+                        }
+                        if (!resolved) {
+                            resolved = true;
+                            if (elapsedTimer) clearInterval(elapsedTimer);
+                            socket.disconnect();
+                            // Fallback to polling
+                            console.log('🔄 Falling back to polling...');
+                            fallbackToPolling(jobId).then(resolve).catch(reject);
+                        }
+                    });
+                    
+                    // Suppress WebSocket frame errors in console (Cloudflare/proxy issue)
+                    const originalError = console.error;
+                    console.error = function(...args) {
+                        const errorStr = args.join(' ');
+                        if (errorStr.includes('Invalid frame header') || errorStr.includes('WebSocket connection to')) {
+                            // Suppress these non-critical errors
+                            return;
+                        }
+                        originalError.apply(console, args);
+                    };
+                    
+                    // Timeout after 4.5 minutes (270s) to accommodate Qwen's 240s timeout + buffer
+                    setTimeout(() => {
+                        if (!resolved) {
+                            resolved = true;
+                            if (elapsedTimer) clearInterval(elapsedTimer);
+                            if (progressAnimationInterval) clearInterval(progressAnimationInterval);
+                            socket.emit('unsubscribe_job', { job_id: jobId });
+                            socket.disconnect();
+                            reject(new Error('WebSocket connection timeout - job may still be processing'));
+                        }
+                    }, 270000);
+                    
+                } catch (error) {
+                    console.error('❌ WebSocket setup error:', error);
+                    if (!resolved) {
+                        resolved = true;
+                        fallbackToPolling(jobId).then(resolve).catch(reject);
+                    }
+                }
+            });
+        } else {
+            // Sync fallback (shouldn't happen with new endpoint, but handle gracefully)
+            console.warn('⚠️ No job_id returned, treating as sync response');
+            data = jobResponse;
+        }
+        
+        if (!data) {
+            throw new Error('No data received from job');
+        }
+        
         console.log(`📊 API response success:`, data.success, `error:`, data.error);
         
         // Check if API returned an error
-        if (!data.success || data.error) {
+        if (data.error && !data.success) {
             console.error(`❌ API returned error:`, data.error);
             throw new Error(data.error || 'Failed to get recommendations');
         }
         
         // Log target_replicas from API response for debugging
-        if (data.predictive && data.predictive.recommendation) {
-            const rec = data.predictive.recommendation;
+        if (data.recommendations?.predictive?.recommendation) {
+            const rec = data.recommendations.predictive.recommendation;
             console.log(`🔍🔍🔍 FRONTEND: Received target_replicas=${rec.target_replicas} from API, action=${rec.action}, scaling_type=${rec.scaling_type}`);
         }
         
@@ -1342,6 +2160,15 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
         const availableReplicas = pred.available_replicas || 0;
         const currentMetrics = pred.current_metrics || {};
         
+        // CRITICAL: Use forecast.current values (same as UI displays) instead of current_metrics
+        // The UI displays forecast.cpu.current and forecast.memory.current, so the "Current Status" card
+        // should also use these values for consistency
+        const forecastCpu = forecast.cpu?.current ?? currentMetrics.cpu_usage ?? 0;
+        const forecastMemory = forecast.memory?.current ?? currentMetrics.memory_usage ?? 0;
+        
+        console.log(`🔍🔍🔍 FRONTEND METRICS: current_metrics.cpu=${currentMetrics.cpu_usage}, forecast.cpu.current=${forecast.cpu?.current}, using=${forecastCpu}`);
+        console.log(`🔍🔍🔍 FRONTEND METRICS: current_metrics.memory=${currentMetrics.memory_usage}, forecast.memory.current=${forecast.memory?.current}, using=${forecastMemory}`);
+        
         // Build target information text with current stats
         let targetInfoText = '';
         
@@ -1349,12 +2176,9 @@ function displayRecommendations(data, chartContainer, recommendationsContainer) 
         if (currentReplicas > 0) {
             targetInfoText += `<br><div style="margin-top: 0.5rem; padding: 0.75rem; background: #f8f9fa; border-radius: 0.25rem;"><strong>📊 Current Status:</strong>`;
             targetInfoText += `<br>&nbsp;&nbsp;• Pods: ${currentReplicas} total, ${readyReplicas} ready, ${availableReplicas} available`;
-            if (currentMetrics.cpu_usage !== undefined) {
-                targetInfoText += `<br>&nbsp;&nbsp;• CPU Usage: ${currentMetrics.cpu_usage.toFixed(1)}%`;
-            }
-            if (currentMetrics.memory_usage !== undefined) {
-                targetInfoText += `<br>&nbsp;&nbsp;• Memory Usage: ${currentMetrics.memory_usage.toFixed(1)}%`;
-            }
+            // Use forecast values (same as UI displays) instead of current_metrics
+            targetInfoText += `<br>&nbsp;&nbsp;• CPU Usage: ${forecastCpu.toFixed(1)}%`;
+            targetInfoText += `<br>&nbsp;&nbsp;• Memory Usage: ${forecastMemory.toFixed(1)}%`;
             targetInfoText += `</div>`;
         }
         

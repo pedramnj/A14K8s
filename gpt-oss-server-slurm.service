@@ -1,0 +1,16 @@
+[Unit]
+Description=GPT OSS Server via SLURM (runs on compute node)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home1/pedramnj/ai4k8s
+ExecStart=/home1/pedramnj/ai4k8s/manage_gpt_oss_slurm.sh start
+ExecStop=/home1/pedramnj/ai4k8s/manage_gpt_oss_slurm.sh stop
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+

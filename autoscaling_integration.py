@@ -276,15 +276,10 @@ class AutoscalingIntegration:
             deployment_name = deployment_name.strip()
             namespace = namespace.strip()
             
-            # Get scaling recommendation
-            recommendation = self.predictive_autoscaler.get_scaling_recommendation(
-                deployment_name, namespace
-            )
-            
-            if not recommendation['success']:
-                return recommendation
-            
-            # Execute predictive scaling immediately (this will also mark it as enabled)
+            # OPTIMIZATION: Skip redundant get_scaling_recommendation() call
+            # predict_and_scale() already calls the LLM internally, so calling it twice
+            # causes unnecessary delay (30-40 seconds instead of 1-3 seconds)
+            # Just execute predictive scaling immediately (this will also mark it as enabled)
             result = self.predictive_autoscaler.predict_and_scale(
                 deployment_name, namespace, min_replicas, max_replicas, state_management
             )
@@ -347,7 +342,11 @@ class AutoscalingIntegration:
             scaling_type: 'hpa', 'vpa', or 'both'
         """
         try:
-            if scaling_type in ['hpa', 'both']:
+            # CRITICAL: Only process HPA if scaling_type is 'hpa' or 'both', NOT 'vpa'
+            if scaling_type == 'vpa':
+                # Skip HPA processing entirely for VPA-only scaling
+                pass
+            elif scaling_type in ['hpa', 'both']:
                 if target_replicas is None or target_replicas < 0:
                     return {'success': False, 'error': 'target_replicas must be >= 0 for HPA scaling'}
 

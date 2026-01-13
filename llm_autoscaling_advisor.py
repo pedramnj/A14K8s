@@ -3,12 +3,16 @@
 AI4K8s LLM-Based Autoscaling Advisor
 ====================================
 
-Uses Groq LLM to make intelligent autoscaling decisions by analyzing:
+Uses LLM (GPT OSS or Groq) to make intelligent autoscaling decisions by analyzing:
 - Current resource metrics
 - Predictive forecasts
 - Historical patterns
 - Cost considerations
 - Performance requirements
+
+Supports:
+- GPT OSS models via OpenAI-compatible API (local/HPC)
+- Groq API (cloud-based fallback)
 
 Author: Pedram Nikjooy
 Thesis: AI Agent for Kubernetes Management
@@ -20,8 +24,47 @@ import logging
 import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-import groq
 import hashlib
+
+# Configure logger first (before using it)
+logger = logging.getLogger(__name__)
+if not logger.handlers:  # Only configure if not already configured
+    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    # Console handler (stderr)
+    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    # File handler - use dynamic path based on current working directory
+    try:
+        import os
+        log_dir = os.path.expanduser('~/ai4k8s')
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, 'llm_advisor.log')
+        file_handler = logging.FileHandler(log_file, mode='a')
+        file_handler.setLevel(logging.WARNING)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        # If file logging fails, continue with console only
+        logger.warning(f"Could not set up file logging: {e}")
+
+# Try OpenAI-compatible client first (for GPT OSS), fallback to Groq
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    logger.warning("OpenAI package not available, will use Groq only")
+
+try:
+    import groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    logger.warning("Groq package not available")
 
 # Configure logger with both file and console handlers
 logger = logging.getLogger(__name__)
@@ -34,9 +77,13 @@ if not logger.handlers:  # Only configure if not already configured
     console_handler.setLevel(logging.WARNING)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    # File handler
+    # File handler - use dynamic path based on current working directory
     try:
-        file_handler = logging.FileHandler('/home1/pedramnj/ai4k8s/llm_advisor.log', mode='a')
+        import os
+        log_dir = os.path.expanduser('~/ai4k8s')
+        os.makedirs(log_dir, exist_ok=True)
+        log_file = os.path.join(log_dir, 'llm_advisor.log')
+        file_handler = logging.FileHandler(log_file, mode='a')
         file_handler.setLevel(logging.WARNING)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
@@ -45,38 +92,84 @@ if not logger.handlers:  # Only configure if not already configured
         logger.warning(f"Could not set up file logging: {e}")
 
 class LLMAutoscalingAdvisor:
-    """LLM-powered autoscaling advisor using Groq"""
+    """LLM-powered autoscaling advisor using GPT OSS (primary) or Groq (fallback)"""
     
-    def __init__(self, groq_api_key: Optional[str] = None, cache_ttl: int = 300):
-        """Initialize LLM advisor with Groq
+    def __init__(self, 
+                 gpt_oss_api_base: Optional[str] = None,
+                 gpt_oss_api_key: Optional[str] = None,
+                 gpt_oss_model: Optional[str] = None,
+                 groq_api_key: Optional[str] = None, 
+                 cache_ttl: int = 300):
+        """Initialize LLM advisor with GPT OSS (preferred) or Groq (fallback)
         
         Args:
-            groq_api_key: Groq API key (or from env)
+            gpt_oss_api_base: GPT OSS API base URL (e.g., http://localhost:8000/v1)
+            gpt_oss_api_key: GPT OSS API key (optional, can be empty for local)
+            gpt_oss_model: GPT OSS model name (e.g., "gpt-4", "deepseek-chat", "mixtral-8x7b")
+            groq_api_key: Groq API key (fallback, or from env)
             cache_ttl: Cache TTL in seconds (default 5 minutes)
         """
+        # GPT OSS Configuration (primary, for better reasoning)
+        self.gpt_oss_api_base = gpt_oss_api_base or os.getenv('GPT_OSS_API_BASE', 'http://localhost:8000/v1')
+        self.gpt_oss_api_key = gpt_oss_api_key or os.getenv('GPT_OSS_API_KEY', 'not-needed')
+        self.gpt_oss_model = gpt_oss_model or os.getenv('GPT_OSS_MODEL', 'gpt-4')
+        
+        # Groq Configuration (fallback)
         self.groq_api_key = groq_api_key or os.getenv('GROQ_API_KEY')
+        
+        # Provider selection: GPT OSS preferred, Groq as fallback
+        self.provider = None  # 'gpt_oss' or 'groq'
         self.client = None
-        # Use supported models (70b was decommissioned, using 8b as primary)
-        # Try 8b-instant first (fast and reliable), can add other models as fallback
-        self.model = "llama-3.1-8b-instant"  # Primary model (fast, reliable)
-        self.fallback_model = "llama-3.1-70b-versatile"  # Fallback (may be decommissioned)
+        self.model = None
+        
+        # Deterministic sampling parameters for consistent outputs
+        self.temperature = 0.1  # Very low for deterministic outputs (was 0.3)
+        self.top_p = 0.95  # Nucleus sampling - focus on top 95% probability mass
+        self.top_k = 40  # Top-k sampling - consider top 40 tokens (for Groq only)
+        # Reduce max_tokens for GPT OSS (smaller models have 2048 context window)
+        # We'll set this dynamically based on provider
+        self.max_tokens_gpt_oss = 600  # Reduced to speed up generation while maintaining quality
+        self.max_tokens_groq = 1500  # Groq models have larger context
+        self.frequency_penalty = 0.0  # No frequency penalty
+        self.presence_penalty = 0.0  # No presence penalty
         
         # Caching to prevent rapid successive LLM calls
         self.cache_ttl = cache_ttl  # 5 minutes default
         self.recommendation_cache: Dict[str, Dict[str, Any]] = {}
         # Track last LLM call time to enforce minimum interval
         self.last_llm_call_time: Dict[str, datetime] = {}
-        self.min_llm_interval = 30  # Minimum 30 seconds between LLM calls for same deployment (reduced from 300s to allow more frequent calls)
+        self.min_llm_interval = 30  # Minimum 30 seconds between LLM calls for same deployment
         
-        if self.groq_api_key:
+        # Initialize GPT OSS client (preferred for better reasoning)
+        if OPENAI_AVAILABLE and self.gpt_oss_api_base:
+            try:
+                self.client = OpenAI(
+                    api_key=self.gpt_oss_api_key if self.gpt_oss_api_key != 'not-needed' else 'not-needed',
+                    base_url=self.gpt_oss_api_base,
+                    timeout=240.0,  # 240 second timeout (Qwen takes 80-120s typically, up to 182s max observed, large buffer to 240s)
+                    max_retries=0  # Disable retries to fail fast - no automatic retries
+                )
+                self.provider = 'gpt_oss'
+                self.model = self.gpt_oss_model
+                logger.info(f"✅ LLM Autoscaling Advisor initialized with GPT OSS: {self.gpt_oss_api_base}, model: {self.model}")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize GPT OSS client: {e}, trying Groq fallback...")
+                self.client = None
+        
+        # Fallback to Groq if GPT OSS not available
+        if not self.client and GROQ_AVAILABLE and self.groq_api_key:
             try:
                 self.client = groq.Groq(api_key=self.groq_api_key)
-                logger.info("✅ LLM Autoscaling Advisor initialized with Groq")
+                self.provider = 'groq'
+                self.model = "llama-3.1-8b-instant"  # Groq model
+                self.fallback_model = "llama-3.1-70b-versatile"
+                logger.info("✅ LLM Autoscaling Advisor initialized with Groq (fallback)")
             except Exception as e:
                 logger.error(f"Failed to initialize Groq client: {e}")
                 self.client = None
-        else:
-            logger.warning("⚠️  No GROQ_API_KEY found, LLM advisor disabled")
+        
+        if not self.client:
+            logger.warning("⚠️  No LLM provider available. Set GPT_OSS_API_BASE or GROQ_API_KEY environment variable.")
     
     def _get_cache_key(self, deployment_name: str, namespace: str, 
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
@@ -263,56 +356,198 @@ class LLMAutoscalingAdvisor:
             # Create user prompt with context
             user_prompt = self._create_user_prompt(context)
             
-            # Call Groq LLM
-            print(f"🔍🔍🔍 CALLING GROQ API: model={self.model}, client={self.client is not None}")
-            logger.warning(f"🔍🔍🔍 CALLING GROQ API: model={self.model}, client={self.client is not None}")
+            # Call LLM (GPT OSS or Groq)
+            provider_name = "GPT OSS" if self.provider == 'gpt_oss' else "Groq"
+            print(f"🔍🔍🔍 CALLING {provider_name.upper()} API: model={self.model}, client={self.client is not None}")
+            logger.warning(f"🔍🔍🔍 CALLING {provider_name.upper()} API: model={self.model}, client={self.client is not None}")
             print(f"🔍🔍🔍 SYSTEM PROMPT (first 200 chars): {system_prompt[:200]}...")
             logger.warning(f"🔍🔍🔍 SYSTEM PROMPT (first 200 chars): {system_prompt[:200]}...")
             print(f"🔍🔍🔍 USER PROMPT (first 200 chars): {user_prompt[:200]}...")
             logger.warning(f"🔍🔍🔍 USER PROMPT (first 200 chars): {user_prompt[:200]}...")
             
-            # Try with preferred model first, fallback if needed
+            # Make LLM API call with deterministic parameters
             try:
-                print(f"🔍🔍🔍 Making Groq API call to {self.model}...")
-                logger.warning(f"🔍🔍🔍 Making Groq API call to {self.model}...")
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
+                import time
+                start_time = time.time()
+                
+                print(f"🔍🔍🔍 Making {provider_name} API call to {self.model}...")
+                logger.warning(f"🔍🔍🔍 Making {provider_name} API call to {self.model}...")
+                print(f"🔍🔍🔍 GPT OSS Config: base_url={self.gpt_oss_api_base}, model={self.model}, timeout={self.client.timeout if self.client else 'N/A'}s")
+                logger.warning(f"🔍🔍🔍 GPT OSS Config: base_url={self.gpt_oss_api_base}, model={self.model}, timeout={self.client.timeout if self.client else 'N/A'}s")
+                
+                # Test connection first (for GPT OSS) - check if server is responding
+                if self.provider == 'gpt_oss':
+                    try:
+                        import requests
+                        from urllib.parse import urlparse
+                        # Parse base URL correctly (e.g., http://localhost:8001/v1 -> http://localhost:8001)
+                        parsed = urlparse(self.gpt_oss_api_base)
+                        base_url_clean = f"{parsed.scheme}://{parsed.netloc}"  # e.g., http://localhost:8001
+                        # Test /v1/models endpoint
+                        test_url = f"{base_url_clean}/v1/models"
+                        test_response = requests.get(test_url, timeout=2)
+                        print(f"🔍🔍🔍 GPT OSS connection test: {test_response.status_code} (URL: {test_url})")
+                        logger.warning(f"🔍🔍🔍 GPT OSS connection test: {test_response.status_code} (URL: {test_url})")
+                    except Exception as health_e:
+                        print(f"⚠️⚠️⚠️ GPT OSS connection test failed (non-critical): {health_e}")
+                        logger.warning(f"⚠️⚠️⚠️ GPT OSS connection test failed (non-critical): {health_e}")
+                
+                # Prepare deterministic sampling parameters
+                # Use different max_tokens based on provider (GPT OSS has smaller context)
+                max_tokens = self.max_tokens_gpt_oss if self.provider == 'gpt_oss' else self.max_tokens_groq
+                
+                print(f"🔍🔍🔍 API params: max_tokens={max_tokens}, temperature={self.temperature}, provider={self.provider}")
+                logger.warning(f"🔍🔍🔍 API params: max_tokens={max_tokens}, temperature={self.temperature}, provider={self.provider}")
+                
+                api_params = {
+                    "model": self.model,
+                    "messages": [
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
-                    temperature=0.3,  # Lower temperature for more consistent decisions
-                    max_tokens=1000
-                )
+                    "temperature": self.temperature,  # Very low (0.1) for deterministic outputs
+                    "max_tokens": max_tokens,  # Provider-specific token limit
+                }
+                
+                # Add advanced sampling parameters for GPT OSS (more deterministic)
+                # Note: llama.cpp OpenAI-compatible API only supports: temperature, top_p, max_tokens
+                # It does NOT support: top_k, frequency_penalty, presence_penalty
+                if self.provider == 'gpt_oss':
+                    api_params.update({
+                        "top_p": self.top_p,  # Nucleus sampling (supported by llama.cpp)
+                    })
+                    print(f"🔍🔍🔍 GPT OSS API params: {list(api_params.keys())}")
+                    logger.warning(f"🔍🔍🔍 GPT OSS API params: {list(api_params.keys())}")
+                elif self.provider == 'groq':
+                    # Groq supports limited parameters (no top_k, frequency_penalty, or presence_penalty)
+                    api_params.update({
+                        "top_p": self.top_p,
+                        # Note: Groq API doesn't support top_k, frequency_penalty, or presence_penalty
+                    })
+                
+                print(f"🔍🔍🔍 Starting API call at {time.time():.2f}...")
+                logger.warning(f"🔍🔍🔍 Starting API call at {time.time():.2f}...")
+                
+                response = self.client.chat.completions.create(**api_params)
+                
+                elapsed_time = time.time() - start_time
+                print(f"🔍🔍🔍 API call completed in {elapsed_time:.2f}s")
+                logger.warning(f"🔍🔍🔍 API call completed in {elapsed_time:.2f}s")
+                
                 response_text = response.choices[0].message.content if response.choices else ""
-                print(f"✅✅✅ GROQ API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
-                logger.warning(f"✅✅✅ GROQ API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
-                print(f"✅✅✅ GROQ RESPONSE (first 500 chars): {response_text[:500]}...")
-                logger.warning(f"✅✅✅ GROQ RESPONSE (first 500 chars): {response_text[:500]}...")
+                
+                print(f"✅✅✅ {provider_name.upper()} API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
+                logger.warning(f"✅✅✅ {provider_name.upper()} API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
+                print(f"✅✅✅ {provider_name.upper()} RESPONSE (first 500 chars): {response_text[:500]}...")
+                logger.warning(f"✅✅✅ {provider_name.upper()} RESPONSE (first 500 chars): {response_text[:500]}...")
+                
             except Exception as e:
-                # Fallback to 8b model if 70b not available
-                logger.error(f"❌❌❌ Model {self.model} failed: {e}, trying fallback: {self.fallback_model}")
-                try:
-                    response = self.client.chat.completions.create(
-                        model=self.fallback_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
-                        temperature=0.3,
-                        max_tokens=1000
-                    )
-                    self.model = self.fallback_model  # Use fallback for future calls
-                    logger.warning(f"✅✅✅ GROQ API CALL SUCCESSFUL with fallback! Model: {self.fallback_model}")
-                except Exception as e2:
-                    print(f"❌❌❌ CRITICAL: Failed to call Groq API with both models: {e2}")
-                    logger.error(f"❌❌❌ CRITICAL: Failed to call Groq API with both models: {e2}")
-                    raise
+                # Check if it's a timeout error (should fallback to Groq)
+                is_timeout = 'timeout' in str(e).lower() or 'timed out' in str(e).lower() or 'APITimeoutError' in str(type(e).__name__)
+                error_type = type(e).__name__
+                
+                logger.warning(f"⚠️  GPT OSS API call failed: {error_type}: {e}")
+                print(f"⚠️  GPT OSS API call failed: {error_type}: {e}")
+                
+                # Fallback to Groq if GPT OSS fails (especially on timeout)
+                # Check if Groq is available and API key is set
+                groq_available = GROQ_AVAILABLE and self.groq_api_key and self.groq_api_key.strip()
+                
+                if self.provider == 'gpt_oss' and groq_available:
+                    logger.warning(f"🔄 GPT OSS failed ({'timeout' if is_timeout else 'error'}), falling back to Groq...")
+                    print(f"🔄🔄🔄 FALLING BACK TO GROQ due to GPT OSS {'timeout' if is_timeout else 'failure'}")
+                    try:
+                        # Initialize Groq client (Groq doesn't support timeout in constructor)
+                        self.client = groq.Groq(api_key=self.groq_api_key)
+                        self.provider = 'groq'
+                        self.model = "llama-3.1-8b-instant"  # Fast Groq model
+                        
+                        logger.info(f"✅ Groq client initialized, making API call...")
+                        print(f"✅ Groq client initialized, making API call...")
+                        
+                        # Use Groq-specific max_tokens
+                        groq_max_tokens = self.max_tokens_groq
+                        
+                        # Make Groq API call with timeout handling
+                        import signal
+                        import threading
+                        import queue as queue_module
+                        
+                        groq_result_queue = queue_module.Queue()
+                        groq_error_queue = queue_module.Queue()
+                        
+                        def call_groq():
+                            try:
+                                # Groq API doesn't support top_k parameter
+                                result = self.client.chat.completions.create(
+                                    model=self.model,
+                                    messages=[
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_prompt}
+                                    ],
+                                    temperature=self.temperature,
+                                    max_tokens=groq_max_tokens,
+                                    top_p=self.top_p  # Groq supports top_p but not top_k
+                                )
+                                groq_result_queue.put(result)
+                            except Exception as e3:
+                                groq_error_queue.put(e3)
+                        
+                        groq_thread = threading.Thread(target=call_groq, daemon=True)
+                        groq_thread.start()
+                        groq_thread.join(timeout=15.0)  # 15 second timeout for Groq (increased for reliability)
+                        
+                        if groq_thread.is_alive():
+                            logger.error("❌ Groq API call timed out after 15s")
+                            raise Exception("Groq API call timed out")
+                        elif not groq_error_queue.empty():
+                            error = groq_error_queue.get()
+                            raise error
+                        elif not groq_result_queue.empty():
+                            groq_response = groq_result_queue.get()
+                            response_text = groq_response.choices[0].message.content if groq_response.choices else ""
+                            logger.warning(f"✅✅✅ Groq fallback succeeded! Response length: {len(response_text)}")
+                            print(f"✅✅✅ Groq fallback succeeded! Response length: {len(response_text)}")
+                        else:
+                            raise Exception("Groq API call returned no result")
+                            
+                    except Exception as e2:
+                        logger.error(f"❌❌❌ Groq fallback also failed: {e2}")
+                        print(f"❌❌❌ Groq fallback also failed: {e2}")
+                        raise Exception(f"All LLM providers failed. GPT OSS: {e}, Groq: {e2}")
+                elif self.provider == 'gpt_oss' and not groq_available:
+                    # GPT OSS failed but Groq not available
+                    logger.error(f"❌ GPT OSS failed and Groq not available (GROQ_AVAILABLE={GROQ_AVAILABLE}, has_key={bool(self.groq_api_key)})")
+                    print(f"❌ GPT OSS failed and Groq not available")
+                    raise Exception(f"LLM API call failed: {e}. Groq fallback not available.")
+                else:
+                    # Try fallback model if using Groq
+                    if self.provider == 'groq' and hasattr(self, 'fallback_model'):
+                        logger.error(f"❌❌❌ Model {self.model} failed: {e}, trying fallback: {self.fallback_model}")
+                        try:
+                            response = self.client.chat.completions.create(
+                                model=self.fallback_model,
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_prompt}
+                                ],
+                                temperature=self.temperature,
+                                max_tokens=self.max_tokens
+                            )
+                            self.model = self.fallback_model  # Use fallback for future calls
+                            response_text = response.choices[0].message.content if response.choices else ""
+                            logger.warning(f"✅✅✅ Fallback model {self.fallback_model} succeeded")
+                        except Exception as e2:
+                            logger.error(f"❌❌❌ Both models failed: {e2}")
+                            raise Exception(f"LLM API call failed: {e2}")
+                    else:
+                        raise Exception(f"LLM API call failed: {e}")
             
             # Parse LLM response
-            llm_output = response.choices[0].message.content
+            llm_output = response_text if 'response_text' in locals() else response.choices[0].message.content
             logger.warning(f"🔍🔍🔍 LLM RAW RESPONSE (first 500 chars): {llm_output[:500]}...")
-            logger.warning(f"🔍🔍🔍 LLM MODEL USED: {self.model}")
+            provider_name = "GPT OSS" if self.provider == 'gpt_oss' else "Groq"
+            logger.warning(f"🔍🔍🔍 LLM MODEL USED: {self.model} (Provider: {provider_name})")
             logger.warning(f"🔍🔍🔍 CONTEXT PASSED TO _parse_llm_response: state_info={context.get('state_management_info', {})}, state_note={context.get('state_management_note', '')[:200]}...")
             
             # Try to extract JSON from response (handle both JSON and text responses)
@@ -378,6 +613,13 @@ class LLMAutoscalingAdvisor:
                            hpa_manager=None) -> Dict[str, Any]:
         """Parse LLM response, extracting JSON if present and validate against constraints"""
         import re
+        
+        # Ensure current_resources is initialized (use parameter or get from context)
+        if current_resources is None:
+            current_resources = context.get('deployment', {}).get('current_resources', {}) if context else {}
+        # If still None or empty, use defaults
+        if not current_resources:
+            current_resources = {}
         
         recommendation = None
         
@@ -589,7 +831,185 @@ class LLMAutoscalingAdvisor:
                     recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
                         f' [FORCED CORRECTION: Changed from {scaling_type.upper()} to HPA because application is STATELESS. Stateless applications MUST scale horizontally, not vertically.]')
                 else:
-                    logger.info(f"✅ Stateless detected and LLM already recommended HPA - no correction needed")
+                    # LLM already recommended HPA, but check if target_replicas is missing or needs validation
+                    # Also validate if LLM's reasoning contradicts the actual metrics
+                    current_replicas = context.get('deployment', {}).get('current_replicas', 1) if context else 1
+                    effective_max_replicas = max_replicas  # From function parameter
+                    
+                    # CRITICAL: Use forecast's current values (same as UI displays) instead of current_metrics
+                    # The UI displays forecast.cpu.current and forecast.memory.current, so enforcement
+                    # should use the same values to ensure consistency
+                    forecast = context.get('forecast', {}) if context else {}
+                    cpu_usage_from_forecast = forecast.get('cpu', {}).get('current', 0) if forecast else 0
+                    memory_usage_from_forecast = forecast.get('memory', {}).get('current', 0) if forecast else 0
+                    
+                    # Fallback to current_metrics if forecast values are missing or zero
+                    cpu_usage_from_metrics = current_metrics.get('cpu_usage', 0) if current_metrics else 0
+                    memory_usage_from_metrics = current_metrics.get('memory_usage', 0) if current_metrics else 0
+                    
+                    # Use forecast values if available, otherwise fall back to metrics
+                    cpu_usage = cpu_usage_from_forecast if cpu_usage_from_forecast > 0 else cpu_usage_from_metrics
+                    memory_usage = memory_usage_from_forecast if memory_usage_from_forecast > 0 else memory_usage_from_metrics
+                    
+                    cpu_peak = forecast.get('cpu', {}).get('peak', cpu_usage) if forecast else cpu_usage
+                    cpu_trend = forecast.get('cpu', {}).get('trend', 'stable') if forecast else 'stable'
+                    
+                    # Log which metrics source is being used
+                    logger.warning(f"🔍🔍🔍 ENFORCEMENT METRICS SOURCE: forecast_cpu={cpu_usage_from_forecast:.1f}%, metrics_cpu={cpu_usage_from_metrics:.1f}%, using={cpu_usage:.1f}%")
+                    logger.warning(f"🔍🔍🔍 ENFORCEMENT METRICS SOURCE: forecast_memory={memory_usage_from_forecast:.1f}%, metrics_memory={memory_usage_from_metrics:.1f}%, using={memory_usage:.1f}%")
+                    
+                    # Use the higher of current or peak for scaling decisions
+                    effective_cpu = max(cpu_usage, cpu_peak)
+                    
+                    # Check if LLM recommendation contradicts actual metrics
+                    llm_target = recommendation.get('target_replicas')
+                    llm_action = recommendation.get('action', '').lower()
+                    needs_recalculation = False
+                    
+                    # Validate: If CPU is high (>70%) but LLM recommends scale_down, recalculate
+                    if effective_cpu > 70 and llm_action == 'scale_down':
+                        logger.warning(f"⚠️⚠️⚠️ METRICS MISMATCH: CPU is {effective_cpu:.1f}% (HIGH) but LLM recommended scale_down. Recalculating...")
+                        needs_recalculation = True
+                    # Validate: If CPU is low (<30%) but LLM recommends scale_up, recalculate
+                    elif effective_cpu < 30 and memory_usage < 30 and llm_action == 'scale_up' and cpu_trend != 'increasing':
+                        logger.warning(f"⚠️⚠️⚠️ METRICS MISMATCH: CPU is {effective_cpu:.1f}% (LOW) but LLM recommended scale_up. Recalculating...")
+                        needs_recalculation = True
+                    # Validate: If target_replicas is None or missing, calculate it
+                    elif llm_target is None:
+                        logger.warning(f"⚠️⚠️⚠️ STATELESS HPA: LLM recommended HPA but target_replicas is None. Calculating target...")
+                        needs_recalculation = True
+                    
+                    if needs_recalculation or llm_target is None:
+                        # Log metrics for debugging
+                        logger.warning(f"🔍🔍🔍 ENFORCEMENT METRICS: cpu_usage={cpu_usage:.1f}%, memory_usage={memory_usage:.1f}%, cpu_peak={cpu_peak:.1f}%, effective_cpu={effective_cpu:.1f}%, cpu_trend={cpu_trend}, current_replicas={current_replicas}")
+                        
+                        # Determine target based on current usage, forecast peak, and trend
+                        if effective_cpu > 70 or memory_usage > 70:
+                            # High usage - scale up
+                            recommendation['target_replicas'] = min(current_replicas + 2, effective_max_replicas)
+                            recommendation['action'] = 'scale_up'
+                            logger.warning(f"🔍🔍🔍 ENFORCEMENT: High usage detected (CPU: {effective_cpu:.1f}%, Memory: {memory_usage:.1f}%) - scaling UP")
+                        elif effective_cpu > 50 or memory_usage > 50:
+                            # Moderate usage - scale up slightly
+                            recommendation['target_replicas'] = min(current_replicas + 1, effective_max_replicas)
+                            recommendation['action'] = 'scale_up'
+                            logger.warning(f"🔍🔍🔍 ENFORCEMENT: Moderate usage detected (CPU: {effective_cpu:.1f}%, Memory: {memory_usage:.1f}%) - scaling UP slightly")
+                        elif cpu_usage < 30 and memory_usage < 30 and cpu_trend != 'increasing':
+                            # Low usage and not increasing - can scale down
+                            recommendation['target_replicas'] = max(current_replicas - 1, min_replicas)
+                            recommendation['action'] = 'scale_down'
+                            logger.warning(f"🔍🔍🔍 ENFORCEMENT: Low usage detected (CPU: {cpu_usage:.1f}%, Memory: {memory_usage:.1f}%) - scaling DOWN")
+                        else:
+                            # Maintain current replicas (moderate usage or uncertain)
+                            recommendation['target_replicas'] = current_replicas
+                            recommendation['action'] = 'maintain'
+                            logger.warning(f"🔍🔍🔍 ENFORCEMENT: Moderate/uncertain usage (CPU: {cpu_usage:.1f}%, Memory: {memory_usage:.1f}%) - MAINTAINING")
+                        
+                        # Ensure target_replicas respects min/max
+                        recommendation['target_replicas'] = max(min_replicas, min(recommendation['target_replicas'], effective_max_replicas))
+                        
+                        # Update action based on final target_replicas
+                        if recommendation['target_replicas'] > current_replicas:
+                            recommendation['action'] = 'scale_up'
+                        elif recommendation['target_replicas'] < current_replicas:
+                            recommendation['action'] = 'scale_down'
+                        else:
+                            recommendation['action'] = 'maintain'
+                        
+                        logger.warning(f"✅✅✅ STATELESS HPA: Set target_replicas={recommendation['target_replicas']} (current={current_replicas}, min={min_replicas}, max={max_replicas}), action={recommendation['action']}")
+                        # Use the same metrics that the UI displays (from forecast)
+                        enforcement_cpu = cpu_usage  # Already from forecast.current
+                        enforcement_memory = memory_usage  # Already from forecast.current
+                        logger.warning(f"🔍🔍🔍 ENFORCEMENT MESSAGE METRICS: cpu={enforcement_cpu:.1f}%, memory={enforcement_memory:.1f}% (from forecast.current, same as UI)")
+                        recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
+                            f' [ENFORCEMENT: Set target_replicas={recommendation["target_replicas"]} ({recommendation["action"]}) for stateless HPA scaling based on current metrics (CPU: {enforcement_cpu:.1f}%, Memory: {enforcement_memory:.1f}%)]')
+                    else:
+                        logger.info(f"✅ Stateless detected and LLM already recommended HPA with target_replicas={recommendation.get('target_replicas')} - no correction needed")
+        
+        # CRITICAL: If VPA is recommended but target_cpu/target_memory are missing, calculate them
+        if recommendation and recommendation.get('scaling_type', '').lower() == 'vpa':
+            if not recommendation.get('target_cpu') or not recommendation.get('target_memory'):
+                logger.warning(f"⚠️⚠️⚠️ STATEFUL VPA: LLM recommended VPA but target_cpu/target_memory are missing. Calculating targets...")
+                
+                # Get current resources and metrics
+                current_replicas = context.get('deployment', {}).get('current_replicas', 1) if context else 1
+                cpu_usage = current_metrics.get('cpu_usage', 0) if current_metrics else 0
+                memory_usage = current_metrics.get('memory_usage', 0) if current_metrics else 0
+                # Use current_resources from parameter or context (already initialized at function start)
+                if not current_resources and context:
+                    current_resources = context.get('deployment', {}).get('current_resources', {})
+                if not current_resources:
+                    current_resources = {}
+                
+                # Get current resource requests to calculate new targets
+                cpu_request_str = current_resources.get('cpu_request', '100m') if current_resources else '100m'
+                memory_request_str = current_resources.get('memory_request', '128Mi') if current_resources else '128Mi'
+                
+                # Parse current CPU request
+                try:
+                    if cpu_request_str.endswith('m'):
+                        cpu_request_m = int(cpu_request_str[:-1])
+                    elif cpu_request_str.endswith('n'):
+                        cpu_request_m = int(cpu_request_str[:-1]) / 1000000
+                    else:
+                        cpu_request_m = float(cpu_request_str) * 1000
+                except:
+                    cpu_request_m = 100  # Default 100m
+                
+                # Calculate target CPU based on usage (add 20% headroom, but ensure reasonable bounds)
+                if cpu_usage > 70:
+                    target_cpu_m = int(cpu_request_m * 1.5)  # Scale up 50% if high usage
+                elif cpu_usage > 50:
+                    target_cpu_m = int(cpu_request_m * 1.3)  # Scale up 30% if moderate usage
+                elif cpu_usage < 30:
+                    target_cpu_m = int(cpu_request_m * 0.8)  # Scale down 20% if low usage
+                else:
+                    target_cpu_m = int(cpu_request_m * 1.1)  # Slight increase for safety
+                
+                target_cpu_m = max(100, min(target_cpu_m, 4000))  # Clamp between 100m and 4000m
+                
+                # Parse current memory request
+                try:
+                    if memory_request_str.endswith('Mi'):
+                        memory_request_mi = int(memory_request_str[:-2])
+                    elif memory_request_str.endswith('Gi'):
+                        memory_request_mi = int(memory_request_str[:-2]) * 1024
+                    elif memory_request_str.endswith('Ki'):
+                        memory_request_mi = int(memory_request_str[:-2]) / 1024
+                    else:
+                        memory_request_mi = int(memory_request_str) if memory_request_str.isdigit() else 128
+                except:
+                    memory_request_mi = 128  # Default 128Mi
+                
+                # Calculate target memory based on usage (add 30% headroom)
+                if memory_usage > 70:
+                    target_memory_mi = int(memory_request_mi * 1.5)  # Scale up 50% if high usage
+                elif memory_usage > 50:
+                    target_memory_mi = int(memory_request_mi * 1.3)  # Scale up 30% if moderate usage
+                elif memory_usage < 30:
+                    target_memory_mi = int(memory_request_mi * 0.9)  # Scale down 10% if low usage
+                else:
+                    target_memory_mi = int(memory_request_mi * 1.2)  # Slight increase for safety
+                
+                target_memory_mi = max(128, min(target_memory_mi, 4096))  # Clamp between 128Mi and 4Gi
+                
+                # Set VPA targets
+                if not recommendation.get('target_cpu'):
+                    recommendation['target_cpu'] = f"{target_cpu_m}m"
+                if not recommendation.get('target_memory'):
+                    recommendation['target_memory'] = f"{target_memory_mi}Mi"
+                
+                # Update action based on resource changes
+                if target_cpu_m > cpu_request_m or target_memory_mi > memory_request_mi:
+                    recommendation['action'] = 'scale_up'
+                elif target_cpu_m < cpu_request_m or target_memory_mi < memory_request_mi:
+                    recommendation['action'] = 'scale_down'
+                else:
+                    recommendation['action'] = 'maintain'
+                
+                logger.warning(f"✅✅✅ STATEFUL VPA: Set target_cpu={recommendation['target_cpu']}, target_memory={recommendation['target_memory']} (current CPU: {cpu_request_str}, Memory: {memory_request_str}), action={recommendation['action']}")
+                recommendation['reasoning'] = (recommendation.get('reasoning', '') + 
+                    f' [ENFORCEMENT: Set target_cpu={recommendation["target_cpu"]}, target_memory={recommendation["target_memory"]} for stateful VPA scaling based on current metrics (CPU: {cpu_usage:.1f}%, Memory: {memory_usage:.1f}%)]')
         
         # Validate and enforce min/max replica constraints (only for HPA)
         logger.warning(f"🔍🔍🔍 VALIDATION DEBUG: recommendation={recommendation is not None}, scaling_type={recommendation.get('scaling_type') if recommendation else None}, target_replicas={recommendation.get('target_replicas') if recommendation else None}, min_replicas={min_replicas}, max_replicas={max_replicas}")
@@ -893,18 +1313,44 @@ class LLMAutoscalingAdvisor:
         
         # Build state management note based on detection
         if state_info['detected']:
+            # Ensure details is always a list (not None)
+            details = state_info.get('details', [])
+            if details is None:
+                details = []
+            
             if state_info['type'] == 'stateless':
-                state_note = (
-                    f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
-                    f"Application is STATELESS - state is externalized (Redis, DB, external cache, etc.). "
-                    f"Details: {', '.join(state_info['details'])}. "
-                    f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                # Check if stateless was detected from actual evidence (env vars, services) or just annotation
+                source = state_info.get('source', '')
+                has_evidence = source in ['environment_variables', 'service_dependencies'] or any(
+                    'Redis' in d or 'DATABASE' in d or 'DB' in d or 'external' in d.lower() 
+                    for d in details if d  # Only iterate if d is not None/empty
                 )
+                
+                details_str = ', '.join(str(d) for d in details if d) if details else 'No specific details'
+                
+                if has_evidence:
+                    # Stateless detected from actual evidence (Redis, DB, etc.)
+                    state_note = (
+                        f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
+                        f"Application is STATELESS - state is externalized (Redis, DB, external cache, etc.) as detected from deployment configuration. "
+                        f"Details: {details_str}. "
+                        f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                    )
+                else:
+                    # Stateless detected from annotation only (no evidence of Redis/DB)
+                    state_note = (
+                        f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
+                        f"Application is marked as STATELESS (from user annotation or auto-detection). "
+                        f"**DO NOT assume** Redis, DB, or external cache exists unless explicitly mentioned in deployment details. "
+                        f"Details: {details_str}. "
+                        f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                    )
             elif state_info['type'] == 'stateful':
+                details_str = ', '.join(str(d) for d in details if d) if details else 'No specific details'
                 state_note = (
                     f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
                     f"Application is STATEFUL - state is stored inside the pod. "
-                    f"Details: {', '.join(state_info['details'])}. "
+                    f"Details: {details_str}. "
                     f"**YOU MUST RECOMMEND VPA (vertical scaling) - DO NOT recommend HPA for stateful applications.**"
                 )
             else:
@@ -941,7 +1387,7 @@ class LLMAutoscalingAdvisor:
             context['vpa'] = {'exists': False}
         
         if historical_patterns:
-            context['historical_patterns'] = historical_patterns[-10:]  # Last 10 patterns
+            context['historical_patterns'] = historical_patterns[-10:]  # Last 10 patterns (Qwen can handle full context for accuracy)
         
         return context
     
@@ -1026,8 +1472,8 @@ Respond in JSON format with:
 **Forecast Data:**
 - CPU Current: {context['forecast']['cpu']['current']:.1f}%, Peak: {context['forecast']['cpu']['peak']:.1f}%, Trend: {context['forecast']['cpu']['trend']}
 - Memory Current: {context['forecast']['memory']['current']:.1f}%, Peak: {context['forecast']['memory']['peak']:.1f}%, Trend: {context['forecast']['memory']['trend']}
-- CPU Predictions (next 6 hours): {context['forecast']['cpu']['predictions']}
-- Memory Predictions (next 6 hours): {context['forecast']['memory']['predictions']}
+- CPU Predictions (next 3 hours): {context['forecast']['cpu']['predictions'][:6] if len(context['forecast']['cpu'].get('predictions', [])) > 6 else context['forecast']['cpu'].get('predictions', [])}
+- Memory Predictions (next 3 hours): {context['forecast']['memory']['predictions'][:6] if len(context['forecast']['memory'].get('predictions', [])) > 6 else context['forecast']['memory'].get('predictions', [])}
 
 **Current Resource Configuration:**
 - CPU Request: {context['current_resources'].get('cpu_request', 'N/A')}
@@ -1038,11 +1484,10 @@ Respond in JSON format with:
 **State Management Information:**
 {context.get('state_management_note', 'No explicit state management information available. DO NOT assume external state (Redis, DB) unless explicitly mentioned.')}
 
-**CRITICAL STATE MANAGEMENT RULES:**
-- If the state management information above says "STATELESS" or "state is externalized" → YOU MUST RECOMMEND HPA (horizontal scaling)
-- If the state management information above says "STATEFUL" or "state is stored inside the pod" → YOU MUST RECOMMEND VPA (vertical scaling)
-- If the state management information says "No state management information detected" → Default to VPA for safety (but prefer HPA if you have evidence of external state)
-- DO NOT ignore the state management information provided above - it is critical for choosing between HPA and VPA
+**State Decision:**
+- STATELESS/externalized state → HPA
+- STATEFUL/internal state → VPA
+- Unknown → VPA (safer)
 
 **HPA Status:**
 """
@@ -1068,74 +1513,18 @@ Respond in JSON format with:
             prompt += "- VPA Active: No (vertical scaling not configured)\n"
         
         if context.get('historical_patterns'):
-            prompt += f"\n**Historical Patterns:**\n{json.dumps(context['historical_patterns'], indent=2)}\n"
+            # Include last 3 historical patterns (truncate to reduce prompt size while maintaining accuracy)
+            patterns_to_include = context['historical_patterns'][-3:] if len(context['historical_patterns']) > 3 else context['historical_patterns']
+            prompt += f"\n**Historical Patterns (last 3):**\n{json.dumps(patterns_to_include, indent=1)}\n"
         
         prompt += """
-**IMPORTANT: State Detection Rules (CRITICAL - FOLLOW STRICTLY)**
-- **DO NOT assume** the application uses Redis, external databases, or externalized state unless explicitly mentioned in the deployment information above
-- **DO NOT infer** external state from deployment names, metrics, or other indirect clues
-- **DEFAULT BEHAVIOR**: If state management information is NOT provided in the context above, you MUST assume the application stores state inside the pod and recommend VPA
-- **ONLY recommend HPA** if you have EXPLICIT, CLEAR evidence that state is externalized (Redis, DB, external cache explicitly mentioned in context)
-- **If uncertain or no state information provided**, you MUST prefer VPA for safety (stateful apps should not scale horizontally)
-- **When in doubt, choose VPA** - it's safer for applications that may have internal state
+**Analysis:**
+Consider: resource pressure, forecast trends, cost, performance, stability. Choose HPA (replicas) or VPA (resources per pod) based on state management above.
 
-**Analysis Request:**
-Based on the above information, provide an intelligent scaling recommendation considering:
-1. Current resource pressure (CPU/Memory usage)
-2. Predicted future demand (forecast trends)
-3. Cost optimization opportunities
-4. Performance requirements
-5. Stability and risk factors
-6. **CRITICAL: Choose between HPA (horizontal - more replicas) or VPA (vertical - more resources per pod)**
-
-**Scaling Strategy Decision Guidelines:**
-- Choose HPA (horizontal) if: 
-  * Application is stateless OR externalizes its state (Redis, external DB, external cache, shared storage)
-  * Can distribute load across multiple pods
-  * Needs high availability
-  * Traffic spikes are expected
-  * **Remember: Applications with externalized state should be treated as stateless and prefer HPA**
-
-- Choose VPA (vertical) if: 
-  * Application keeps critical state INSIDE the pod (not externalized)
-  * Cannot scale horizontally due to state constraints
-  * Single-pod bottleneck
-  * Resource constraints per pod
-  * **CRITICAL: Only choose VPA if state is stored inside the pod. If state is externalized, prefer HPA instead**
-
-- Choose "both" if: Need both more replicas AND more resources per pod (rare, but possible)
-
-**State Management Decision Tree:**
-1. Does the application store critical state?
-   - **If NOT mentioned in context** → Assume MAYBE (prefer VPA for safety)
-   - NO (explicitly stateless) → Prefer HPA
-   - YES → Continue to step 2
-2. Where is the state stored?
-   - **ONLY if EXPLICITLY mentioned**: Externalized (Redis, external DB, external cache, shared storage) → Treat as STATELESS → Prefer HPA
-   - **Default assumption**: Inside the pod (local files, in-memory without externalization) → **MUST USE VPA** (NOT HPA)
-3. **CRITICAL RULES:**
-   - **DO NOT assume** Redis/external state exists unless explicitly mentioned in deployment information
-   - **DO NOT infer** external state from deployment names or metrics
-   - **When uncertain**, prefer VPA (safer for stateful applications)
-   - **NEVER assume "stateful = only VPA"** - but also NEVER assume external state without evidence
-
-**CRITICAL RULE FOR VPA:**
-- If you determine state is stored INSIDE the pod (not externalized), you MUST set:
-  - scaling_type: "vpa" (NOT "hpa")
-  - target_replicas: null (do NOT set a replica count)
-  - target_cpu: "<value>" (e.g., "200m", "500m", "1000m" based on current CPU usage)
-  - target_memory: "<value>" (e.g., "256Mi", "512Mi", "1Gi" based on current memory usage)
-  - action: "scale_up" or "scale_down" (based on resource pressure, NOT replica count)
-
-**CRITICAL RULE FOR HPA:**
-- Only use HPA if:
-  - Application is stateless, OR
-  - State is externalized (Redis, DB, external cache, shared storage)
-- For HPA, set:
-  - scaling_type: "hpa"
-  - target_replicas: <number between min_replicas and max_replicas>
-  - target_cpu: null
-  - target_memory: null
+**Rules:**
+- HPA: stateless OR externalized state (Redis/DB/cache) → set scaling_type="hpa", target_replicas=<number>, target_cpu=null, target_memory=null
+- VPA: internal state → set scaling_type="vpa", target_replicas=null, target_cpu="<value>", target_memory="<value>"
+- target_replicas MUST be between min_replicas and max_replicas
 
 **DO NOT scale down stateful applications (state inside pod) by reducing replicas - use VPA instead to adjust resources per pod.**
 
