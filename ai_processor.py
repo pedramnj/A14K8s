@@ -132,28 +132,28 @@ class EnhancedAIProcessor:
             print(f"🤖 AI Tool Args: {tool_args}")
             
             # Execute the tool call to get real data
-                    result = self._call_mcp_tool(tool_name, tool_args)
-                    
-                    if result['success']:
+            result = self._call_mcp_tool(tool_name, tool_args)
+            
+            if result['success']:
                 # Use smart formatting (NO AI call - just intelligent formatting)
                 real_data = result['result']
                 explanation = self._smart_response_formatting(tool_name, real_data, query)
-                        
-                        return {
+                
+                return {
                     'command': f'AI: {tool_name}',
                     'explanation': explanation,
-                            'ai_processed': True,
-                            'tool_results': [{'tool_name': tool_name, 'result': result}],
-                            'mcp_result': result
-                        }
-                    else:
-                        return {
-                    'command': f'AI: {tool_name}',
-                    'explanation': f"❌ **Error executing {tool_name}:** {result['error']}",
-                            'ai_processed': True,
+                    'ai_processed': True,
                     'tool_results': [{'tool_name': tool_name, 'result': result}],
                     'mcp_result': result
-            }
+                }
+            else:
+                return {
+                    'command': f'AI: {tool_name}',
+                    'explanation': f"❌ **Error executing {tool_name}:** {result['error']}",
+                    'ai_processed': True,
+                    'tool_results': [{'tool_name': tool_name, 'result': result}],
+                    'mcp_result': result
+                }
             
         except Exception as e:
             return {

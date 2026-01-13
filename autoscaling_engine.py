@@ -390,18 +390,28 @@ class HorizontalPodAutoscaler:
         
         # Get metrics
         current_metrics = {}
-        for condition in status.get('conditions', []):
-            if condition['type'] == 'AbleToScale':
-                current_metrics['able_to_scale'] = condition['status'] == 'True'
-            elif condition['type'] == 'ScalingActive':
-                current_metrics['scaling_active'] = condition['status'] == 'True'
+        # Safely handle conditions (could be None)
+        conditions = status.get('conditions', [])
+        if conditions is None:
+            conditions = []
+        for condition in conditions:
+            if condition and condition.get('type') == 'AbleToScale':
+                current_metrics['able_to_scale'] = condition.get('status') == 'True'
+            elif condition and condition.get('type') == 'ScalingActive':
+                current_metrics['scaling_active'] = condition.get('status') == 'True'
         
         # Get CPU and memory metrics
-        for metric in status.get('currentMetrics', []):
-            if metric['type'] == 'Resource':
-                resource_name = metric['resource']['name']
-                current_value = metric['resource'].get('current', {}).get('averageUtilization', 0)
-                current_metrics[f'{resource_name}_usage'] = current_value
+        # Safely handle currentMetrics (could be None)
+        current_metrics_list = status.get('currentMetrics', [])
+        if current_metrics_list is None:
+            current_metrics_list = []
+        for metric in current_metrics_list:
+            if metric and metric.get('type') == 'Resource':
+                resource = metric.get('resource', {})
+                resource_name = resource.get('name')
+                if resource_name:
+                    current_value = resource.get('current', {}).get('averageUtilization', 0)
+                    current_metrics[f'{resource_name}_usage'] = current_value
         
         return {
             'current_replicas': current_replicas,

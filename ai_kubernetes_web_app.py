@@ -6,6 +6,7 @@ Simplified AI4K8s Web Application - Lightweight and Efficient
 
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
+from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import os
@@ -14,8 +15,10 @@ import requests
 import uuid
 import asyncio
 import time
+import threading
 from typing import Any, List, Dict, Optional
 from mcp_client import call_mcp_tool
+from datetime import datetime, timedelta
 
 # Import predictive monitoring components
 try:
@@ -26,9 +29,47 @@ except ImportError as e:
     PREDICTIVE_MONITORING_AVAILABLE = False
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-change-this')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///ai4k8s.db'
+# SECRET_KEY is required for production - must be set via environment variable
+secret_key = os.environ.get('SECRET_KEY')
+if not secret_key:
+    import sys
+    print("❌ ERROR: SECRET_KEY environment variable must be set for production")
+    print("   Generate one with: python3 -c \"import secrets; print(secrets.token_hex(32))\"")
+    print("   Then set it: export SECRET_KEY='<generated-key>'")
+    sys.exit(1)
+app.config['SECRET_KEY'] = secret_key
+
+# Initialize SocketIO for WebSocket support
+# Use 'threading' mode for compatibility with Cloudflare/proxies
+# Allow polling transport as fallback for WebSocket issues
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='threading',
+    allow_upgrades=True,
+    transports=['websocket', 'polling']  # Allow both WebSocket and polling
+)
+print("✅ WebSocket (SocketIO) support initialized")
+
+# CRITICAL: Use database URI from .env file, don't hardcode!
+# This allows the database path to be configured via environment variables
+database_uri = os.environ.get('SQLALCHEMY_DATABASE_URI', 'sqlite:///instance/ai4k8s.db')
+
+# Ensure instance directory exists
+instance_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance')
+os.makedirs(instance_dir, exist_ok=True)
+
+# If path is relative, make it absolute to avoid path resolution issues
+if database_uri.startswith('sqlite:///'):
+    path_part = database_uri.replace('sqlite:///', '')
+    if not os.path.isabs(path_part):
+        # Make it relative to the app directory
+        abs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path_part)
+        database_uri = f'sqlite:///{abs_path}'
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+print(f"📊 Using database: {database_uri}")
 
 # Session cookie configuration
 app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
@@ -36,6 +77,40 @@ app.config['SESSION_COOKIE_HTTPONLY'] = False  # Allow JavaScript access
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # Allow cross-site requests
 
 db = SQLAlchemy(app)
+
+# ============================================================================
+# ASYNC JOB QUEUE SYSTEM FOR LLM RECOMMENDATIONS
+# ============================================================================
+# In-memory job store: job_id -> {status, result, error, created_at, updated_at}
+recommendation_jobs = {}
+job_lock = threading.Lock()
+JOB_EXPIRY_SECONDS = 300  # 5 minutes
+
+def cleanup_old_jobs():
+    """Remove jobs older than JOB_EXPIRY_SECONDS"""
+    now = datetime.now()
+    with job_lock:
+        expired_jobs = [
+            job_id for job_id, job_data in recommendation_jobs.items()
+            if (now - job_data.get('created_at', now)).total_seconds() > JOB_EXPIRY_SECONDS
+        ]
+        for job_id in expired_jobs:
+            del recommendation_jobs[job_id]
+            print(f"🧹 Cleaned up expired job: {job_id}")
+
+def cleanup_jobs_thread():
+    """Background thread to periodically clean up old jobs"""
+    while True:
+        try:
+            time.sleep(60)  # Run cleanup every minute
+            cleanup_old_jobs()
+        except Exception as e:
+            print(f"⚠️ Error in job cleanup thread: {e}")
+
+# Start cleanup thread
+cleanup_thread = threading.Thread(target=cleanup_jobs_thread, daemon=True)
+cleanup_thread.start()
+print("✅ Async job queue system initialized")
 
 # Context processor to make current year available in all templates
 @app.context_processor
@@ -940,9 +1015,43 @@ def dashboard():
         session.clear()
         flash('Your session has expired. Please log in again.', 'warning')
         return redirect(url_for('login'))
+    
+    # CRITICAL: Only show clusters for the logged-in user
+    # Double-check: Get user_id from session and verify it matches
+    session_user_id = session.get('user_id')
+    if session_user_id != user.id:
+        print(f"⚠️⚠️⚠️ SESSION MISMATCH: session['user_id']={session_user_id}, user.id={user.id}")
+    
+    # CRITICAL: Filter by user.id to ensure only this user's clusters
     servers = Server.query.filter_by(user_id=user.id).all()
     
+    # CRITICAL DEBUG: Log exactly what's being returned
+    print(f"🔍🔍🔍 DASHBOARD REQUEST:")
+    print(f"   User: '{user.username}' (ID: {user.id})")
+    print(f"   Session user_id: {session_user_id}")
+    print(f"   Query filter: user_id={user.id}")
+    print(f"   Servers returned: {len(servers)}")
+    
+    # Also check if there are ANY other servers in the database
+    all_servers_in_db = Server.query.all()
+    print(f"   Total servers in DB: {len(all_servers_in_db)}")
+    for s in all_servers_in_db:
+        s_user = User.query.get(s.user_id)
+        matches = s.user_id == user.id
+        print(f"     - {s.name} (User: {s_user.username if s_user else 'Unknown'}, user_id: {s.user_id}, matches: {matches})")
+    
+    # CRITICAL: Verify each server belongs to this user
+    for server in servers:
+        if server.user_id != user.id:
+            print(f"⚠️⚠️⚠️ SECURITY ISSUE: Server {server.name} (ID: {server.id}) belongs to user_id {server.user_id}, not {user.id}!")
+        print(f"   • Returning to dashboard: {server.name} (ID: {server.id}, user_id: {server.user_id}, Status: {server.status})")
+    
+    # CRITICAL: Remove any servers that don't belong to this user (safety check)
+    servers = [s for s in servers if s.user_id == user.id]
+    print(f"   ✅ Final servers count after security check: {len(servers)}")
+    
     # Check cluster status for each server (quick check)
+    # Skip status check if it takes too long - just show what's in DB
     for server in servers:
         if server.kubeconfig:
             try:
@@ -958,12 +1067,12 @@ def dashboard():
                 env = os.environ.copy()
                 env['KUBECONFIG'] = temp_kubeconfig
                 
-                # Quick cluster-info check
+                # Quick cluster-info check with shorter timeout
                 result = subprocess.run(
                     ['kubectl', 'cluster-info'],
                     capture_output=True,
                     text=True,
-                    timeout=5,
+                    timeout=3,  # Reduced timeout
                     env=env
                 )
                 
@@ -972,11 +1081,13 @@ def dashboard():
                     error_output = result.stderr.lower()
                     if any(phrase in error_output for phrase in ["no such host", "connection refused", "timeout", "unable to connect", "dial tcp", "name or service not known", "name resolution"]):
                         server.status = "error"
-                        server.connection_error = result.stderr
-                        print(f"❌ Server {server.id} ({server.name}): Cluster disconnected - {result.stderr[:100]}")
+                        server.connection_error = result.stderr[:200]
+                        print(f"❌ Server {server.id} ({server.name}): Cluster disconnected")
                     else:
-                        server.status = "inactive"
-                        server.connection_error = result.stderr
+                        # Don't change status if it's a minor error
+                        if server.status != "active":
+                            server.status = "inactive"
+                        server.connection_error = result.stderr[:200] if result.stderr else None
                 else:
                     server.status = "active"
                     server.connection_error = None
@@ -988,11 +1099,18 @@ def dashboard():
                 except:
                     pass
                     
+            except subprocess.TimeoutExpired:
+                # Timeout - don't change status, just log
+                print(f"⏱️  Server {server.id} ({server.name}): Status check timeout (keeping current status)")
             except Exception as e:
-                # If check fails, mark as error
-                server.status = "error"
-                server.connection_error = str(e)
-                print(f"❌ Server {server.id} ({server.name}): Status check failed - {str(e)}")
+                # If check fails, don't change status to error unless it's a clear connection issue
+                error_str = str(e).lower()
+                if any(phrase in error_str for phrase in ["connection", "refused", "timeout", "host"]):
+                    server.status = "error"
+                    server.connection_error = str(e)[:200]
+                    print(f"❌ Server {server.id} ({server.name}): Status check failed - {str(e)[:100]}")
+                else:
+                    print(f"⚠️  Server {server.id} ({server.name}): Status check error (keeping current status) - {str(e)[:100]}")
     
     # Commit status changes
     try:
@@ -1002,7 +1120,17 @@ def dashboard():
         print(f"❌ Failed to commit status changes: {e}")
         db.session.rollback()
     
-    return render_template('dashboard.html', user=user, servers=servers)
+    # Add aggressive cache-busting headers to prevent Cloudflare/browser caching stale data
+    from flask import make_response
+    import time
+    response = make_response(render_template('dashboard.html', user=user, servers=servers))
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate, max-age=0, private'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Cache-Bust'] = str(int(time.time()))  # Add timestamp to force cache invalidation
+    response.headers['CF-Cache-Status'] = 'BYPASS'  # Tell Cloudflare to bypass cache
+    return response
 
 
 @app.route('/benchmark')
@@ -2105,7 +2233,7 @@ if True:
     
     @app.route('/api/autoscaling/predictive/enable/<int:server_id>', methods=['POST'])
     def enable_predictive_autoscaling(server_id):
-        """Enable predictive autoscaling"""
+        """Enable predictive autoscaling - returns immediately, processes in background"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
@@ -2122,14 +2250,35 @@ if True:
             if not deployment_name:
                 return jsonify({'error': 'deployment_name is required'}), 400
             
-            result = autoscaling.enable_predictive_autoscaling(
-                deployment_name=deployment_name,
-                namespace=data.get('namespace', 'default').strip(),
-                min_replicas=data.get('min_replicas', 2),
-                max_replicas=data.get('max_replicas', 10),
-                state_management=data.get('state_management')  # Optional: 'stateless', 'stateful', or None
-            )
-            return jsonify(result)
+            # Return immediately to avoid Cloudflare timeout (HTTP 524)
+            # The actual enabling will happen in background
+            import threading
+            def enable_in_background():
+                try:
+                    autoscaling.enable_predictive_autoscaling(
+                        deployment_name=deployment_name,
+                        namespace=data.get('namespace', 'default').strip(),
+                        min_replicas=data.get('min_replicas', 2),
+                        max_replicas=data.get('max_replicas', 10),
+                        state_management=data.get('state_management')
+                    )
+                    print(f"✅ Background: Predictive autoscaling enabled for {deployment_name}")
+                except Exception as e:
+                    print(f"❌ Background error enabling predictive autoscaling: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Start background thread
+            thread = threading.Thread(target=enable_in_background, daemon=True)
+            thread.start()
+            
+            # Return immediately
+            return jsonify({
+                'success': True,
+                'message': 'Predictive autoscaling is being enabled in the background. Please refresh the page in a few moments.',
+                'deployment_name': deployment_name,
+                'namespace': data.get('namespace', 'default')
+            })
         except Exception as e:
             import traceback
             print(f"❌ Error in enable_predictive_autoscaling: {e}")
@@ -2224,7 +2373,7 @@ if True:
     
     @app.route('/api/autoscaling/recommendations/<int:server_id>')
     def get_scaling_recommendations(server_id):
-        """Get scaling recommendations"""
+        """Start async job to get scaling recommendations - returns job_id immediately"""
         if 'user_id' not in session:
             return jsonify({'error': 'Unauthorized'}), 401
         
@@ -2236,64 +2385,255 @@ if True:
             return jsonify({'error': 'deployment parameter required'}), 400
         
         try:
-            autoscaling = get_autoscaling_instance(server_id)
-            if not autoscaling:
-                return jsonify({'error': 'Failed to initialize autoscaling integration'}), 500
+            # Generate unique job ID
+            job_id = str(uuid.uuid4())
+            now = datetime.now()
             
-            print(f"🔍🔍🔍 WEB APP: Getting recommendations for {deployment_name} in {namespace}")
-            result = autoscaling.get_scaling_recommendations(deployment_name, namespace)
+            # Initialize job in store
+            with job_lock:
+                recommendation_jobs[job_id] = {
+                    'status': 'processing',
+                    'result': None,
+                    'error': None,
+                    'created_at': now,
+                    'updated_at': now,
+                    'server_id': server_id,
+                    'deployment_name': deployment_name,
+                    'namespace': namespace
+                }
             
-            # Log the result to see what's being returned
-            if result.get('predictive') and result['predictive'].get('recommendation'):
-                rec = result['predictive']['recommendation']
-                target_replicas = rec.get('target_replicas')
-                print(f"🔍🔍🔍 WEB APP RESULT: target_replicas={target_replicas}, action={rec.get('action')}, scaling_type={rec.get('scaling_type')}")
-                
-                # CRITICAL: Final validation at web app layer - get min/max from deployment
-                if target_replicas is not None:
+            print(f"🚀 ASYNC JOB: Created job {job_id} for {deployment_name} in {namespace}")
+            
+            # Start background processing
+            def process_recommendations():
+                try:
+                    autoscaling = get_autoscaling_instance(server_id)
+                    if not autoscaling:
+                        raise Exception('Failed to initialize autoscaling integration')
+                    
+                    print(f"🔄 ASYNC JOB {job_id}: Starting LLM processing...")
+                    
+                    # Emit WebSocket update: processing started
                     try:
-                        # Get deployment to read min/max from annotation
-                        import subprocess
-                        kubectl_cmd = ['kubectl', 'get', 'deployment', deployment_name, '-n', namespace, '-o', 'json']
-                        if server.kubeconfig_path:
-                            kubectl_cmd.extend(['--kubeconfig', server.kubeconfig_path])
-                        
-                        kubectl_result = subprocess.run(kubectl_cmd, capture_output=True, text=True, timeout=10)
-                        if kubectl_result.returncode == 0:
-                            deployment_json = json.loads(kubectl_result.stdout)
-                            annotations = deployment_json.get('metadata', {}).get('annotations', {})
-                            config_str = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
-                            config = json.loads(config_str) if config_str else {}
-                            min_replicas = config.get('min_replicas', 2)
-                            max_replicas = config.get('max_replicas', 10)
-                            
-                            print(f"🔍🔍🔍 WEB APP VALIDATION: target_replicas={target_replicas}, min={min_replicas}, max={max_replicas}")
-                            
-                            if target_replicas > max_replicas:
-                                print(f"🚨🚨🚨 WEB APP LAYER: target_replicas={target_replicas} > max={max_replicas}, FORCING to {max_replicas}")
-                                rec['target_replicas'] = max_replicas
-                                result['predictive']['recommendation'] = rec
-                            elif target_replicas < min_replicas:
-                                print(f"🚨🚨🚨 WEB APP LAYER: target_replicas={target_replicas} < min={min_replicas}, FORCING to {min_replicas}")
-                                rec['target_replicas'] = min_replicas
-                                result['predictive']['recommendation'] = rec
-                            
-                            print(f"🔍🔍🔍 WEB APP FINAL: target_replicas={rec.get('target_replicas')}")
-                        else:
-                            print(f"⚠️ Could not get deployment for validation: {kubectl_result.stderr}")
+                        socketio.emit('job_status', {
+                            'job_id': job_id,
+                            'status': 'processing',
+                            'message': 'Starting LLM analysis...',
+                            'progress': 10
+                        }, room=f'job_{job_id}')
                     except Exception as e:
-                        print(f"⚠️ Error in web app validation: {e}")
-                        import traceback
-                        traceback.print_exc()
-                
-                print(f"🔍🔍🔍 WEB APP FULL REC: {json.dumps(rec, indent=2)}")
+                        print(f"⚠️ WebSocket emit error (non-critical): {e}")
+                    
+                    # Get recommendations (this may take 20-30 seconds with LLM)
+                    result = autoscaling.get_scaling_recommendations(deployment_name, namespace)
+                    
+                    # Emit WebSocket update: LLM processing complete
+                    try:
+                        socketio.emit('job_status', {
+                            'job_id': job_id,
+                            'status': 'processing',
+                            'message': 'LLM analysis complete, processing results...',
+                            'progress': 90
+                        }, room=f'job_{job_id}')
+                    except Exception as e:
+                        print(f"⚠️ WebSocket emit error (non-critical): {e}")
+                    
+                    # Ensure response structure matches frontend expectations
+                    if 'recommendations' not in result:
+                        result['recommendations'] = {}
+                    if 'predictive' in result and 'predictive' not in result['recommendations']:
+                        result['recommendations']['predictive'] = result.pop('predictive')
+                    
+                    # Ensure success field exists (frontend expects it)
+                    # Check if we have valid recommendations
+                    has_predictive = result.get('recommendations', {}).get('predictive') is not None
+                    if has_predictive:
+                        # Check if the predictive recommendation itself is successful
+                        pred_rec = result['recommendations']['predictive']
+                        if isinstance(pred_rec, dict) and pred_rec.get('success'):
+                            result['success'] = True
+                        else:
+                            result['success'] = True  # If we have predictive data, consider it success
+                    else:
+                        result['success'] = False
+                        result['error'] = 'No predictive recommendations available'
+                    
+                    # Validate and adjust target_replicas if needed
+                    if result.get('recommendations', {}).get('predictive') and result['recommendations']['predictive'].get('recommendation'):
+                        rec = result['recommendations']['predictive']['recommendation']
+                        target_replicas = rec.get('target_replicas')
+                        
+                        if target_replicas is not None:
+                            try:
+                                import subprocess
+                                kubectl_cmd = ['kubectl', 'get', 'deployment', deployment_name, '-n', namespace, '-o', 'json']
+                                if server.kubeconfig_path:
+                                    kubectl_cmd.extend(['--kubeconfig', server.kubeconfig_path])
+                                
+                                kubectl_result = subprocess.run(kubectl_cmd, capture_output=True, text=True, timeout=10)
+                                if kubectl_result.returncode == 0:
+                                    deployment_json = json.loads(kubectl_result.stdout)
+                                    annotations = deployment_json.get('metadata', {}).get('annotations', {})
+                                    config_str = annotations.get('ai4k8s.io/predictive-autoscaling-config', '{}')
+                                    config = json.loads(config_str) if config_str else {}
+                                    min_replicas = config.get('min_replicas', 2)
+                                    max_replicas = config.get('max_replicas', 10)
+                                    
+                                    if target_replicas > max_replicas:
+                                        rec['target_replicas'] = max_replicas
+                                        result['recommendations']['predictive']['recommendation'] = rec
+                                    elif target_replicas < min_replicas:
+                                        rec['target_replicas'] = min_replicas
+                                        result['recommendations']['predictive']['recommendation'] = rec
+                            except Exception as e:
+                                print(f"⚠️ Error in validation: {e}")
+                    
+                    # Update job with result
+                    with job_lock:
+                        if job_id in recommendation_jobs:
+                            recommendation_jobs[job_id].update({
+                                'status': 'completed',
+                                'result': result,
+                                'updated_at': datetime.now()
+                            })
+                            print(f"✅ ASYNC JOB {job_id}: Completed successfully")
+                    
+                    # Emit WebSocket update: job completed
+                    try:
+                        socketio.emit('job_status', {
+                            'job_id': job_id,
+                            'status': 'completed',
+                            'result': result,
+                            'progress': 100
+                        }, room=f'job_{job_id}')
+                    except Exception as e:
+                        print(f"⚠️ WebSocket emit error (non-critical): {e}")
+                except Exception as e:
+                    import traceback
+                    error_msg = str(e)
+                    print(f"❌ ASYNC JOB {job_id}: Failed - {error_msg}")
+                    print(traceback.format_exc())
+                    
+                    # Update job with error
+                    with job_lock:
+                        if job_id in recommendation_jobs:
+                            recommendation_jobs[job_id].update({
+                                'status': 'failed',
+                                'error': error_msg,
+                                'updated_at': datetime.now()
+                            })
+                    
+                    # Emit WebSocket update: job failed
+                    try:
+                        socketio.emit('job_status', {
+                            'job_id': job_id,
+                            'status': 'failed',
+                            'error': error_msg,
+                            'progress': 0
+                        }, room=f'job_{job_id}')
+                    except Exception as e:
+                        print(f"⚠️ WebSocket emit error (non-critical): {e}")
             
-            return jsonify(result)
+            # Start processing in background thread
+            thread = threading.Thread(target=process_recommendations, daemon=True)
+            thread.start()
+            
+            # Return job ID immediately
+            return jsonify({
+                'job_id': job_id,
+                'status': 'processing',
+                'message': 'Recommendations are being generated. Please poll /api/autoscaling/recommendations/status/<job_id> for results.'
+            }), 202  # 202 Accepted - request accepted for processing
+            
         except Exception as e:
             import traceback
-            print(f"❌ Error in get_scaling_recommendations: {e}")
+            print(f"❌ Error creating recommendation job: {e}")
             print(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
+    
+    # ============================================================================
+    # WEBSOCKET EVENT HANDLERS
+    # ============================================================================
+    
+    @socketio.on('connect')
+    def handle_connect():
+        """Handle WebSocket connection"""
+        print(f"🔌 WebSocket client connected: {request.sid}")
+        emit('connected', {'status': 'connected'})
+    
+    @socketio.on('disconnect')
+    def handle_disconnect():
+        """Handle WebSocket disconnection"""
+        print(f"🔌 WebSocket client disconnected: {request.sid}")
+    
+    @socketio.on('subscribe_job')
+    def handle_subscribe_job(data):
+        """Subscribe to job status updates"""
+        job_id = data.get('job_id')
+        if job_id:
+            room = f'job_{job_id}'
+            join_room(room)
+            print(f"📡 Client {request.sid} subscribed to job {job_id}")
+            emit('subscribed', {'job_id': job_id, 'room': room})
+            
+            # Send current status if job exists
+            with job_lock:
+                if job_id in recommendation_jobs:
+                    job = recommendation_jobs[job_id]
+                    emit('job_status', {
+                        'job_id': job_id,
+                        'status': job['status'],
+                        'result': job.get('result'),
+                        'error': job.get('error'),
+                        'updated_at': job['updated_at'].isoformat()
+                    })
+    
+    @socketio.on('unsubscribe_job')
+    def handle_unsubscribe_job(data):
+        """Unsubscribe from job status updates"""
+        job_id = data.get('job_id')
+        if job_id:
+            room = f'job_{job_id}'
+            leave_room(room)
+            print(f"📡 Client {request.sid} unsubscribed from job {job_id}")
+    
+    @app.route('/api/autoscaling/recommendations/status/<job_id>')
+    def get_recommendation_status(job_id):
+        """Get status of async recommendation job"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        with job_lock:
+            if job_id not in recommendation_jobs:
+                return jsonify({
+                    'error': 'Job not found',
+                    'status': 'not_found'
+                }), 404
+            
+            job = recommendation_jobs[job_id]
+            
+            # Verify job belongs to user's server
+            server = Server.query.filter_by(id=job['server_id'], user_id=session['user_id']).first()
+            if not server:
+                return jsonify({'error': 'Unauthorized'}), 403
+            
+            response = {
+                'job_id': job_id,
+                'status': job['status'],
+                'updated_at': job['updated_at'].isoformat()
+            }
+            
+            if job['status'] == 'completed':
+                response['result'] = job['result']
+                response['success'] = True
+            elif job['status'] == 'failed':
+                response['error'] = job['error']
+                response['success'] = False
+            elif job['status'] == 'processing':
+                response['message'] = 'Still processing LLM recommendations...'
+                response['success'] = None  # Still processing
+            
+            return jsonify(response), 200
     
     @app.route('/api/autoscaling/schedule/create/<int:server_id>', methods=['POST'])
     def create_schedule(server_id):
@@ -2426,38 +2766,62 @@ if __name__ == '__main__':
     with app.app_context():
         db.create_all()
         # Ensure a default admin user exists for first-run access
+        # SECURITY: All credentials must be set via environment variables (no defaults)
         try:
-            default_admin_username = os.environ.get('DEFAULT_ADMIN_USERNAME', 'admin')
-            default_admin_password = os.environ.get('DEFAULT_ADMIN_PASSWORD', 'admin123')
+            default_admin_username = os.environ.get('DEFAULT_ADMIN_USERNAME')
+            default_admin_password = os.environ.get('DEFAULT_ADMIN_PASSWORD')
             default_admin_email = os.environ.get('DEFAULT_ADMIN_EMAIL', 'admin@local')
 
-            admin_user = User.query.filter_by(username=default_admin_username).first()
-            if not admin_user:
-                admin_user = User(username=default_admin_username, email=default_admin_email)
-                admin_user.set_password(default_admin_password)
-                db.session.add(admin_user)
-                db.session.commit()
-                print('✅ Default admin user created')
+            # Only create admin user if credentials are explicitly provided
+            admin_user = None
+            if default_admin_username and default_admin_password:
+                admin_user = User.query.filter_by(username=default_admin_username).first()
+                if not admin_user:
+                    admin_user = User(username=default_admin_username, email=default_admin_email)
+                    admin_user.set_password(default_admin_password)
+                    db.session.add(admin_user)
+                    db.session.commit()
+                    print('✅ Default admin user created')
+                else:
+                    print('✅ Default admin user present')
             else:
-                print('✅ Default admin user present')
+                print('⚠️  DEFAULT_ADMIN_USERNAME and DEFAULT_ADMIN_PASSWORD not set - admin user not created')
+                print('   Set these environment variables to create the initial admin user')
 
-            # Ensure the admin has at least one server
-            admin_server = Server.query.filter_by(user_id=admin_user.id).first()
-            if not admin_server:
-                admin_server = Server(
-                    name='Production K8s Cluster',
-                    server_type='kubernetes',
-                    connection_string='https://127.0.0.1:42019',
-                    user_id=admin_user.id,
-                    status='active'
-                )
-                db.session.add(admin_server)
+            # CRITICAL: Don't auto-create ANY servers/clusters
+            # Users must add their own clusters manually
+            # This prevents unwanted placeholder clusters from being created
+            
+            # DEBUG: Log all servers in database on startup
+            all_servers_on_startup = Server.query.all()
+            print(f'🔍🔍🔍 STARTUP: Found {len(all_servers_on_startup)} server(s) in database:')
+            for s in all_servers_on_startup:
+                s_user = User.query.get(s.user_id)
+                print(f'   • {s.name} (User: {s_user.username if s_user else "Unknown"}, ID: {s.id}, Created: {s.created_at})')
+            
+            if admin_user:
+                admin_server = Server.query.filter_by(user_id=admin_user.id).first()
+                if admin_server:
+                    print('✅ Admin server present')
+                else:
+                    print('ℹ️  No admin server (users should add their own clusters)')
+            
+            # CRITICAL: Verify no unwanted clusters exist and delete them
+            unwanted_clusters = Server.query.filter(
+                Server.name.in_(['AWS EKS Cluster', 'Production K8s Cluster'])
+            ).all()
+            if unwanted_clusters:
+                print(f'⚠️⚠️⚠️ STARTUP: Found {len(unwanted_clusters)} unwanted cluster(s), deleting...')
+                for cluster in unwanted_clusters:
+                    cluster_user = User.query.get(cluster.user_id)
+                    print(f'   🗑️  Deleting: {cluster.name} (User: {cluster_user.username if cluster_user else "Unknown"}, ID: {cluster.id})')
+                    db.session.delete(cluster)
                 db.session.commit()
-                print('✅ Default admin server created')
-            else:
-                print('✅ Default admin server present')
+                print(f'✅ Deleted {len(unwanted_clusters)} unwanted cluster(s)')
         except Exception as e:
             print(f'⚠️  Failed to ensure default admin: {e}')
+            import traceback
+            traceback.print_exc()
     
     # Get configuration from environment variables
     debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
@@ -2468,7 +2832,9 @@ if __name__ == '__main__':
     print("✅ AI-Powered Natural Language Processing: Ready")
     print("✅ MCP Bridge Integration: Ready")
     print("✅ Database: Ready")
+    print("✅ WebSocket (SocketIO) support: Ready")
     print(f"🌐 Server: http://{host}:{port}")
     print(f"🔧 Debug Mode: {debug_mode}")
     
-    app.run(debug=debug_mode, host=host, port=port)
+    # Use socketio.run() instead of app.run() for WebSocket support
+    socketio.run(app, debug=debug_mode, host=host, port=port, allow_unsafe_werkzeug=True)

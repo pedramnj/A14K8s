@@ -56,3 +56,6 @@ __pycache__/
 *.bak_*
 *_backup.html
 *.backup_*
+
+# Documentation folder (contains migration guides, setup docs, etc.)
+docs/

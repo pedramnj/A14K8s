@@ -1,0 +1,16 @@
+[Unit]
+Description=GPT OSS Auto-Restart Monitor (restarts SLURM job every 30 minutes)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home1/pedramnj/ai4k8s
+ExecStart=/home1/pedramnj/ai4k8s/gpt_oss_auto_restart.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+
