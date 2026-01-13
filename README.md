@@ -726,8 +726,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 **🌐 Live Demo:** [https://ai4k8s.online](https://ai4k8s.online)
 
-**🔐 Demo Credentials:** `admin` / `admin123`
-
 **📊 Status:** Production Ready ✅
 
 **🚀 Last Updated:** January 2025
