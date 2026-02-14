@@ -25,6 +25,7 @@ import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import hashlib
+import re
 
 # Configure logger first (before using it)
 logger = logging.getLogger(__name__)
@@ -65,6 +66,14 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
     logger.warning("Groq package not available")
+
+# MCDA optimizer for multi-criteria validation of LLM decisions
+try:
+    from mcda_optimizer import MCDAAutoscalingOptimizer
+    MCDA_AVAILABLE = True
+except ImportError:
+    MCDA_AVAILABLE = False
+    logger.warning("MCDA optimizer not available")
 
 # Configure logger with both file and console handlers
 logger = logging.getLogger(__name__)
@@ -170,7 +179,16 @@ class LLMAutoscalingAdvisor:
         
         if not self.client:
             logger.warning("⚠️  No LLM provider available. Set GPT_OSS_API_BASE or GROQ_API_KEY environment variable.")
-    
+
+        # Initialize MCDA optimizer for multi-criteria validation of LLM decisions
+        self.mcda_optimizer = None
+        if MCDA_AVAILABLE:
+            try:
+                self.mcda_optimizer = MCDAAutoscalingOptimizer(profile='balanced')
+                logger.info("✅ MCDA optimizer initialized for LLM decision validation")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to initialize MCDA optimizer: {e}")
+
     def _get_cache_key(self, deployment_name: str, namespace: str, 
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
                       current_replicas: int, state_management: Optional[str] = None) -> str:
@@ -1037,7 +1055,80 @@ class LLMAutoscalingAdvisor:
                 logger.warning(f"⚠️ VALIDATION: No target_replicas in recommendation or it's None")
         else:
             logger.warning(f"⚠️ VALIDATION: Skipping validation - scaling_type={recommendation.get('scaling_type') if recommendation else None} is not HPA/both")
-        
+
+        # MCDA Validation: Cross-check LLM decision against formal multi-criteria optimization
+        if (self.mcda_optimizer and recommendation and
+                recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both'] and
+                recommendation.get('target_replicas') is not None):
+            try:
+                llm_target = recommendation['target_replicas']
+                llm_action = recommendation.get('action', 'maintain')
+                current_reps = context.get('deployment', {}).get('current_replicas', 1) if context else 1
+
+                # Build metrics and forecast for MCDA
+                forecast_data = context.get('forecast', {}) if context else {}
+                mcda_metrics = {
+                    'cpu_percent': current_metrics.get('cpu_usage', 0) if current_metrics else 0,
+                    'memory_percent': current_metrics.get('memory_usage', 0) if current_metrics else 0
+                }
+                mcda_forecast = {
+                    'predicted_cpu': forecast_data.get('cpu', {}).get('predictions', [mcda_metrics['cpu_percent']] * 6),
+                    'predicted_memory': forecast_data.get('memory', {}).get('predictions', [mcda_metrics['memory_percent']] * 6),
+                    'cpu_trend': forecast_data.get('cpu', {}).get('trend', 'stable')
+                }
+
+                validation = self.mcda_optimizer.validate_llm_decision(
+                    llm_action=llm_action,
+                    llm_target=llm_target,
+                    current_replicas=current_reps,
+                    min_replicas=min_replicas,
+                    max_replicas=max_replicas,
+                    metrics=mcda_metrics,
+                    forecast=mcda_forecast
+                )
+
+                # Attach MCDA validation data to recommendation
+                recommendation['mcda_validation'] = {
+                    'agreement': validation['agreement'],
+                    'llm_score': validation['llm_score'],
+                    'mcda_score': validation['mcda_score'],
+                    'mcda_target': validation['mcda_target'],
+                    'score_difference': validation['score_difference'],
+                    'dominance_margin': validation['dominance_margin'],
+                    'criteria_weights': validation['criteria_weights'],
+                    'should_override': validation['should_override'],
+                    'validation_note': validation['validation_note']
+                }
+
+                if validation['should_override']:
+                    old_target = recommendation['target_replicas']
+                    old_action = recommendation['action']
+                    recommendation['target_replicas'] = max(min_replicas, min(validation['mcda_target'], max_replicas))
+
+                    if recommendation['target_replicas'] > current_reps:
+                        recommendation['action'] = 'scale_up'
+                    elif recommendation['target_replicas'] < current_reps:
+                        recommendation['action'] = 'scale_down'
+                    else:
+                        recommendation['action'] = 'maintain'
+
+                    recommendation['reasoning'] = (recommendation.get('reasoning', '') +
+                        f' [MCDA OVERRIDE: Changed from {old_action}→{old_target} to '
+                        f'{recommendation["action"]}→{recommendation["target_replicas"]} '
+                        f'(MCDA score={validation["mcda_score"]:.4f} vs LLM score={validation["llm_score"]:.4f}, '
+                        f'agreement={validation["agreement"]})]')
+
+                    logger.warning(f"📊 MCDA OVERRIDE: {old_action}→{old_target} changed to "
+                                   f"{recommendation['action']}→{recommendation['target_replicas']} "
+                                   f"(score gap={validation['score_difference']:.4f})")
+                else:
+                    logger.warning(f"📊 MCDA VALIDATION: LLM decision confirmed "
+                                   f"(agreement={validation['agreement']}, "
+                                   f"score_gap={validation['score_difference']:.4f})")
+
+            except Exception as e:
+                logger.warning(f"⚠️ MCDA validation failed (non-fatal): {e}")
+
         return recommendation
     
     def _create_fallback_recommendation(self, llm_output: str) -> Dict[str, Any]:
@@ -1424,13 +1515,14 @@ Your role is to analyze deployment metrics, forecasts, and patterns to make inte
 - If application uses Redis, external databases, external cache, or shared storage → treat as STATELESS → prefer HPA
 - If application keeps critical state inside the pod (local files, in-memory state without externalization) → prefer VPA
 
-Consider these factors:
-1. **Performance**: Ensure adequate resources to meet performance requirements
-2. **Cost**: Minimize resource usage while maintaining performance
-3. **Stability**: Avoid rapid scaling changes that could cause instability
-4. **Predictions**: Use forecast data to proactively scale before demand arrives
-5. **Constraints**: **CRITICAL - You MUST respect min/max replica limits. target_replicas MUST be between min_replicas and max_replicas (inclusive). NEVER recommend more than max_replicas or less than min_replicas.**
-6. **Scaling Type**: Choose HPA (horizontal) or VPA (vertical) based on application characteristics
+Consider these weighted criteria (Multi-Criteria Decision Analysis):
+1. **Performance** (weight: 0.30): Ensure adequate resources to meet performance requirements. Target CPU utilization: 60-80% sweet spot.
+2. **Stability** (weight: 0.25): Avoid rapid scaling changes that could cause instability. Penalize large replica changes.
+3. **Cost** (weight: 0.20): Minimize resource usage while maintaining performance. Fewer replicas = lower cost.
+4. **Forecast Alignment** (weight: 0.15): Use forecast data to proactively scale before demand arrives. Ensure predicted peak stays under 80%.
+5. **Response Time** (weight: 0.10): Minimize latency impact. Higher CPU utilization increases response time.
+6. **Constraints**: **CRITICAL - You MUST respect min/max replica limits. target_replicas MUST be between min_replicas and max_replicas (inclusive). NEVER recommend more than max_replicas or less than min_replicas.**
+7. **Scaling Type**: Choose HPA (horizontal) or VPA (vertical) based on application characteristics
 
 **IMPORTANT CONSTRAINTS:**
 - If you recommend HPA scaling, target_replicas MUST be >= min_replicas AND <= max_replicas
@@ -1446,6 +1538,13 @@ Respond in JSON format with:
   "target_memory": "<value>" (for VPA, e.g., "256Mi", null if HPA),
   "confidence": <0.0-1.0>,
   "reasoning": "<detailed explanation including why HPA vs VPA was chosen and why target_replicas respects min/max limits>",
+  "criteria_scores": {
+    "performance": <0.0-1.0 how well this decision optimizes performance>,
+    "stability": <0.0-1.0 how stable this decision is>,
+    "cost": <0.0-1.0 how cost-efficient this decision is>,
+    "forecast_alignment": <0.0-1.0 how well it aligns with predicted demand>,
+    "response_time": <0.0-1.0 how well it minimizes latency>
+  },
   "factors_considered": ["factor1", "factor2", ...],
   "risk_assessment": "low" | "medium" | "high",
   "cost_impact": "low" | "medium" | "high",
@@ -1581,7 +1680,8 @@ Provide your recommendation in the specified JSON format with scaling_type field
             'at_max': '⚠️'
         }.get(action, '❓')
         
-        return f"""{action_emoji} **LLM Recommendation: {action.replace('_', ' ').title()}**
+        # Build base explanation
+        explanation = f"""{action_emoji} **LLM Recommendation: {action.replace('_', ' ').title()}**
 
 **Target Replicas:** {target}
 **Confidence:** {confidence:.0%}
@@ -1594,4 +1694,24 @@ Provide your recommendation in the specified JSON format with scaling_type field
 **Cost Impact:** {rec.get('cost_impact', 'unknown').upper()}
 **Performance Impact:** {rec.get('performance_impact', 'unknown').upper()}
 **Recommended Timing:** {rec.get('recommended_timing', 'unknown').title()}"""
+
+        # Add MCDA validation info if available
+        mcda = rec.get('mcda_validation')
+        if mcda:
+            explanation += f"""
+
+**MCDA Validation:** {mcda.get('agreement', 'N/A').upper()}
+**MCDA Score (LLM choice):** {mcda.get('llm_score', 0):.4f}
+**MCDA Optimal Score:** {mcda.get('mcda_score', 0):.4f}
+**Override Applied:** {'Yes' if mcda.get('should_override') else 'No'}"""
+
+        # Add criteria scores if available
+        criteria = rec.get('criteria_scores')
+        if criteria:
+            explanation += "\n\n**Criteria Scores:**"
+            for k, v in criteria.items():
+                if isinstance(v, (int, float)):
+                    explanation += f"\n  - {k}: {v:.2f}"
+
+        return explanation
 

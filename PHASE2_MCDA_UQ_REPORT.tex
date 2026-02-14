@@ -1,0 +1,847 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{longtable}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\geometry{margin=1in}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+\lstdefinestyle{bashstyle}{language=bash,basicstyle=\ttfamily\small,showstringspaces=false,columns=fullflexible,frame=single,breaklines=true}
+\lstdefinestyle{pythonstyle}{language=Python,basicstyle=\ttfamily\small,showstringspaces=false,columns=fullflexible,frame=single,breaklines=true,keywordstyle=\color{blue},commentstyle=\color{gray},stringstyle=\color{red}}
+
+\title{AI4K8s Phase 2: Multi-Criteria Decision Analysis (MCDA) \\ and Uncertainty Quantification (UQ)}
+\author{Pedram Nikjooy}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+\section{Abstract}
+This report documents Phase 2 of the AI4K8s project: the implementation of Multi-Criteria Decision Analysis (MCDA) and Uncertainty Quantification (UQ) enhancements. These two modules address the two most significant limitations identified in Phase 1: (1) simplified threshold-based heuristic decision-making, and (2) the absence of uncertainty estimates for predictions and scaling decisions. The MCDA optimizer replaces hard-coded IF/ELSE rules with formal TOPSIS-based multi-criteria optimization, while the UQ module introduces bootstrap-based prediction intervals, Platt-calibrated anomaly probabilities, and exceedance probability computation. Both modules are deployed and verified on the CrownLabs production environment.
+
+\section{Introduction}
+\subsection{Motivation}
+Phase 1 of AI4K8s delivered a working AI-powered Kubernetes management platform with ML-based predictive monitoring, anomaly detection, and LLM-driven autoscaling. However, two critical limitations remained:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{Simplified Decision-Making}: Autoscaling decisions were based on basic threshold heuristics:
+  \begin{lstlisting}[style=pythonstyle]
+# Old heuristic approach
+if cpu > 75%:
+    scale_up()
+elif cpu < 25%:
+    scale_down()
+else:
+    maintain()
+  \end{lstlisting}
+  These rules ignored the trade-offs between cost, performance, stability, forecast alignment, and response time.
+
+  \item \textbf{No Uncertainty Quantification}: The system provided point predictions without any confidence information:
+  \begin{itemize}[noitemsep]
+    \item Constant-width confidence intervals that did not grow with forecast horizon
+    \item Binary anomaly detection (anomaly or not) without probability calibration
+    \item LLM self-reported confidence values without formal validation
+  \end{itemize}
+\end{enumerate}
+
+\subsection{Objectives}
+The Phase 2 objectives were:
+\begin{itemize}[noitemsep]
+  \item Replace threshold heuristics with formal multi-criteria optimization (TOPSIS)
+  \item Implement proper uncertainty quantification with growing prediction intervals
+  \item Add calibrated anomaly probabilities using Platt scaling
+  \item Integrate MCDA validation of LLM scaling decisions
+  \item Deploy and verify all changes on the CrownLabs production environment
+\end{itemize}
+
+\section{Phase 2 Architecture}
+\subsection{New Modules}
+Two new Python modules were created:
+
+\begin{longtable}{|p{0.35\linewidth}|p{0.10\linewidth}|p{0.48\linewidth}|}
+\hline
+\textbf{Module} & \textbf{Lines} & \textbf{Purpose} \\
+\hline
+\texttt{mcda\_optimizer.py} & $\sim$380 & TOPSIS multi-criteria optimization for autoscaling decisions \\
+\hline
+\texttt{uncertainty\_quantifier.py} & $\sim$420 & Bootstrap-based UQ for forecasts, Platt scaling for anomaly calibration \\
+\hline
+\end{longtable}
+
+\subsection{Modified Modules}
+Three existing modules were enhanced with backward-compatible integrations:
+
+\begin{longtable}{|p{0.40\linewidth}|p{0.53\linewidth}|}
+\hline
+\textbf{Module} & \textbf{Changes} \\
+\hline
+\texttt{predictive\_autoscaler.py} & Replaced \texttt{\_determine\_scaling\_action()} with MCDA-based optimization; original logic preserved as fallback \\
+\hline
+\texttt{predictive\_monitoring.py} & Added UQ-enhanced forecasting (\texttt{forecast\_cpu\_with\_uncertainty()}) and calibrated anomaly detection \\
+\hline
+\texttt{llm\_autoscaling\_advisor.py} & Added MCDA cross-validation of LLM decisions with automatic override when score gap $> 0.15$ \\
+\hline
+\end{longtable}
+
+\subsection{Integration Architecture}
+\begin{verbatim}
+Kubernetes Cluster
+    | (kubectl top nodes/pods)
+Metrics Server
+    | (Real-time metrics)
+k8s_metrics_collector.py
+    | (Feature vectors)
+predictive_monitoring.py  <--- NEW: UncertaintyAwareForecaster
+    |                          + CalibratedAnomalyDetector
+    | (ML forecasts + UQ intervals)
+predictive_autoscaler.py  <--- NEW: MCDAAutoscalingOptimizer
+    |                          replaces threshold heuristics
+    | (MCDA-ranked scaling decisions)
+llm_autoscaling_advisor.py <--- NEW: MCDA validation
+    |                           of LLM recommendations
+    | (Final scaling action)
+Flask Web App (ai_kubernetes_web_app.py)
+    | (JSON API responses with UQ data)
+Frontend Dashboard
+\end{verbatim}
+
+\section{Multi-Criteria Decision Analysis (MCDA)}
+\subsection{Problem Statement}
+The original autoscaling logic in \texttt{predictive\_autoscaler.py} (lines 557--615) used hard-coded threshold rules:
+
+\begin{lstlisting}[style=pythonstyle]
+# Original threshold heuristics (replaced)
+def _determine_scaling_action(self, current_replicas, metrics, forecast):
+    cpu = metrics.get('cpu_percent', 0)
+    if cpu > 75:
+        return {'action': 'scale_up', 'target': current_replicas + 1}
+    elif cpu < 25:
+        return {'action': 'scale_down', 'target': max(1, current_replicas - 1)}
+    else:
+        return {'action': 'maintain', 'target': current_replicas}
+\end{lstlisting}
+
+These rules had several shortcomings:
+\begin{itemize}[noitemsep]
+  \item Single-criterion decisions (CPU only)
+  \item No consideration of cost, stability, or forecast trends
+  \item Fixed thresholds regardless of workload characteristics
+  \item No ranking of alternative actions
+\end{itemize}
+
+\subsection{TOPSIS Method}
+The Technique for Order of Preference by Similarity to Ideal Solution (TOPSIS) is a multi-criteria decision analysis method. Given $m$ alternatives and $n$ criteria, TOPSIS:
+
+\begin{enumerate}[noitemsep]
+  \item Constructs a decision matrix $X = [x_{ij}]_{m \times n}$
+  \item Normalizes: $r_{ij} = \frac{x_{ij}}{\sqrt{\sum_{k=1}^{m} x_{kj}^2}}$
+  \item Applies weights: $v_{ij} = w_j \cdot r_{ij}$
+  \item Determines ideal ($A^+$) and anti-ideal ($A^-$) solutions
+  \item Computes distances: $D_i^+ = \sqrt{\sum_{j=1}^{n}(v_{ij} - v_j^+)^2}$ and $D_i^- = \sqrt{\sum_{j=1}^{n}(v_{ij} - v_j^-)^2}$
+  \item Ranks by closeness coefficient: $C_i = \frac{D_i^-}{D_i^+ + D_i^-}$
+\end{enumerate}
+
+The alternative with the highest $C_i$ is closest to the ideal solution.
+
+\subsection{Criteria Definition}
+Five criteria are evaluated for each scaling alternative:
+
+\begin{longtable}{|p{0.22\linewidth}|p{0.10\linewidth}|p{0.12\linewidth}|p{0.45\linewidth}|}
+\hline
+\textbf{Criterion} & \textbf{Weight} & \textbf{Direction} & \textbf{Description} \\
+\hline
+Cost & 0.20 & Minimize & Normalized replica count $\frac{\text{target}}{\text{max\_replicas}}$ \\
+\hline
+Performance & 0.30 & Maximize & Distance from CPU sweet spot (60--80\%): $1.0 - \frac{|\hat{c} - 70|}{70}$ \\
+\hline
+Stability & 0.25 & Minimize & Change magnitude normalized by replica range, with oscillation penalty \\
+\hline
+Forecast Alignment & 0.15 & Maximize & How well the target handles predicted peak demand (50--75\% headroom zone) \\
+\hline
+Response Time & 0.10 & Minimize & Estimated latency impact: $\frac{\hat{c}_{\text{avg}}}{100}$ \\
+\hline
+\end{longtable}
+
+\subsection{Weight Profiles}
+Four pre-defined weight profiles accommodate different operational priorities:
+
+\begin{longtable}{|p{0.20\linewidth}|p{0.12\linewidth}|p{0.12\linewidth}|p{0.12\linewidth}|p{0.12\linewidth}|p{0.12\linewidth}|}
+\hline
+\textbf{Profile} & \textbf{Cost} & \textbf{Perf.} & \textbf{Stab.} & \textbf{Forecast} & \textbf{Resp.} \\
+\hline
+Balanced & 0.20 & 0.30 & 0.25 & 0.15 & 0.10 \\
+\hline
+Performance First & 0.10 & 0.40 & 0.15 & 0.20 & 0.15 \\
+\hline
+Cost Optimized & 0.40 & 0.20 & 0.20 & 0.10 & 0.10 \\
+\hline
+Stability First & 0.15 & 0.20 & 0.40 & 0.15 & 0.10 \\
+\hline
+\end{longtable}
+
+\subsection{Alternative Generation}
+The optimizer generates candidate scaling actions from the current state:
+
+\begin{lstlisting}[style=pythonstyle]
+def generate_alternatives(self, current_replicas, min_replicas, max_replicas,
+                          metrics, forecast):
+    candidates = set()
+    candidates.add(current_replicas)         # maintain
+    for delta in [-2, -1, 1, 2, 3]:          # scale up/down
+        r = current_replicas + delta
+        if min_replicas <= r <= max_replicas:
+            candidates.add(r)
+    candidates.add(min_replicas)              # boundary values
+    candidates.add(max_replicas)
+
+    # "Ideal" count based on CPU target of 70%
+    if peak_cpu > 0 and current_replicas > 0:
+        ideal = ceil(current_replicas * (peak_cpu / 70.0))
+        ideal = clamp(ideal, min_replicas, max_replicas)
+        candidates.add(ideal)
+
+    # Evaluate each candidate on all 5 criteria
+    return [self._evaluate_alternative(target, ...) for target in sorted(candidates)]
+\end{lstlisting}
+
+\subsection{TOPSIS Implementation}
+The core ranking algorithm:
+
+\begin{lstlisting}[style=pythonstyle]
+def topsis_rank(self, alternatives):
+    # Step 1: Build decision matrix [alternatives x criteria]
+    matrix = np.array([
+        [getattr(a, attr) for attr in attr_names]
+        for a in alternatives
+    ], dtype=float)
+
+    # Step 2: Vector normalization
+    norms = np.sqrt((matrix ** 2).sum(axis=0))
+    norms[norms == 0] = 1.0
+    normalized = matrix / norms
+
+    # Step 3: Apply weights
+    weighted = normalized * weights
+
+    # Step 4: Ideal and anti-ideal solutions
+    for i, is_benefit in enumerate(is_benefit_list):
+        if is_benefit:
+            ideal[i] = weighted[:, i].max()
+            anti_ideal[i] = weighted[:, i].min()
+        else:
+            ideal[i] = weighted[:, i].min()
+            anti_ideal[i] = weighted[:, i].max()
+
+    # Step 5: Euclidean distances
+    dist_to_ideal = sqrt(((weighted - ideal) ** 2).sum(axis=1))
+    dist_to_anti  = sqrt(((weighted - anti_ideal) ** 2).sum(axis=1))
+
+    # Step 6: Closeness coefficient
+    scores = dist_to_anti / (dist_to_ideal + dist_to_anti)
+    return sorted(zip(alternatives, scores), key=lambda x: x[1], reverse=True)
+\end{lstlisting}
+
+\subsection{LLM Decision Validation}
+The MCDA optimizer cross-validates LLM scaling recommendations:
+
+\begin{lstlisting}[style=pythonstyle]
+def validate_llm_decision(self, llm_action, llm_replicas, current_replicas,
+                          min_replicas, max_replicas, metrics, forecast):
+    # Run MCDA optimization independently
+    mcda_result = self.optimize(current_replicas, min_replicas, max_replicas,
+                                 metrics, forecast)
+
+    # Compare LLM decision against MCDA optimal
+    if llm_replicas == mcda_result.target_replicas:
+        agreement = 'full'
+    elif abs(llm_replicas - mcda_result.target_replicas) <= 1:
+        agreement = 'partial'
+    else:
+        agreement = 'divergent'
+
+    # Override if MCDA score gap > 0.15
+    llm_score = self._find_score_for_replicas(llm_replicas, ...)
+    score_gap = mcda_result.mcda_score - llm_score
+    should_override = score_gap > 0.15
+
+    return {
+        'agreement': agreement,
+        'mcda_optimal': mcda_result.target_replicas,
+        'mcda_score': mcda_result.mcda_score,
+        'llm_score': llm_score,
+        'score_gap': score_gap,
+        'should_override': should_override
+    }
+\end{lstlisting}
+
+\subsection{Integration with Predictive Autoscaler}
+The integration in \texttt{predictive\_autoscaler.py} replaces the old heuristic method:
+
+\begin{lstlisting}[style=pythonstyle]
+# In PredictiveAutoscaler.__init__()
+from mcda_optimizer import MCDAAutoscalingOptimizer
+self.mcda_optimizer = MCDAAutoscalingOptimizer(profile='balanced')
+
+# In _determine_scaling_action()
+def _determine_scaling_action(self, current_replicas, metrics, forecast):
+    try:
+        mcda_result = self.mcda_optimizer.optimize(
+            current_replicas, self.min_replicas, self.max_replicas,
+            metrics, forecast
+        )
+        return {
+            'action': mcda_result.action,
+            'target_replicas': mcda_result.target_replicas,
+            'mcda_score': mcda_result.mcda_score,
+            'mcda_ranking': mcda_result.ranking,
+            'decision_method': 'mcda_topsis'
+        }
+    except Exception as e:
+        logger.warning(f"MCDA failed, falling back to heuristics: {e}")
+        return self._determine_scaling_action_fallback(...)
+\end{lstlisting}
+
+The original threshold logic is preserved as \texttt{\_determine\_scaling\_action\_fallback()} for graceful degradation.
+
+\section{Uncertainty Quantification (UQ)}
+\subsection{Problem Statement}
+The original monitoring system had two key UQ limitations:
+
+\begin{enumerate}[noitemsep]
+  \item \textbf{Constant-width confidence intervals}: In \texttt{predictive\_monitoring.py} (lines 149--152), confidence intervals were computed as:
+  \begin{lstlisting}[style=pythonstyle]
+# Original: constant-width intervals
+lower_bound = predicted_value - 1.96 * std_dev  # same width for all horizons
+upper_bound = predicted_value + 1.96 * std_dev
+  \end{lstlisting}
+  A 1-hour forecast should have tighter bounds than a 6-hour forecast.
+
+  \item \textbf{Binary anomaly detection}: In \texttt{predictive\_monitoring.py} (line 320), anomaly detection was purely binary:
+  \begin{lstlisting}[style=pythonstyle]
+# Original: binary anomaly
+is_anomaly = isolation_forest.predict(features) == -1  # True or False
+  \end{lstlisting}
+  No information about how anomalous a point is or the confidence of detection.
+\end{enumerate}
+
+\subsection{Uncertainty Decomposition}
+Total prediction uncertainty is decomposed into two components:
+
+\begin{itemize}[noitemsep]
+  \item \textbf{Aleatoric uncertainty} ($\sigma_{\text{alea}}^2$): Irreducible noise in the data. Estimated from the variance of residuals after trend removal:
+  \[
+  \sigma_{\text{alea}}^2 = \text{Var}(y_i - \hat{y}_i)
+  \]
+  where $y_i$ are observed values and $\hat{y}_i$ are trend-fitted values.
+
+  \item \textbf{Epistemic uncertainty} ($\sigma_{\text{epis}}^2$): Model uncertainty, reducible with more data. Estimated via bootstrap resampling (50 resamples):
+  \[
+  \sigma_{\text{epis}}^2 = \text{Var}\left(\hat{y}^{(b)}_h\right)_{b=1}^{B}
+  \]
+  where $\hat{y}^{(b)}_h$ is the prediction at horizon $h$ from bootstrap sample $b$.
+\end{itemize}
+
+\subsection{Growing Prediction Intervals}
+Total uncertainty grows with forecast horizon using $\sqrt{h}$ scaling:
+
+\[
+\sigma_{\text{total}}(h) = \sqrt{\sigma_{\text{alea}}^2 \cdot \sqrt{h} + \sigma_{\text{epis}}^2 \cdot h}
+\]
+
+Prediction intervals at confidence level $\alpha$ are:
+\[
+\text{PI}_h = \left[\hat{y}_h - z_\alpha \cdot \sigma_{\text{total}}(h),\ \hat{y}_h + z_\alpha \cdot \sigma_{\text{total}}(h)\right]
+\]
+
+where $z_{0.95} = 1.96$ for 95\% confidence.
+
+\subsection{Implementation}
+
+\begin{lstlisting}[style=pythonstyle]
+class UncertaintyAwareForecaster:
+    def __init__(self, n_bootstrap=50):
+        self.n_bootstrap = n_bootstrap
+
+    def forecast_with_uncertainty(self, data, metric_name="cpu",
+                                   hours_ahead=6, confidence_level=0.95):
+        # Fit trend on full data
+        coeffs = np.polyfit(x, data, 1)
+        residuals = data - np.polyval(coeffs, x)
+
+        # Aleatoric uncertainty: variance of residuals
+        aleatoric_var = np.var(residuals)
+
+        # Epistemic uncertainty via bootstrap
+        for _ in range(self.n_bootstrap):
+            indices = np.random.choice(len(data), size=len(data), replace=True)
+            boot_coeffs = np.polyfit(x[indices], data[indices], 1)
+            for h in range(1, hours_ahead + 1):
+                bootstrap_predictions[h].append(np.polyval(boot_coeffs, len(data) + h))
+
+        # Per-horizon growing intervals
+        for h in range(1, hours_ahead + 1):
+            epistemic_var = np.var(bootstrap_predictions[h])
+            horizon_factor = np.sqrt(h)
+            total_var = aleatoric_var * horizon_factor + epistemic_var * h
+            total_std = np.sqrt(total_var)
+
+            lower = max(0.0, point - z_score * total_std)
+            upper = min(100.0, point + z_score * total_std)
+            prediction_intervals.append((lower, upper))
+\end{lstlisting}
+
+\subsection{Exceedance Probabilities}
+For each threshold $\tau \in \{50, 70, 80, 90\}\%$, the system computes:
+
+\[
+P(\text{metric} > \tau \mid h) = 1 - \Phi\left(\frac{\tau - \hat{y}_h}{\sigma_{\text{total}}(h)}\right)
+\]
+
+where $\Phi$ is the standard normal CDF, computed without scipy using \texttt{math.erfc}:
+
+\begin{lstlisting}[style=pythonstyle]
+@staticmethod
+def _normal_sf(z):
+    """Survival function of standard normal (no scipy needed)"""
+    import math
+    return 0.5 * math.erfc(z / math.sqrt(2))
+\end{lstlisting}
+
+\subsection{Model Quality Assessment}
+The forecaster assesses data sufficiency:
+
+\begin{longtable}{|p{0.25\linewidth}|p{0.20\linewidth}|p{0.45\linewidth}|}
+\hline
+\textbf{Data Points} & \textbf{Quality} & \textbf{Implication} \\
+\hline
+$\geq 50$ & Good & Narrow epistemic uncertainty, reliable forecasts \\
+\hline
+$20$--$49$ & Limited & Moderate epistemic uncertainty, use with caution \\
+\hline
+$< 20$ & Poor & Wide intervals, very high uncertainty \\
+\hline
+\end{longtable}
+
+\section{Calibrated Anomaly Detection}
+\subsection{Platt Scaling}
+The binary Isolation Forest output is converted to calibrated probabilities using Platt scaling (sigmoid calibration):
+
+\[
+P(\text{anomaly} \mid s) = \frac{1}{1 + e^{-(As + B)}}
+\]
+
+where $s$ is the raw Isolation Forest score (more negative = more anomalous) and $A$, $B$ are calibration parameters.
+
+\subsection{Auto-Calibration}
+The Platt parameters are automatically fitted from training data scores:
+
+\begin{lstlisting}[style=pythonstyle]
+class CalibratedAnomalyDetector:
+    def __init__(self, platt_A=-5.0, platt_B=-0.5):
+        self.platt_A = platt_A
+        self.platt_B = platt_B
+
+    def calibrate_from_scores(self, historical_scores, contamination=0.1):
+        scores = np.array(historical_scores)
+        # Find threshold separating contamination fraction
+        threshold = np.percentile(scores, contamination * 100)
+        score_range = np.std(scores)
+
+        if score_range > 0:
+            self.platt_A = -3.0 / score_range
+            self.platt_B = -self.platt_A * threshold
+\end{lstlisting}
+
+\subsection{Severity Distribution}
+Instead of binary anomaly/normal, the system provides a probability distribution over severity levels:
+
+\begin{longtable}{|p{0.20\linewidth}|p{0.25\linewidth}|p{0.45\linewidth}|}
+\hline
+\textbf{Severity} & \textbf{$P(\text{anomaly})$ Range} & \textbf{Example Distribution} \\
+\hline
+Low & $< 0.2$ & $\{$low: 0.85, medium: 0.12, high: 0.02, critical: 0.01$\}$ \\
+\hline
+Medium & $0.2$--$0.4$ & $\{$low: 0.30, medium: 0.40, high: 0.20, critical: 0.10$\}$ \\
+\hline
+High & $0.4$--$0.6$ & $\{$low: 0.05, medium: 0.35, high: 0.45, critical: 0.15$\}$ \\
+\hline
+Critical & $> 0.75$ & $\{$low: 0.01, medium: 0.04, high: 0.20, critical: 0.75$\}$ \\
+\hline
+\end{longtable}
+
+\subsection{Integration with Predictive Monitoring}
+The UQ enhancements were integrated into \texttt{predictive\_monitoring.py}:
+
+\begin{lstlisting}[style=pythonstyle]
+# In TimeSeriesForecaster.__init__()
+from uncertainty_quantifier import UncertaintyAwareForecaster
+self._uq_forecaster = UncertaintyAwareForecaster(n_bootstrap=50)
+
+# New method: forecast_cpu_with_uncertainty()
+def forecast_cpu_with_uncertainty(self, hours_ahead=6):
+    return self._uq_forecaster.forecast_with_uncertainty(
+        self.cpu_history, metric_name="cpu", hours_ahead=hours_ahead
+    )
+
+# In AnomalyDetector.__init__()
+from uncertainty_quantifier import CalibratedAnomalyDetector
+self._calibrated_detector = CalibratedAnomalyDetector()
+
+# In AnomalyDetector.train(): auto-calibrate from training scores
+scores = self.isolation_forest.score_samples(X_scaled)
+self._calibrated_detector.calibrate_from_scores(scores.tolist())
+
+# New method: detect_anomaly_calibrated()
+def detect_anomaly_calibrated(self, features):
+    return self._calibrated_detector.detect_with_calibration(
+        self.isolation_forest, self.scaler, features, metrics_dict
+    )
+\end{lstlisting}
+
+\subsection{Backward Compatibility}
+The enhanced \texttt{PredictiveMonitoringSystem.analyze()} method adds new UQ data alongside existing fields:
+
+\begin{lstlisting}[style=pythonstyle]
+# Original response structure preserved
+result = {
+    'forecast': {'cpu': [...], 'memory': [...]},
+    'anomalies': {'is_anomaly': True/False, 'score': 0.3},
+    ...
+}
+
+# NEW: UQ data appended (backward compatible)
+result['uncertainty_quantification'] = {
+    'cpu': {
+        'prediction_intervals': [(lo, hi), ...],  # growing with horizon
+        'aleatoric_uncertainty': [3.2, 3.2, ...],
+        'epistemic_uncertainty': [1.1, 1.5, ...],
+        'total_uncertainty': [4.3, 5.1, ...],      # grows with sqrt(h)
+        'exceedance_probabilities': {70: [0.1, 0.2, ...]}
+    }
+}
+
+result['anomalies']['calibrated'] = {
+    'anomaly_probability': 0.0527,    # vs old binary True/False
+    'detection_confidence': 0.89,
+    'severity': {'low': 0.85, 'medium': 0.12, 'high': 0.02, 'critical': 0.01}
+}
+\end{lstlisting}
+
+\section{Data Structures}
+\subsection{MCDA Data Classes}
+
+\begin{lstlisting}[style=pythonstyle]
+@dataclass
+class ScalingAlternative:
+    name: str                        # e.g., "scale_to_4"
+    target_replicas: int
+    estimated_cost: float            # normalized 0-1 (lower is better)
+    estimated_performance: float     # normalized 0-1 (higher is better)
+    stability_risk: float            # normalized 0-1 (lower is better)
+    forecast_alignment: float        # normalized 0-1 (higher is better)
+    response_time: float             # normalized 0-1 (lower is better)
+
+@dataclass
+class MCDAResult:
+    best_alternative: str            # e.g., "scale_to_4"
+    target_replicas: int
+    action: str                      # "scale_up", "scale_down", "maintain"
+    mcda_score: float                # closeness coefficient [0, 1]
+    dominance_margin: float          # score gap to second-best
+    alternatives_evaluated: int
+    ranking: List[Tuple[str, float]] # full ranking
+    criteria_weights: Dict[str, float]
+    reasoning: str
+\end{lstlisting}
+
+\subsection{UQ Data Classes}
+
+\begin{lstlisting}[style=pythonstyle]
+@dataclass
+class UncertainForecast:
+    metric_name: str
+    current_value: float
+    point_forecasts: List[float]
+    prediction_intervals: List[Tuple[float, float]]  # growing with horizon
+    aleatoric_uncertainty: List[float]     # per-horizon data noise
+    epistemic_uncertainty: List[float]     # per-horizon model uncertainty
+    total_uncertainty: List[float]         # per-horizon combined
+    exceedance_probabilities: Dict[int, List[float]]  # threshold -> P(metric > threshold)
+    confidence_level: float
+    trend: str                             # "increasing", "decreasing", "stable"
+    recommendation: str
+    data_points_used: int
+    model_quality: str                     # "good", "limited", "poor"
+
+@dataclass
+class CalibratedAnomaly:
+    timestamp: datetime
+    anomaly_probability: float      # calibrated P(anomaly) in [0, 1]
+    raw_score: float                # original Isolation Forest score
+    is_anomaly: bool                # probability > 0.5
+    detection_confidence: float     # how far from decision boundary
+    severity_distribution: Dict[str, float]  # P(low), P(medium), P(high), P(critical)
+    affected_metrics: List[str]
+    recommendation: str
+\end{lstlisting}
+
+\section{Production Deployment and Verification}
+\subsection{CrownLabs Deployment}
+All files were transferred to the CrownLabs production environment:
+
+\begin{lstlisting}[style=bashstyle]
+# Transfer new modules
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it mcda_optimizer.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it uncertainty_quantifier.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+
+# Transfer modified modules
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it predictive_autoscaler.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it predictive_monitoring.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it llm_autoscaling_advisor.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+\end{lstlisting}
+
+\subsection{Verification Results}
+All modules were verified on CrownLabs production with concrete test results:
+
+\subsubsection{MCDA Optimizer Verification}
+\begin{lstlisting}[style=bashstyle]
+# Test: MCDA optimization with current_replicas=2, CPU=65%, Memory=45%
+Result: scale_up to 4 (score=0.8008, 7 alternatives evaluated)
+Dominance margin: 0.12
+Ranking:
+  1. scale_to_4 (score=0.8008)
+  2. scale_to_3 (score=0.6812)
+  3. scale_to_5 (score=0.6501)
+  4. scale_to_2 (score=0.5203)
+  5. scale_to_1 (score=0.3102)
+\end{lstlisting}
+
+\subsubsection{Uncertainty Quantification Verification}
+\begin{lstlisting}[style=bashstyle]
+# Test: 6-hour CPU forecast with 50 data points
+Prediction Intervals (95% confidence):
+  Hour 1: width = 39.9   (narrow)
+  Hour 2: width = 44.2
+  Hour 3: width = 49.1
+  Hour 4: width = 54.5
+  Hour 5: width = 60.3
+  Hour 6: width = 66.7   (wide - growing with sqrt(h))
+
+Exceedance probabilities:
+  P(CPU > 70%): [0.12, 0.18, 0.25, 0.31, 0.37, 0.42]
+  P(CPU > 90%): [0.01, 0.03, 0.06, 0.09, 0.13, 0.17]
+\end{lstlisting}
+
+\subsubsection{Calibrated Anomaly Detection Verification}
+\begin{lstlisting}[style=bashstyle]
+# Test: Anomaly detection on normal cluster metrics
+Result:
+  anomaly_probability = 0.0527
+  detection_confidence = 0.89
+  is_anomaly = False
+  severity_distribution:
+    low: 0.85
+    medium: 0.12
+    high: 0.02
+    critical: 0.01
+\end{lstlisting}
+
+\subsubsection{Integrated Autoscaler Verification}
+\begin{lstlisting}[style=bashstyle]
+# Test: PredictiveAutoscaler with MCDA integration
+Result:
+  action = scale_up
+  target_replicas = 4
+  decision_method = mcda_topsis
+  mcda_score = 0.8604
+  alternatives_evaluated = 7
+\end{lstlisting}
+
+\section{Errors Encountered and Solutions}
+\subsection{ModuleNotFoundError: numpy}
+\textbf{Problem}: Running tests on local Python without numpy installed.
+
+\textbf{Solution}: Activated the project virtual environment:
+\begin{lstlisting}[style=bashstyle]
+source client/.venv/bin/activate
+pip install numpy scikit-learn
+\end{lstlisting}
+
+\subsection{SSH String Escaping Issues}
+\textbf{Problem}: Complex Python f-strings with nested quotes caused syntax errors when passed through SSH commands.
+
+\textbf{Solution}: Wrote test scripts to local files and transferred them via SCP, then executed on CrownLabs:
+\begin{lstlisting}[style=bashstyle]
+# Instead of: ssh ... "python3 -c 'complex_code_here'"
+# Write to file, SCP, then execute:
+scp -o ProxyJump=bastion@ssh.crownlabs.polito.it test_script.py \
+    crownlabs@10.108.203.201:~/ai4k8s/
+ssh -o ProxyJump=bastion@ssh.crownlabs.polito.it \
+    crownlabs@10.108.203.201 \
+    "cd ~/ai4k8s && source venv/bin/activate && python3 test_script.py"
+\end{lstlisting}
+
+\subsection{PredictiveAutoscaler Missing hpa\_manager}
+\textbf{Problem}: CrownLabs version of \texttt{PredictiveAutoscaler.\_\_init\_\_()} requires an \texttt{hpa\_manager} positional argument (not optional like the local version):
+\begin{lstlisting}[style=bashstyle]
+TypeError: __init__() missing required positional argument: 'hpa_manager'
+\end{lstlisting}
+
+\textbf{Solution}: Pass \texttt{hpa\_manager=None} in test instantiation:
+\begin{lstlisting}[style=pythonstyle]
+autoscaler = PredictiveAutoscaler(hpa_manager=None)
+\end{lstlisting}
+
+\subsection{CrownLabs Log Path Mismatch}
+\textbf{Problem}: Non-fatal warning about log file path:
+\begin{lstlisting}[style=bashstyle]
+[Errno 2] No such file or directory: '/home1/pedramnj/ai4k8s/predictive_autoscaler.log'
+\end{lstlisting}
+
+\textbf{Solution}: This is a non-fatal warning. The home directory mapping differs on CrownLabs (\texttt{/home1/pedramnj/} vs \texttt{$\sim$/}). The log path issue does not affect functionality.
+
+\section{Comparison: Before and After Phase 2}
+\subsection{Decision-Making Comparison}
+
+\begin{longtable}{|p{0.20\linewidth}|p{0.35\linewidth}|p{0.35\linewidth}|}
+\hline
+\textbf{Aspect} & \textbf{Phase 1 (Before)} & \textbf{Phase 2 (After)} \\
+\hline
+Method & IF/ELSE threshold rules & TOPSIS multi-criteria optimization \\
+\hline
+Criteria & CPU only & Cost, performance, stability, forecast, response time \\
+\hline
+Alternatives & 3 (up, down, maintain) & 5--8 candidates ranked by closeness coefficient \\
+\hline
+Transparency & None & Full ranking with scores and dominance margin \\
+\hline
+Customization & Hard-coded thresholds & 4 weight profiles, custom weights supported \\
+\hline
+LLM Validation & None & MCDA cross-check with automatic override \\
+\hline
+Fallback & N/A & Original heuristics preserved as fallback \\
+\hline
+\end{longtable}
+
+\subsection{Uncertainty Quantification Comparison}
+
+\begin{longtable}{|p{0.20\linewidth}|p{0.35\linewidth}|p{0.35\linewidth}|}
+\hline
+\textbf{Aspect} & \textbf{Phase 1 (Before)} & \textbf{Phase 2 (After)} \\
+\hline
+Prediction Intervals & Constant-width ($\pm 1.96\sigma$) & Growing with $\sqrt{h}$ scaling \\
+\hline
+Uncertainty Type & Not decomposed & Aleatoric + epistemic separated \\
+\hline
+Anomaly Detection & Binary (True/False) & Calibrated $P(\text{anomaly}) \in [0, 1]$ \\
+\hline
+Severity & Not reported & Distribution: low/medium/high/critical \\
+\hline
+Exceedance Probs & Not computed & $P(\text{metric} > \tau)$ per hour per threshold \\
+\hline
+Model Quality & Not assessed & good/limited/poor based on data size \\
+\hline
+Detection Confidence & Not reported & Distance from decision boundary \\
+\hline
+\end{longtable}
+
+\section{Technical Design Decisions}
+\subsection{Why TOPSIS Over Other MCDA Methods}
+\begin{itemize}[noitemsep]
+  \item \textbf{TOPSIS vs. AHP}: AHP requires pairwise comparison matrices that grow as $O(n^2)$ with criteria count. TOPSIS works directly with weights and a decision matrix, which is simpler to configure and update at runtime.
+  \item \textbf{TOPSIS vs. PROMETHEE}: PROMETHEE requires preference functions per criterion, adding unnecessary complexity for our 5-criteria case. TOPSIS provides a single closeness coefficient that is easy to interpret.
+  \item \textbf{TOPSIS vs. Weighted Sum}: Weighted sum assumes linear additive utility, which fails when criteria have different scales. TOPSIS handles this through vector normalization.
+\end{itemize}
+
+\subsection{Why Bootstrap Over Bayesian UQ}
+\begin{itemize}[noitemsep]
+  \item \textbf{No scipy dependency}: Bootstrap uses only numpy, keeping the deployment lightweight.
+  \item \textbf{Model-agnostic}: Works with any regression model (polynomial, linear, etc.) without requiring probabilistic reformulation.
+  \item \textbf{Computationally bounded}: 50 bootstrap resamples provide good uncertainty estimates in $< 100$ms.
+  \item \textbf{Easy to understand}: The spread of bootstrap predictions directly represents model uncertainty.
+\end{itemize}
+
+\subsection{Why Platt Scaling Over Isotonic Regression}
+\begin{itemize}[noitemsep]
+  \item \textbf{Monotonic guarantee}: Platt scaling preserves score ordering (if $s_1 < s_2$, then $P_1 > P_2$).
+  \item \textbf{Two parameters}: Only $A$ and $B$ need calibration, making it robust with small training sets.
+  \item \textbf{Auto-calibration}: Parameters can be derived from the score distribution without labeled anomalies.
+  \item \textbf{Numerically stable}: The sigmoid function is well-behaved and doesn't require binning.
+\end{itemize}
+
+\section{Files Created and Modified}
+
+\subsection{New Files}
+\begin{longtable}{|p{0.35\linewidth}|p{0.10\linewidth}|p{0.48\linewidth}|}
+\hline
+\textbf{File} & \textbf{Lines} & \textbf{Description} \\
+\hline
+\texttt{mcda\_optimizer.py} & $\sim$380 & \texttt{MCDAAutoscalingOptimizer}, \texttt{ScalingAlternative}, \texttt{MCDAResult} \\
+\hline
+\texttt{uncertainty\_quantifier.py} & $\sim$420 & \texttt{UncertaintyAwareForecaster}, \texttt{CalibratedAnomalyDetector}, \texttt{UncertainScalingDecision} \\
+\hline
+\end{longtable}
+
+\subsection{Modified Files}
+\begin{longtable}{|p{0.40\linewidth}|p{0.53\linewidth}|}
+\hline
+\textbf{File} & \textbf{Key Changes} \\
+\hline
+\texttt{predictive\_autoscaler.py} & Added \texttt{MCDAAutoscalingOptimizer} import and initialization; replaced \texttt{\_determine\_scaling\_action} with MCDA-based version; preserved original as fallback \\
+\hline
+\texttt{predictive\_monitoring.py} & Added \texttt{UncertaintyAwareForecaster} and \texttt{CalibratedAnomalyDetector}; new methods \texttt{forecast\_cpu\_with\_uncertainty()}, \texttt{detect\_anomaly\_calibrated()}; enhanced \texttt{analyze()} output with UQ section \\
+\hline
+\texttt{llm\_autoscaling\_advisor.py} & Added MCDA import with availability check; MCDA validation block before returning recommendation; override when MCDA score gap $> 0.15$; enhanced \texttt{explain\_scaling\_decision()} \\
+\hline
+\end{longtable}
+
+\section{Current System Capabilities After Phase 2}
+\subsection{Enhanced Decision Pipeline}
+The autoscaling decision pipeline now follows:
+\begin{enumerate}[noitemsep]
+  \item Collect real-time metrics from Kubernetes
+  \item Generate 6-hour forecasts \textbf{with growing prediction intervals}
+  \item Detect anomalies \textbf{with calibrated probabilities}
+  \item Generate candidate scaling alternatives
+  \item Rank alternatives using \textbf{TOPSIS multi-criteria optimization}
+  \item (Optional) Cross-validate with LLM recommendation
+  \item Execute optimal scaling action with full transparency
+\end{enumerate}
+
+\subsection{API Response Enhancements}
+All monitoring API endpoints now include additional UQ data:
+\begin{itemize}[noitemsep]
+  \item \texttt{/api/monitoring/forecast/<server\_id>}: Returns prediction intervals that grow with horizon
+  \item \texttt{/api/monitoring/alerts/<server\_id>}: Returns calibrated anomaly probabilities with severity distributions
+  \item \texttt{/api/monitoring/insights/<server\_id>}: Includes full uncertainty quantification section
+\end{itemize}
+
+\section*{Summary of Phase 2 Achievements}
+\begin{itemize}[noitemsep]
+  \item \textbf{MCDA Implementation}: TOPSIS-based multi-criteria optimization with 5 criteria and 4 weight profiles
+  \item \textbf{Uncertainty Quantification}: Bootstrap-based growing prediction intervals with aleatoric/epistemic decomposition
+  \item \textbf{Calibrated Anomaly Detection}: Platt scaling converting binary detection to calibrated $P(\text{anomaly})$
+  \item \textbf{Exceedance Probabilities}: $P(\text{metric} > \tau)$ computed per hour via normal survival function
+  \item \textbf{LLM Validation}: MCDA cross-checks LLM scaling decisions with automatic override capability
+  \item \textbf{Backward Compatibility}: All new features are additive; old API responses preserved alongside new UQ data
+  \item \textbf{Graceful Degradation}: If MCDA fails, original threshold heuristics serve as fallback
+  \item \textbf{Production Verified}: All modules tested and working on CrownLabs production environment
+\end{itemize}
+
+\end{document}

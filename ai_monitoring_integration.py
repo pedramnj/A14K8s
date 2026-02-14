@@ -455,7 +455,7 @@ class AIMonitoringIntegration:
                     "timestamp": analysis.get("timestamp", datetime.now().isoformat())
                 })
             
-            return alerts
+            return self._json_safe(alerts)
         except Exception as e:
             logger.error(f"Failed to get anomaly alerts: {e}")
             return []
@@ -554,7 +554,7 @@ class AIMonitoringIntegration:
                         "details": {"status": "healthy"}
                     })
             
-            return recommendations
+            return self._json_safe(recommendations)
         except Exception as e:
             logger.error(f"Failed to get performance recommendations: {e}")
             return []
@@ -659,8 +659,8 @@ class AIMonitoringIntegration:
                     }
                 })
             
-            return recommendations
-            
+            return self._json_safe(recommendations)
+
         except Exception as e:
             logger.error(f"Error getting RAG-enhanced recommendations: {e}")
             return []
@@ -696,7 +696,7 @@ class AIMonitoringIntegration:
                 }
             }
             
-            return summary
+            return self._json_safe(summary)
         except Exception as e:
             logger.error(f"Failed to get forecast summary: {e}")
             return {"error": f"Failed to get forecast summary: {str(e)}"}
@@ -740,14 +740,14 @@ class AIMonitoringIntegration:
             else:
                 status = "critical"
             
-            return {
+            return self._json_safe({
                 "overall_score": round(overall_score, 1),
                 "status": status,
                 "cpu_health": round(cpu_health, 1),
                 "memory_health": round(memory_health, 1),
                 "anomaly_penalty": anomaly_penalty,
                 "timestamp": analysis.get("timestamp", datetime.now().isoformat())
-            }
+            })
         except Exception as e:
             logger.error(f"Failed to get health score: {e}")
             return {"error": f"Failed to get health score: {str(e)}"}
@@ -902,14 +902,43 @@ class AIMonitoringIntegration:
             logger.warning(f"Groq call failed: {exc}")
             return self._build_llm_fallback(current_metrics)
     
+    @staticmethod
+    def _json_safe(obj):
+        """Recursively convert non-JSON-serializable types (datetime, numpy) to
+        plain Python types so Flask's jsonify() never crashes."""
+        import json
+        try:
+            import numpy as _np
+            _has_np = True
+        except ImportError:
+            _has_np = False
+
+        if isinstance(obj, dict):
+            return {k: AIMonitoringIntegration._json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            converted = [AIMonitoringIntegration._json_safe(i) for i in obj]
+            return converted if isinstance(obj, list) else tuple(converted)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if _has_np:
+            if isinstance(obj, (_np.bool_,)):
+                return bool(obj)
+            if isinstance(obj, (_np.integer,)):
+                return int(obj)
+            if isinstance(obj, (_np.floating,)):
+                return float(obj)
+            if isinstance(obj, _np.ndarray):
+                return obj.tolist()
+        return obj
+
     def get_dashboard_data(self) -> Dict[str, Any]:
-        """Get comprehensive dashboard data"""
+        """Get comprehensive dashboard data including UQ and calibrated anomaly detection"""
         analysis = self.get_current_analysis()
-        
+
         if "error" in analysis:
             return {"error": "No analysis data available"}
-        
-        return {
+
+        dashboard = {
             "timestamp": analysis.get("timestamp", datetime.now().isoformat()),
             "current_metrics": analysis.get("current_metrics", {}),
             "health_score": self.get_health_score(),
@@ -921,6 +950,15 @@ class AIMonitoringIntegration:
             "demo_mode": analysis.get("demo_mode", False),
             "demo_message": analysis.get("demo_message", "")
         }
+
+        # Pass through UQ data from PredictiveMonitoringSystem.analyze()
+        if "uncertainty_quantification" in analysis:
+            dashboard["uncertainty_quantification"] = analysis["uncertainty_quantification"]
+        if "anomaly_detection" in analysis:
+            dashboard["anomaly_detection"] = analysis["anomaly_detection"]
+
+        # Ensure all values are JSON-serializable (datetime, numpy types)
+        return self._json_safe(dashboard)
 
 # MCP Tool Integration Functions
 def get_ai_insights() -> Dict[str, Any]:

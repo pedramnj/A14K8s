@@ -24,6 +24,7 @@ from predictive_monitoring import (
 )
 from autoscaling_engine import HorizontalPodAutoscaler
 from llm_autoscaling_advisor import LLMAutoscalingAdvisor
+from mcda_optimizer import MCDAAutoscalingOptimizer
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:  # Only configure if not already configured
@@ -79,6 +80,9 @@ class PredictiveAutoscaler:
         self.scale_up_threshold = 75  # CPU or memory > 75%
         self.scale_down_threshold = 25  # CPU and memory < 25%
         self.safety_buffer = 1.2  # 20% buffer for safety
+
+        # MCDA optimizer for formal multi-criteria scaling decisions
+        self.mcda_optimizer = MCDAAutoscalingOptimizer(profile='balanced')
         
     def predict_and_scale(self, deployment_name: str, namespace: str = "default",
                          min_replicas: int = 2, max_replicas: int = 10,
@@ -556,56 +560,122 @@ class PredictiveAutoscaler:
     
     def _determine_scaling_action(self, predicted_cpu: float, predicted_memory: float,
                                   current_replicas: int, min_replicas: int, max_replicas: int) -> Dict[str, Any]:
-        """Determine if scaling is needed based on predictions"""
-        
+        """
+        Determine if scaling is needed using MCDA (Multi-Criteria Decision Analysis).
+
+        Replaces simple threshold heuristics with formal TOPSIS optimization that
+        evaluates multiple candidate replica counts across weighted criteria:
+        cost, performance, stability, forecast alignment, and response time.
+
+        Falls back to threshold-based logic if MCDA fails.
+        """
+        try:
+            # Build metrics and forecast dicts for MCDA
+            metrics = {
+                'cpu_percent': predicted_cpu,
+                'memory_percent': predicted_memory
+            }
+            forecast = {
+                'predicted_cpu': [predicted_cpu] * 6,  # Use predicted as baseline
+                'predicted_memory': [predicted_memory] * 6,
+                'cpu_trend': 'increasing' if predicted_cpu > 60 else ('decreasing' if predicted_cpu < 30 else 'stable')
+            }
+
+            mcda_result = self.mcda_optimizer.optimize(
+                current_replicas=current_replicas,
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+                metrics=metrics,
+                forecast=forecast
+            )
+
+            target_replicas = mcda_result.target_replicas
+            action = mcda_result.action
+
+            # Handle at_max case
+            if action == 'scale_up' and target_replicas >= max_replicas and current_replicas >= max_replicas:
+                action = 'at_max'
+
+            # Map MCDA 'maintain' to legacy 'none' for backward compatibility
+            if action == 'maintain':
+                action = 'none'
+
+            # CRITICAL: Cap target_replicas to max_replicas
+            target_replicas = max(min_replicas, min(target_replicas, max_replicas))
+
+            logger.warning(f"📊 MCDA Decision: {action} → {target_replicas} replicas "
+                           f"(score={mcda_result.mcda_score:.4f}, margin={mcda_result.dominance_margin:.4f}, "
+                           f"evaluated={mcda_result.alternatives_evaluated} alternatives)")
+
+            return {
+                'action': action,
+                'target_replicas': target_replicas,
+                'calculated_replicas': target_replicas,
+                'reason': (f'MCDA optimization: {mcda_result.reasoning}. '
+                           f'Predicted usage: CPU={predicted_cpu:.1f}%, Memory={predicted_memory:.1f}%'),
+                'mcda_score': mcda_result.mcda_score,
+                'mcda_ranking': mcda_result.ranking,
+                'mcda_dominance_margin': mcda_result.dominance_margin,
+                'mcda_criteria_weights': mcda_result.criteria_weights,
+                'mcda_criteria_scores': mcda_result.criteria_scores,
+                'decision_method': 'mcda_topsis'
+            }
+
+        except Exception as e:
+            logger.warning(f"⚠️ MCDA optimization failed, falling back to threshold heuristics: {e}")
+            return self._determine_scaling_action_fallback(
+                predicted_cpu, predicted_memory, current_replicas, min_replicas, max_replicas)
+
+    def _determine_scaling_action_fallback(self, predicted_cpu: float, predicted_memory: float,
+                                            current_replicas: int, min_replicas: int, max_replicas: int) -> Dict[str, Any]:
+        """Legacy threshold-based fallback when MCDA is unavailable"""
+
         # Scale up if predicted usage exceeds threshold
         if predicted_cpu > self.scale_up_threshold or predicted_memory > self.scale_up_threshold:
-            # Calculate scale factor
-            cpu_scale = predicted_cpu / 70.0  # Target 70% CPU
-            mem_scale = predicted_memory / 80.0  # Target 80% memory
+            cpu_scale = predicted_cpu / 70.0
+            mem_scale = predicted_memory / 80.0
             scale_factor = max(cpu_scale, mem_scale) * self.safety_buffer
-            
+
             target_replicas = int(current_replicas * scale_factor)
-            calculated_replicas = target_replicas  # Store calculated value before capping
+            calculated_replicas = target_replicas
             target_replicas = max(min_replicas, min(target_replicas, max_replicas))
-            
+
             if target_replicas > current_replicas:
                 return {
                     'action': 'scale_up',
                     'target_replicas': target_replicas,
                     'calculated_replicas': calculated_replicas,
-                    'reason': f'Predicted usage exceeds threshold (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%)'
+                    'reason': f'[FALLBACK] Predicted usage exceeds threshold (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%)',
+                    'decision_method': 'threshold_fallback'
                 }
             elif calculated_replicas > max_replicas and current_replicas >= max_replicas:
-                # Already at max, but need more replicas
                 return {
                     'action': 'at_max',
                     'target_replicas': max_replicas,
                     'calculated_replicas': calculated_replicas,
-                    'reason': f'High predicted usage (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%) but already at max replicas ({max_replicas}). Consider increasing max_replicas or optimizing application.'
+                    'reason': f'[FALLBACK] High predicted usage but already at max replicas ({max_replicas})',
+                    'decision_method': 'threshold_fallback'
                 }
-        
+
         # Scale down if predicted usage is low
         if predicted_cpu < self.scale_down_threshold and predicted_memory < self.scale_down_threshold:
-            scale_factor = 0.7  # Reduce by 30%
+            scale_factor = 0.7
             target_replicas = max(min_replicas, int(current_replicas * scale_factor))
-            
+
             if target_replicas < current_replicas:
                 return {
                     'action': 'scale_down',
                     'target_replicas': target_replicas,
-                    'reason': f'Predicted usage is low (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%)'
+                    'reason': f'[FALLBACK] Predicted usage is low (CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%)',
+                    'decision_method': 'threshold_fallback'
                 }
-        
-        # CRITICAL: Cap current_replicas to max_replicas even for "no scaling needed"
+
         target_replicas = min(current_replicas, max_replicas)
-        if target_replicas != current_replicas:
-            logger.warning(f"🔍🔍🔍 RULE-BASED: Capping current_replicas={current_replicas} to max={max_replicas} for 'none' action")
-        
         return {
             'action': 'none',
-            'target_replicas': target_replicas,  # Capped to max_replicas
-            'reason': f'No scaling needed. Current usage: CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%'
+            'target_replicas': target_replicas,
+            'reason': f'[FALLBACK] No scaling needed. CPU: {predicted_cpu:.1f}%, Memory: {predicted_memory:.1f}%',
+            'decision_method': 'threshold_fallback'
         }
     
     def _determine_vpa_scaling_action(self, predicted_cpu: float, predicted_memory: float,
