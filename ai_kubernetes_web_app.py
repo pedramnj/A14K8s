@@ -2089,6 +2089,72 @@ if True:
         except Exception as e:
             return jsonify({'error': str(e)}), 500
     
+    @app.route('/api/monitoring/trends/<int:server_id>')
+    def get_monitoring_trends(server_id):
+        """Get resource usage trend data (last 24h) for specific server"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'cpu': [], 'memory': []}), 200
+            
+            trends = ai_monitoring.get_trends_24h()
+            return jsonify(trends)
+        except Exception as e:
+            return jsonify({'cpu': [], 'memory': [], 'error': str(e)}), 200
+
+    @app.route('/api/monitoring/events/<int:server_id>')
+    def get_monitoring_events(server_id):
+        """Get recent Kubernetes events for specific server"""
+        if 'user_id' not in session:
+            return jsonify({'error': 'Unauthorized'}), 401
+        
+        server = Server.query.filter_by(id=server_id, user_id=session['user_id']).first_or_404()
+        
+        try:
+            ai_monitoring = get_ai_monitoring(server_id)
+            if not ai_monitoring:
+                return jsonify({'events': []}), 200
+            
+            # Try to get events from Kubernetes
+            if hasattr(ai_monitoring, 'metrics_collector') and ai_monitoring.metrics_collector:
+                collector = ai_monitoring.metrics_collector
+                if hasattr(collector, 'get_recent_events'):
+                    events = collector.get_recent_events()
+                    return jsonify({'events': events})
+            
+            # Fallback: try kubectl
+            import subprocess
+            result = subprocess.run(
+                ['kubectl', 'get', 'events', '--all-namespaces', '-o', 'json', '--sort-by=.lastTimestamp'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                import json
+                events_data = json.loads(result.stdout)
+                events = []
+                for item in (events_data.get('items', []) or [])[-20:]:
+                    events.append({
+                        'type': item.get('type', 'Normal'),
+                        'reason': item.get('reason', ''),
+                        'message': item.get('message', ''),
+                        'namespace': item.get('metadata', {}).get('namespace', ''),
+                        'involved_object': {
+                            'kind': item.get('involvedObject', {}).get('kind', ''),
+                            'name': item.get('involvedObject', {}).get('name', '')
+                        },
+                        'timestamp': item.get('lastTimestamp') or item.get('metadata', {}).get('creationTimestamp', '')
+                    })
+                return jsonify({'events': events})
+            
+            return jsonify({'events': []})
+        except Exception as e:
+            return jsonify({'events': [], 'error': str(e)}), 200
+
     @app.route('/api/monitoring/start/<int:server_id>', methods=['POST'])
     def start_monitoring(server_id):
         """Start continuous monitoring for specific server"""

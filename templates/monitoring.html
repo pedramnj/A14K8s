@@ -157,10 +157,33 @@
         </div>
     </div>
 
-    <!-- Anomaly Alerts -->
+    <!-- Uncertainty Quantification -->
     <div class="card">
         <div class="card-header">
-            <h3 class="card-title">Anomaly Detection & Alerts</h3>
+            <h3 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;color:#8b5cf6;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                Uncertainty Quantification
+            </h3>
+            <small class="text-muted">Bootstrap prediction intervals, uncertainty decomposition & exceedance probabilities</small>
+        </div>
+        <div class="card-body">
+            <div id="uq-content">
+                <div class="loading">
+                    <div class="spinner"></div>
+                    Loading uncertainty quantification data...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Calibrated Anomaly Detection -->
+    <div class="card">
+        <div class="card-header">
+            <h3 class="card-title">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:inline-block;vertical-align:middle;margin-right:0.4rem;color:#ef4444;"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                Anomaly Detection & Alerts
+            </h3>
+            <small class="text-muted">Platt-calibrated anomaly probabilities with severity distributions</small>
         </div>
         <div class="card-body">
             <div id="alerts-content">
@@ -267,6 +290,7 @@ function refreshMetrics() {
     Promise.all([
         loadHealthScore(),
         loadInsights(),
+        loadUncertaintyQuantification(),
         loadAlerts(),
         loadRecommendations(),
         loadLLMRecommendations(),
@@ -283,20 +307,20 @@ function refreshMetrics() {
 }
 
 function loadHealthScore() {
-    console.log('🏥 Loading health score for server:', serverId);
+    console.log('[HEALTH] Loading health score for server:', serverId);
     return fetch(`/api/monitoring/health/${serverId}`, {
         credentials: 'same-origin'
     })
         .then(response => {
-            console.log('🏥 Health score response status:', response.status);
-            console.log('🏥 Health score response headers:', Object.fromEntries(response.headers.entries()));
+            console.log('[HEALTH] Health score response status:', response.status);
+            console.log('[HEALTH] Health score response headers:', Object.fromEntries(response.headers.entries()));
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
             return response.json();
         })
         .then(data => {
-            console.log('🏥 Health score data received:', data);
+            console.log('[HEALTH] Health score data received:', data);
             if (data.overall_score !== undefined) {
                 document.getElementById('health-score').textContent = Math.round(data.overall_score) + '%';
             } else if (data.score !== undefined) {
@@ -304,33 +328,33 @@ function loadHealthScore() {
             }
         })
         .catch(error => {
-            console.error('🏥 Error loading health score:', error);
+            console.error('[HEALTH] Error loading health score:', error);
             // Show loading state instead of demo data
             document.getElementById('health-score').textContent = 'Loading...';
         });
 }
 
 function loadInsights() {
-    console.log('📊 Loading insights for server:', serverId);
+    console.log('[DATA] Loading insights for server:', serverId);
     return fetch(`/api/monitoring/insights/${serverId}`, {
         credentials: 'same-origin'
     })
         .then(response => {
-            console.log('📊 Insights response status:', response.status);
-            console.log('📊 Insights response headers:', Object.fromEntries(response.headers.entries()));
+            console.log('[DATA] Insights response status:', response.status);
+            console.log('[DATA] Insights response headers:', Object.fromEntries(response.headers.entries()));
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
             return response.json();
         })
         .then(data => {
-            console.log('📊 Insights data received:', data);
+            console.log('[DATA] Insights data received:', data);
             // Handle the current_metrics structure
             if (data.current_metrics) {
                 // Use actual pod counts from API
                 const podCount = data.current_metrics.pod_count || 0;
                 const runningPodCount = data.current_metrics.running_pod_count || 0;
-                console.log('📊 Setting pod counts - Total:', podCount, 'Running:', runningPodCount);
+                console.log('[DATA] Setting pod counts - Total:', podCount, 'Running:', runningPodCount);
                 document.getElementById('total-pods').textContent = podCount;
                 document.getElementById('running-pods').textContent = runningPodCount;
             } else if (data.pods) {
@@ -339,10 +363,212 @@ function loadInsights() {
             }
         })
         .catch(error => {
-            console.error('📊 Error loading insights:', error);
+            console.error('[DATA] Error loading insights:', error);
             // Don't show dashes, show loading state instead
             document.getElementById('total-pods').textContent = 'Loading...';
             document.getElementById('running-pods').textContent = 'Loading...';
+        });
+}
+
+function loadUncertaintyQuantification() {
+    console.log('[UQ] Loading uncertainty quantification for server:', serverId);
+    return fetch(`/api/monitoring/insights/${serverId}`, { credentials: 'same-origin' })
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            console.log('[UQ] Insights data for UQ:', data);
+            const container = document.getElementById('uq-content');
+            const uq = data.uncertainty_quantification;
+            const anomaly = data.anomaly_detection;
+            const summary = data.summary;
+
+            if (!uq && !anomaly) {
+                container.innerHTML = `
+                    <div class="text-center text-muted" style="padding: 2rem;">
+                        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom: 0.75rem; color: #9ca3af;">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                        <p style="margin: 0;">No uncertainty quantification data available yet.<br>Enable predictive monitoring to generate UQ metrics.</p>
+                    </div>`;
+                return;
+            }
+
+            // Helper: render a metric UQ card (CPU or Memory)
+            function renderMetricUQ(metric, label, color) {
+                if (!metric) return `<div class="text-muted text-center" style="padding: 1rem;">No ${label} UQ data</div>`;
+
+                const qualityColors = { good: '#10b981', limited: '#f59e0b', poor: '#ef4444' };
+                const qualityColor = qualityColors[metric.model_quality] || '#9ca3af';
+                const confPct = ((metric.confidence_level || 0.95) * 100).toFixed(0);
+
+                // Prediction intervals - show first few hours
+                const intervals = metric.prediction_intervals || [];
+                const pointForecasts = metric.point_forecasts || [];
+                let intervalsHTML = '';
+                if (intervals.length > 0) {
+                    const horizons = Math.min(intervals.length, 6);
+                    intervalsHTML = '<div style="margin-top: 0.75rem;"><strong style="font-size: 0.8rem; color: var(--text-muted);">Prediction Intervals (' + confPct + '% CI):</strong>';
+                    intervalsHTML += '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.5rem; margin-top: 0.4rem;">';
+                    for (let i = 0; i < horizons; i++) {
+                        const lo = (intervals[i][0] || 0).toFixed(1);
+                        const hi = (intervals[i][1] || 0).toFixed(1);
+                        const pt = pointForecasts[i] ? pointForecasts[i].toFixed(1) : '?';
+                        intervalsHTML += '<div style="padding: 0.4rem 0.5rem; background: rgba(0,0,0,0.03); border-radius: 0.25rem; font-size: 0.78rem; text-align: center;">';
+                        intervalsHTML += '<div style="color: var(--text-muted);">+' + (i+1) + 'h</div>';
+                        intervalsHTML += '<div style="font-weight: 600; color: ' + color + ';">' + pt + '%</div>';
+                        intervalsHTML += '<div style="color: #9ca3af; font-size: 0.7rem;">[' + lo + ' - ' + hi + ']</div>';
+                        intervalsHTML += '</div>';
+                    }
+                    intervalsHTML += '</div></div>';
+                }
+
+                // Exceedance probabilities
+                const exceedance = metric.exceedance_probabilities || {};
+                let exceedHTML = '';
+                const thresholds = Object.keys(exceedance).sort((a, b) => Number(a) - Number(b));
+                if (thresholds.length > 0) {
+                    exceedHTML = '<div style="margin-top: 0.75rem;"><strong style="font-size: 0.8rem; color: var(--text-muted);">Exceedance Probabilities (next hour):</strong>';
+                    exceedHTML += '<div style="margin-top: 0.4rem;">';
+                    thresholds.forEach(t => {
+                        const probs = exceedance[t] || [];
+                        const nextHourProb = probs.length > 0 ? probs[0] : 0;
+                        const pct = (nextHourProb * 100).toFixed(1);
+                        const barWidth = Math.min(nextHourProb * 100, 100);
+                        const barColor = nextHourProb > 0.5 ? '#ef4444' : nextHourProb > 0.2 ? '#f59e0b' : '#10b981';
+                        exceedHTML += '<div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.3rem; font-size: 0.8rem;">';
+                        exceedHTML += '<span style="width: 65px; color: var(--text-muted); flex-shrink: 0;">P(&gt;' + t + '%)</span>';
+                        exceedHTML += '<div style="flex: 1; background: rgba(0,0,0,0.06); border-radius: 0.25rem; height: 18px; overflow: hidden;">';
+                        exceedHTML += '<div style="width: ' + barWidth + '%; height: 100%; background: ' + barColor + '; border-radius: 0.25rem; transition: width 0.5s;"></div>';
+                        exceedHTML += '</div>';
+                        exceedHTML += '<span style="width: 45px; text-align: right; font-weight: 600;">' + pct + '%</span>';
+                        exceedHTML += '</div>';
+                    });
+                    exceedHTML += '</div></div>';
+                }
+
+                // Uncertainty decomposition
+                const aleatoric = metric.aleatoric_uncertainty || [];
+                const epistemic = metric.epistemic_uncertainty || [];
+                const total = metric.total_uncertainty || [];
+                let decompHTML = '';
+                if (aleatoric.length > 0 && epistemic.length > 0) {
+                    const aleVal = aleatoric[0].toFixed(2);
+                    const epiVal = epistemic[0].toFixed(2);
+                    const totVal = total.length > 0 ? total[0].toFixed(2) : (parseFloat(aleVal) + parseFloat(epiVal)).toFixed(2);
+                    const aleRatio = total[0] > 0 ? (aleatoric[0] / total[0]) * 100 : 50;
+                    const epiRatio = 100 - aleRatio;
+                    decompHTML = '<div style="margin-top: 0.75rem;"><strong style="font-size: 0.8rem; color: var(--text-muted);">Uncertainty Decomposition (next hour):</strong>';
+                    decompHTML += '<div style="display: flex; height: 22px; border-radius: 0.25rem; overflow: hidden; margin-top: 0.4rem;">';
+                    decompHTML += '<div style="width: ' + aleRatio.toFixed(0) + '%; background: #f59e0b; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: white; font-weight: 600;">' + (aleRatio > 15 ? 'Aleatoric' : '') + '</div>';
+                    decompHTML += '<div style="width: ' + epiRatio.toFixed(0) + '%; background: #3b82f6; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: white; font-weight: 600;">' + (epiRatio > 15 ? 'Epistemic' : '') + '</div>';
+                    decompHTML += '</div>';
+                    decompHTML += '<div style="display: flex; justify-content: space-between; font-size: 0.75rem; margin-top: 0.25rem; color: var(--text-muted);">';
+                    decompHTML += '<span><span style="display:inline-block;width:8px;height:8px;background:#f59e0b;border-radius:50%;margin-right:4px;"></span>Aleatoric: ' + aleVal + '</span>';
+                    decompHTML += '<span><span style="display:inline-block;width:8px;height:8px;background:#3b82f6;border-radius:50%;margin-right:4px;"></span>Epistemic: ' + epiVal + '</span>';
+                    decompHTML += '<span>Total: ' + totVal + '</span>';
+                    decompHTML += '</div></div>';
+                }
+
+                return `
+                    <div style="padding: 1rem; background: rgba(${color === '#3b82f6' ? '59,130,246' : '139,92,246'}, 0.03); border: 1px solid rgba(${color === '#3b82f6' ? '59,130,246' : '139,92,246'}, 0.1); border-radius: 0.5rem;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <strong style="font-size: 0.95rem;">${label} Uncertainty</strong>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <span style="font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 1rem; background: ${qualityColor}20; color: ${qualityColor}; font-weight: 600; border: 1px solid ${qualityColor}40;">
+                                    ${(metric.model_quality || 'unknown').toUpperCase()} model
+                                </span>
+                                <span style="font-size: 0.75rem; color: var(--text-muted);">${metric.data_points_used || 0} data points</span>
+                            </div>
+                        </div>
+                        ${intervalsHTML}
+                        ${exceedHTML}
+                        ${decompHTML}
+                    </div>`;
+            }
+
+            // Render anomaly summary for the top
+            let anomalySummaryHTML = '';
+            if (anomaly && anomaly.calibrated) {
+                const cal = anomaly.calibrated;
+                const prob = ((cal.anomaly_probability || 0) * 100).toFixed(1);
+                const conf = ((cal.detection_confidence || 0) * 100).toFixed(0);
+                const probColor = cal.anomaly_probability > 0.5 ? '#ef4444' : cal.anomaly_probability > 0.2 ? '#f59e0b' : '#10b981';
+                const sev = cal.severity_distribution || {};
+                anomalySummaryHTML = `
+                    <div style="margin-bottom: 1rem; padding: 1rem; background: rgba(239, 68, 68, 0.03); border: 1px solid rgba(239, 68, 68, 0.1); border-radius: 0.5rem;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.5rem;">
+                            <strong style="font-size: 0.95rem;">Calibrated Anomaly Detection</strong>
+                            <span style="font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 1rem; background: ${probColor}20; color: ${probColor}; font-weight: 600; border: 1px solid ${probColor}40;">
+                                P(anomaly) = ${prob}%
+                            </span>
+                        </div>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 0.5rem;">
+                            <div style="padding: 0.5rem; background: var(--surface); border-radius: 0.25rem; text-align: center;">
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Detection Confidence</div>
+                                <div style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">${conf}%</div>
+                            </div>
+                            <div style="padding: 0.5rem; background: var(--surface); border-radius: 0.25rem; text-align: center;">
+                                <div style="font-size: 0.75rem; color: var(--text-muted);">Raw IF Score</div>
+                                <div style="font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">${(cal.raw_score || 0).toFixed(3)}</div>
+                            </div>
+                        </div>
+                        <div>
+                            <strong style="font-size: 0.8rem; color: var(--text-muted);">Severity Distribution (Platt-calibrated):</strong>
+                            <div style="display: flex; height: 22px; border-radius: 0.25rem; overflow: hidden; margin-top: 0.4rem;">
+                                <div style="width: ${((sev.low || 0)*100).toFixed(0)}%; background: #10b981;" title="Low: ${((sev.low||0)*100).toFixed(1)}%"></div>
+                                <div style="width: ${((sev.medium || 0)*100).toFixed(0)}%; background: #f59e0b;" title="Medium: ${((sev.medium||0)*100).toFixed(1)}%"></div>
+                                <div style="width: ${((sev.high || 0)*100).toFixed(0)}%; background: #f97316;" title="High: ${((sev.high||0)*100).toFixed(1)}%"></div>
+                                <div style="width: ${((sev.critical || 0)*100).toFixed(0)}%; background: #ef4444;" title="Critical: ${((sev.critical||0)*100).toFixed(1)}%"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; font-size: 0.7rem; margin-top: 0.25rem; color: var(--text-muted);">
+                                <span><span style="display:inline-block;width:8px;height:8px;background:#10b981;border-radius:50%;margin-right:3px;"></span>Low ${((sev.low||0)*100).toFixed(0)}%</span>
+                                <span><span style="display:inline-block;width:8px;height:8px;background:#f59e0b;border-radius:50%;margin-right:3px;"></span>Med ${((sev.medium||0)*100).toFixed(0)}%</span>
+                                <span><span style="display:inline-block;width:8px;height:8px;background:#f97316;border-radius:50%;margin-right:3px;"></span>High ${((sev.high||0)*100).toFixed(0)}%</span>
+                                <span><span style="display:inline-block;width:8px;height:8px;background:#ef4444;border-radius:50%;margin-right:3px;"></span>Crit ${((sev.critical||0)*100).toFixed(0)}%</span>
+                            </div>
+                        </div>
+                    </div>`;
+            }
+
+            // Build full UQ display
+            const cpuHTML = uq ? renderMetricUQ(uq.cpu, 'CPU', '#3b82f6') : '';
+            const memHTML = uq ? renderMetricUQ(uq.memory, 'Memory', '#8b5cf6') : '';
+
+            // Summary badges
+            let summaryHTML = '';
+            if (summary) {
+                const fq = summary.forecast_quality || {};
+                summaryHTML = '<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap;">';
+                if (fq.cpu) {
+                    const qc = { good: '#10b981', limited: '#f59e0b', poor: '#ef4444' }[fq.cpu] || '#9ca3af';
+                    summaryHTML += '<span style="font-size: 0.75rem; padding: 0.2rem 0.6rem; border-radius: 1rem; background: ' + qc + '15; color: ' + qc + '; font-weight: 600; border: 1px solid ' + qc + '30;">CPU Model: ' + fq.cpu.toUpperCase() + '</span>';
+                }
+                if (fq.memory) {
+                    const qm = { good: '#10b981', limited: '#f59e0b', poor: '#ef4444' }[fq.memory] || '#9ca3af';
+                    summaryHTML += '<span style="font-size: 0.75rem; padding: 0.2rem 0.6rem; border-radius: 1rem; background: ' + qm + '15; color: ' + qm + '; font-weight: 600; border: 1px solid ' + qm + '30;">Memory Model: ' + fq.memory.toUpperCase() + '</span>';
+                }
+                if (summary.anomaly_probability !== undefined) {
+                    const ap = (summary.anomaly_probability * 100).toFixed(1);
+                    const ac = summary.anomaly_probability > 0.5 ? '#ef4444' : summary.anomaly_probability > 0.2 ? '#f59e0b' : '#10b981';
+                    summaryHTML += '<span style="font-size: 0.75rem; padding: 0.2rem 0.6rem; border-radius: 1rem; background: ' + ac + '15; color: ' + ac + '; font-weight: 600; border: 1px solid ' + ac + '30;">Anomaly P: ' + ap + '%</span>';
+                }
+                summaryHTML += '</div>';
+            }
+
+            container.innerHTML = summaryHTML + anomalySummaryHTML +
+                '<div class="d-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem;">' +
+                    '<div>' + (cpuHTML || '<div class="text-muted text-center" style="padding: 2rem;">No CPU UQ data</div>') + '</div>' +
+                    '<div>' + (memHTML || '<div class="text-muted text-center" style="padding: 2rem;">No Memory UQ data</div>') + '</div>' +
+                '</div>';
+        })
+        .catch(error => {
+            console.error('[UQ] Error loading uncertainty quantification:', error);
+            document.getElementById('uq-content').innerHTML = `
+                <div class="text-center text-muted" style="padding: 2rem;">
+                    <p>Failed to load uncertainty quantification data. Please try refreshing.</p>
+                </div>`;
         });
 }
 
@@ -396,24 +622,24 @@ function loadAlerts() {
 }
 
 function loadRecommendations() {
-    console.log('💡 Loading recommendations for server:', serverId);
+    console.log('[REC] Loading recommendations for server:', serverId);
     return fetch(`/api/monitoring/insights/${serverId}`, {
         credentials: 'same-origin'
     })
         .then(response => {
-            console.log('💡 Recommendations response status:', response.status);
-            console.log('💡 Recommendations response headers:', Object.fromEntries(response.headers.entries()));
+            console.log('[REC] Recommendations response status:', response.status);
+            console.log('[REC] Recommendations response headers:', Object.fromEntries(response.headers.entries()));
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
             return response.json();
         })
         .then(data => {
-            console.log('💡 Recommendations data received:', data);
+            console.log('[REC] Recommendations data received:', data);
             // Load regular recommendations
             const recommendationsContent = document.getElementById('recommendations-content');
             if (data.recommendations && data.recommendations.length > 0) {
-                console.log('💡 Found', data.recommendations.length, 'regular recommendations');
+                console.log('[REC] Found', data.recommendations.length, 'regular recommendations');
                 recommendationsContent.innerHTML = data.recommendations.map(rec => `
                     <div class="card" style="margin-bottom: 1rem;">
                         <div class="card-body">
@@ -424,7 +650,7 @@ function loadRecommendations() {
                     </div>
                 `).join('');
             } else {
-                console.log('💡 No regular recommendations found');
+                console.log('[REC] No regular recommendations found');
                 recommendationsContent.innerHTML = `
                     <div class="text-center text-muted">
                         <p>No recommendations available at this time.</p>
@@ -435,7 +661,7 @@ function loadRecommendations() {
             // Load RAG-enhanced recommendations
             const ragRecommendationsContent = document.getElementById('rag-recommendations-content');
             if (data.rag_recommendations && data.rag_recommendations.length > 0) {
-                console.log('💡 Found', data.rag_recommendations.length, 'RAG recommendations');
+                console.log('[REC] Found', data.rag_recommendations.length, 'RAG recommendations');
                 ragRecommendationsContent.innerHTML = data.rag_recommendations.map(rec => `
                     <div class="card" style="margin-bottom: 1rem; border-left: 4px solid var(--primary-color);">
                         <div class="card-body">
@@ -453,7 +679,7 @@ function loadRecommendations() {
                     </div>
                 `).join('');
             } else {
-                console.log('💡 No RAG recommendations found');
+                console.log('[REC] No RAG recommendations found');
                 ragRecommendationsContent.innerHTML = `
                     <div class="text-center text-muted">
                         <p>No RAG recommendations available at this time.</p>
@@ -462,7 +688,7 @@ function loadRecommendations() {
             }
         })
         .catch(error => {
-            console.error('💡 Error loading recommendations:', error);
+            console.error('[REC] Error loading recommendations:', error);
             // Show error state instead of demo data
             document.getElementById('recommendations-content').innerHTML = `
                 <div class="text-center text-muted">
@@ -750,12 +976,12 @@ function getAlertIcon(type) {
 
 // Debug function to test authentication
 function debugAuthentication() {
-    console.log('🔐 === AUTHENTICATION DEBUG ===');
-    console.log('🔐 Server ID:', serverId);
-    console.log('🔐 Current URL:', window.location.href);
-    console.log('🔐 Document cookies:', document.cookie);
-    console.log('🔐 Session storage:', sessionStorage);
-    console.log('🔐 Local storage:', localStorage);
+    console.log('[AUTH] === AUTHENTICATION DEBUG ===');
+    console.log('[AUTH] Server ID:', serverId);
+    console.log('[AUTH] Current URL:', window.location.href);
+    console.log('[AUTH] Document cookies:', document.cookie);
+    console.log('[AUTH] Session storage:', sessionStorage);
+    console.log('[AUTH] Local storage:', localStorage);
     
     // Test a simple API call
     fetch('/api/monitoring/health/' + serverId, {
@@ -763,15 +989,15 @@ function debugAuthentication() {
         method: 'GET'
     })
     .then(response => {
-        console.log('🔐 Test API response status:', response.status);
-        console.log('🔐 Test API response headers:', Object.fromEntries(response.headers.entries()));
+        console.log('[AUTH] Test API response status:', response.status);
+        console.log('[AUTH] Test API response headers:', Object.fromEntries(response.headers.entries()));
         return response.text();
     })
     .then(text => {
-        console.log('🔐 Test API response body:', text);
+        console.log('[AUTH] Test API response body:', text);
     })
     .catch(error => {
-        console.error('🔐 Test API error:', error);
+        console.error('[AUTH] Test API error:', error);
     });
 }
 
@@ -780,12 +1006,12 @@ window.debugAuthentication = debugAuthentication;
 
 // Load monitoring data on page load
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('🔍 Monitoring Dashboard Debug Info:');
-    console.log('📊 Server ID:', serverId);
-    console.log('🌐 Current URL:', window.location.href);
-    console.log('🍪 Document cookies:', document.cookie);
-    console.log('📡 About to call refreshMetrics()...');
-    console.log('🔧 To debug authentication, run: debugAuthentication()');
+    console.log('[DEBUG] Monitoring Dashboard Debug Info:');
+    console.log('[DATA] Server ID:', serverId);
+    console.log('[URL] Current URL:', window.location.href);
+    console.log('[AUTH] Document cookies:', document.cookie);
+    console.log('[NET] About to call refreshMetrics()...');
+    console.log('[TIP] To debug authentication, run: debugAuthentication()');
     refreshMetrics();
 });
 </script>
