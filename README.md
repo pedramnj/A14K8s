@@ -613,6 +613,36 @@ cd netpress-integration
 ./run_benchmark.sh
 ```
 
+### Reproducible Autoscaling Evaluation (CrownLabs)
+
+Use the same target deployment and fixed protocol to make runs comparable:
+
+```bash
+# 1) Multi-run benchmark (writes aggregated mean/std/95% CI)
+python3 autoscaling_native_comparison.py \
+  --deployment test-app-autoscaling \
+  --namespace ai4k8s-test \
+  --min-replicas 2 \
+  --max-replicas 8 \
+  --timeout 60 \
+  --runs 10 \
+  --warmup 15 \
+  --cooldown 15 \
+  --seed-base 42 \
+  --sla-latency-threshold 0.5 \
+  --output thesis_reports/hpa_vpa_comparison_agg.json
+
+# 2) Generate paper-ready vector figures (uses aggregated JSON when present)
+python3 generate_thesis_evaluation_plots.py \
+  --input thesis_reports/hpa_vpa_comparison_agg.json
+```
+
+Assumptions for reproducibility:
+- Kubernetes cluster reachable from the runner host (`kubectl` works).
+- Metrics API available.
+- Test workload exists in `ai4k8s-test` namespace.
+- HPA/VPA CRDs and permissions available for create/delete checks.
+
 ---
 
 ## 📚 Documentation

@@ -21,36 +21,17 @@ Thesis: AI Agent for Kubernetes Management
 import json
 import os
 import logging
-import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import hashlib
 import re
+from logging_utils import get_app_logger
 
-# Configure logger first (before using it)
-logger = logging.getLogger(__name__)
-if not logger.handlers:  # Only configure if not already configured
-    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # Console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.WARNING)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    # File handler - use dynamic path based on current working directory
-    try:
-        import os
-        log_dir = os.path.expanduser('~/ai4k8s')
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, 'llm_advisor.log')
-        file_handler = logging.FileHandler(log_file, mode='a')
-        file_handler.setLevel(logging.WARNING)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        # If file logging fails, continue with console only
-        logger.warning(f"Could not set up file logging: {e}")
+logger = get_app_logger(
+    __name__,
+    level=logging.WARNING,
+    log_file=os.path.expanduser("~/ai4k8s/llm_advisor.log"),
+)
 
 # Try OpenAI-compatible client first (for GPT OSS), fallback to Groq
 try:
@@ -74,31 +55,6 @@ try:
 except ImportError:
     MCDA_AVAILABLE = False
     logger.warning("MCDA optimizer not available")
-
-# Configure logger with both file and console handlers
-logger = logging.getLogger(__name__)
-if not logger.handlers:  # Only configure if not already configured
-    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # Console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.WARNING)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    # File handler - use dynamic path based on current working directory
-    try:
-        import os
-        log_dir = os.path.expanduser('~/ai4k8s')
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, 'llm_advisor.log')
-        file_handler = logging.FileHandler(log_file, mode='a')
-        file_handler.setLevel(logging.WARNING)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        # If file logging fails, continue with console only
-        logger.warning(f"Could not set up file logging: {e}")
 
 class LLMAutoscalingAdvisor:
     """LLM-powered autoscaling advisor using GPT OSS (primary) or Groq (fallback)"""
