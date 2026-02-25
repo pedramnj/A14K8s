@@ -10,6 +10,9 @@ This script is designed for thesis experiments and produces JSON results with:
 
 import argparse
 import json
+import math
+import random
+import statistics
 import subprocess
 import time
 from datetime import datetime
@@ -22,11 +25,23 @@ from vpa_engine import VerticalPodAutoscaler
 
 
 class AutoscalingComparisonRunner:
-    def __init__(self, deployment: str, namespace: str, min_replicas: int, max_replicas: int):
+    def __init__(
+        self,
+        deployment: str,
+        namespace: str,
+        min_replicas: int,
+        max_replicas: int,
+        warmup_s: int = 15,
+        cooldown_s: int = 15,
+        seed_base: int = 42,
+    ):
         self.deployment = deployment
         self.namespace = namespace
         self.min_replicas = min_replicas
         self.max_replicas = max_replicas
+        self.warmup_s = warmup_s
+        self.cooldown_s = cooldown_s
+        self.seed_base = seed_base
 
         self.hpa = HorizontalPodAutoscaler()
         self.vpa = VerticalPodAutoscaler()
@@ -219,6 +234,101 @@ class AutoscalingComparisonRunner:
             "cpu_request_per_pod_m": cpu_request_m,
             "avg_replicas": round(avg_replicas, 3),
             "avg_requested_vcpu": round(avg_requested_vcpu, 3),
+        }
+
+    def _sleep_if_needed(self, seconds: int) -> None:
+        if seconds > 0:
+            time.sleep(seconds)
+
+    def _cluster_context(self) -> str:
+        res = self._run("kubectl config current-context", timeout=10)
+        if res.get("success") and res.get("stdout"):
+            return res["stdout"].splitlines()[0]
+        return "unknown"
+
+    def _extract_metric(self, method_result: Dict[str, Any], metric_path: str) -> Optional[float]:
+        current: Any = method_result
+        for part in metric_path.split("."):
+            if not isinstance(current, dict) or part not in current:
+                return None
+            current = current.get(part)
+        if current is None:
+            return None
+        try:
+            return float(current)
+        except (TypeError, ValueError):
+            return None
+
+    def _ci_95(self, values: List[float]) -> Dict[str, Optional[float]]:
+        if not values:
+            return {
+                "n": 0,
+                "mean": None,
+                "std": None,
+                "margin_error": None,
+                "ci_lower": None,
+                "ci_upper": None,
+            }
+        n = len(values)
+        mean_val = statistics.mean(values)
+        std_val = statistics.stdev(values) if n > 1 else 0.0
+        margin_error = 1.96 * (std_val / math.sqrt(n)) if n > 1 else 0.0
+        return {
+            "n": n,
+            "mean": round(mean_val, 4),
+            "std": round(std_val, 4),
+            "margin_error": round(margin_error, 4),
+            "ci_lower": round(mean_val - margin_error, 4),
+            "ci_upper": round(mean_val + margin_error, 4),
+        }
+
+    def _aggregate_method_runs(self, runs: List[Dict[str, Any]], metric_map: Dict[str, str]) -> Dict[str, Any]:
+        successful = [r for r in runs if r.get("success")]
+        aggregated: Dict[str, Any] = {
+            "total_runs": len(runs),
+            "successful_runs": len(successful),
+            "success_rate_pct": round((len(successful) / len(runs)) * 100.0, 2) if runs else 0.0,
+            "metrics": {},
+        }
+        for out_name, metric_path in metric_map.items():
+            values: List[float] = []
+            for run in successful:
+                value = self._extract_metric(run, metric_path)
+                if value is not None:
+                    values.append(value)
+            ci = self._ci_95(values)
+            ci["values"] = [round(v, 4) for v in values]
+            aggregated["metrics"][out_name] = ci
+        return aggregated
+
+    def _pre_method_setup(self) -> Dict[str, Any]:
+        self._reset_resource_baseline()
+        self._set_cpu_load_percent(30)
+        self._set_replicas(self.min_replicas)
+        rollout_ok = self._wait_rollout()
+        dep_replicas = self._get_deployment_replicas()
+        _ = self.hpa.delete_hpa(f"{self.deployment}-hpa", self.namespace)
+        _ = self.vpa.delete_vpa(f"{self.deployment}-vpa", self.namespace)
+        self._sleep_if_needed(self.warmup_s)
+        return {
+            "rollout_ok": rollout_ok,
+            "deployment_replicas": dep_replicas,
+            "expected_min_replicas": self.min_replicas,
+            "baseline_ok": rollout_ok and dep_replicas == self.min_replicas,
+        }
+
+    def _post_method_cleanup(self) -> Dict[str, Any]:
+        _ = self.hpa.delete_hpa(f"{self.deployment}-hpa", self.namespace)
+        _ = self.vpa.delete_vpa(f"{self.deployment}-vpa", self.namespace)
+        self._set_cpu_load_percent(30)
+        self._set_replicas(self.min_replicas)
+        rollout_ok = self._wait_rollout()
+        self._sleep_if_needed(self.cooldown_s)
+        dep_replicas = self._get_deployment_replicas()
+        return {
+            "rollout_ok": rollout_ok,
+            "deployment_replicas_after_cleanup": dep_replicas,
+            "cleanup_ok": rollout_ok and dep_replicas == self.min_replicas,
         }
 
     def run_native_hpa(self, timeout_s: int = 240, sla_latency_s: float = 0.5) -> Dict[str, Any]:
@@ -452,7 +562,7 @@ class AutoscalingComparisonRunner:
             self._set_cpu_load_percent(30)
             self._wait_rollout()
 
-    def run_all(self, timeout_s: int, sla_latency_s: float) -> Dict[str, Any]:
+    def run_all(self, timeout_s: int, sla_latency_s: float, runs: int) -> Dict[str, Any]:
         # Basic pre-check.
         dep = self.hpa.get_deployment_replicas(self.deployment, self.namespace)
         if not dep.get("success"):
@@ -461,6 +571,53 @@ class AutoscalingComparisonRunner:
                 "error": f"Deployment {self.namespace}/{self.deployment} not found",
                 "details": dep,
             }
+
+        hpa_runs: List[Dict[str, Any]] = []
+        vpa_runs: List[Dict[str, Any]] = []
+        autosage_runs: List[Dict[str, Any]] = []
+
+        for run_idx in range(runs):
+            run_seed = self.seed_base + run_idx
+            random.seed(run_seed)
+            run_meta = {
+                "run_id": run_idx + 1,
+                "seed": run_seed,
+                "started_at": datetime.utcnow().isoformat() + "Z",
+                "cluster_context": self._cluster_context(),
+            }
+
+            pre_hpa = self._pre_method_setup()
+            hpa_res = self.run_native_hpa(timeout_s=timeout_s, sla_latency_s=sla_latency_s)
+            post_hpa = self._post_method_cleanup()
+            hpa_runs.append(
+                {
+                    **hpa_res,
+                    "run_metadata": run_meta,
+                    "fairness_checks": {"pre": pre_hpa, "post": post_hpa},
+                }
+            )
+
+            pre_vpa = self._pre_method_setup()
+            vpa_res = self.run_native_vpa(timeout_s=timeout_s, sla_latency_s=sla_latency_s)
+            post_vpa = self._post_method_cleanup()
+            vpa_runs.append(
+                {
+                    **vpa_res,
+                    "run_metadata": run_meta,
+                    "fairness_checks": {"pre": pre_vpa, "post": post_vpa},
+                }
+            )
+
+            pre_as = self._pre_method_setup()
+            autosage_res = self.run_autosage(timeout_s=timeout_s, sla_latency_s=sla_latency_s)
+            post_as = self._post_method_cleanup()
+            autosage_runs.append(
+                {
+                    **autosage_res,
+                    "run_metadata": run_meta,
+                    "fairness_checks": {"pre": pre_as, "post": post_as},
+                }
+            )
 
         results = {
             "success": True,
@@ -471,13 +628,56 @@ class AutoscalingComparisonRunner:
                 "min_replicas": self.min_replicas,
                 "max_replicas": self.max_replicas,
             },
+            "experiment": {
+                "runs": runs,
+                "timeout_s_per_method": timeout_s,
+                "warmup_s": self.warmup_s,
+                "cooldown_s": self.cooldown_s,
+                "seed_base": self.seed_base,
+                "cluster_context": self._cluster_context(),
+            },
             "sla_policy": {
                 "latency_threshold_s": sla_latency_s,
                 "violation_definition": "HTTP status >= 400 or latency above threshold",
             },
-            "native_hpa": self.run_native_hpa(timeout_s=timeout_s, sla_latency_s=sla_latency_s),
-            "native_vpa": self.run_native_vpa(timeout_s=timeout_s, sla_latency_s=sla_latency_s),
-            "autosage": self.run_autosage(timeout_s=timeout_s, sla_latency_s=sla_latency_s),
+            "native_hpa_runs": hpa_runs,
+            "native_vpa_runs": vpa_runs,
+            "autosage_runs": autosage_runs,
+            "native_hpa": hpa_runs[-1] if hpa_runs else {},
+            "native_vpa": vpa_runs[-1] if vpa_runs else {},
+            "autosage": autosage_runs[-1] if autosage_runs else {},
+            "aggregated": {
+                "native_hpa": self._aggregate_method_runs(
+                    hpa_runs,
+                    {
+                        "provisioning_latency_s": "create_latency_s",
+                        "decision_reaction_latency_s": "first_scale_up_latency_s",
+                        "p95_latency_s": "latency_sla.p95_s",
+                        "sla_violation_rate_pct": "latency_sla.sla_violation_rate_pct",
+                        "cost_proxy_avg_requested_vcpu": "cost_proxy.avg_requested_vcpu",
+                    },
+                ),
+                "native_vpa": self._aggregate_method_runs(
+                    vpa_runs,
+                    {
+                        "provisioning_latency_s": "create_latency_s",
+                        "decision_reaction_latency_s": "first_recommendation_latency_s",
+                        "p95_latency_s": "latency_sla.p95_s",
+                        "sla_violation_rate_pct": "latency_sla.sla_violation_rate_pct",
+                        "cost_proxy_avg_requested_vcpu": "cost_proxy.avg_requested_vcpu",
+                    },
+                ),
+                "autosage": self._aggregate_method_runs(
+                    autosage_runs,
+                    {
+                        "decision_reaction_latency_s": "recommendation_latency_s",
+                        "first_applied_change_latency_s": "first_replica_change_latency_s",
+                        "p95_latency_s": "latency_sla.p95_s",
+                        "sla_violation_rate_pct": "latency_sla.sla_violation_rate_pct",
+                        "cost_proxy_avg_requested_vcpu": "cost_proxy.avg_requested_vcpu",
+                    },
+                ),
+            },
         }
         return results
 
@@ -489,6 +689,10 @@ def main() -> None:
     parser.add_argument("--min-replicas", type=int, default=2)
     parser.add_argument("--max-replicas", type=int, default=8)
     parser.add_argument("--timeout", type=int, default=180, help="Per-test timeout in seconds")
+    parser.add_argument("--runs", type=int, default=10, help="Number of repeated runs per method")
+    parser.add_argument("--warmup", type=int, default=15, help="Warm-up time before each method run (seconds)")
+    parser.add_argument("--cooldown", type=int, default=15, help="Cooldown time after each method run (seconds)")
+    parser.add_argument("--seed-base", type=int, default=42, help="Base seed used to tag repeated runs")
     parser.add_argument(
         "--sla-latency-threshold",
         type=float,
@@ -506,8 +710,11 @@ def main() -> None:
         namespace=args.namespace,
         min_replicas=args.min_replicas,
         max_replicas=args.max_replicas,
+        warmup_s=args.warmup,
+        cooldown_s=args.cooldown,
+        seed_base=args.seed_base,
     )
-    results = runner.run_all(timeout_s=args.timeout, sla_latency_s=args.sla_latency_threshold)
+    results = runner.run_all(timeout_s=args.timeout, sla_latency_s=args.sla_latency_threshold, runs=args.runs)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
