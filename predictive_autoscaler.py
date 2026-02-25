@@ -11,7 +11,6 @@ Thesis: AI Agent for Kubernetes Management
 """
 
 import logging
-import sys
 import json
 import os
 import subprocess
@@ -25,26 +24,14 @@ from predictive_monitoring import (
 from autoscaling_engine import HorizontalPodAutoscaler
 from llm_autoscaling_advisor import LLMAutoscalingAdvisor
 from mcda_optimizer import MCDAAutoscalingOptimizer
+from logging_utils import get_app_logger
+from scaling_decision import ScalingDecision
 
-logger = logging.getLogger(__name__)
-if not logger.handlers:  # Only configure if not already configured
-    logger.setLevel(logging.WARNING)  # Set to WARNING to see our debug messages
-    # Create formatter
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # Console handler (stderr)
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.WARNING)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    # File handler
-    try:
-        file_handler = logging.FileHandler('/home1/pedramnj/ai4k8s/predictive_autoscaler.log', mode='a')
-        file_handler.setLevel(logging.WARNING)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        # If file logging fails, continue with console only
-        logger.warning(f"Could not set up file logging: {e}")
+logger = get_app_logger(
+    __name__,
+    level=logging.WARNING,
+    log_file=os.path.expanduser("~/ai4k8s/predictive_autoscaler.log"),
+)
 
 class PredictiveAutoscaler:
     """Predictive autoscaling based on ML forecasts"""
@@ -331,16 +318,23 @@ class PredictiveAutoscaler:
             # Use LLM recommendation if available, otherwise fallback to rule-based
             if llm_recommendation:
                 scaling_type = llm_recommendation.get('scaling_type', 'hpa')  # Default to HPA for backward compatibility
-                action = {
-                    'action': llm_recommendation.get('action', 'none'),
-                    'scaling_type': scaling_type,  # 'hpa', 'vpa', 'both', or 'maintain'
-                    'target_replicas': llm_recommendation.get('target_replicas', current_replicas) if scaling_type in ['hpa', 'both'] else None,
-                    'target_cpu': llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
-                    'target_memory': llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
-                    'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
-                    'confidence': llm_recommendation.get('confidence', 0.5),
-                    'llm_recommendation': llm_recommendation
-                }
+                decision = ScalingDecision(
+                    action=llm_recommendation.get('action', 'none'),
+                    scaling_type=scaling_type,
+                    target_replicas=(
+                        llm_recommendation.get('target_replicas', current_replicas)
+                        if scaling_type in ['hpa', 'both']
+                        else None
+                    ),
+                    target_cpu=llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
+                    target_memory=llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
+                    reason=llm_recommendation.get('reasoning', 'LLM-based recommendation'),
+                    confidence=llm_recommendation.get('confidence', 0.5),
+                    source='llm',
+                    metadata={'llm_recommendation': llm_recommendation},
+                )
+                action = decision.to_dict()
+                action['llm_recommendation'] = llm_recommendation
                 if scaling_type == 'vpa':
                     logger.info(f"🤖 Using LLM recommendation: {action['action']} (VPA) - CPU: {action.get('target_cpu')}, Memory: {action.get('target_memory')}")
                 elif scaling_type == 'both':
@@ -1583,16 +1577,19 @@ class PredictiveAutoscaler:
                     print(f"🔍🔍🔍 FINAL VALIDATION RESULT: target_replicas={target_replicas_raw} (min={min_replicas}, max={max_replicas})")
                     logger.warning(f"🔍🔍🔍 FINAL VALIDATION: target_replicas={target_replicas_raw} (min={min_replicas}, max={max_replicas})")
                 
-                action = {
-                    'action': llm_recommendation.get('action', 'none'),
-                    'scaling_type': scaling_type,  # 'hpa', 'vpa', 'both', or 'maintain'
-                    'target_replicas': target_replicas_raw,
-                    'target_cpu': llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
-                    'target_memory': llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
-                    'reason': llm_recommendation.get('reasoning', 'LLM-based recommendation'),
-                    'confidence': llm_recommendation.get('confidence', 0.5),
-                    'llm_recommendation': llm_recommendation
-                }
+                decision = ScalingDecision(
+                    action=llm_recommendation.get('action', 'none'),
+                    scaling_type=scaling_type,
+                    target_replicas=target_replicas_raw,
+                    target_cpu=llm_recommendation.get('target_cpu') if scaling_type in ['vpa', 'both'] else None,
+                    target_memory=llm_recommendation.get('target_memory') if scaling_type in ['vpa', 'both'] else None,
+                    reason=llm_recommendation.get('reasoning', 'LLM-based recommendation'),
+                    confidence=llm_recommendation.get('confidence', 0.5),
+                    source='llm',
+                    metadata={'llm_recommendation': llm_recommendation},
+                )
+                action = decision.to_dict()
+                action['llm_recommendation'] = llm_recommendation
             else:
                 # Fallback to rule-based recommendation - USE ACTUAL min/max from annotations!
                 print(f"🔍🔍🔍 Using RULE-BASED FALLBACK with min={min_replicas}, max={max_replicas}, current_replicas={current_replicas}")

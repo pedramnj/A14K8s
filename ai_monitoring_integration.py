@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import asdict
 from collections import deque
+from logging_utils import get_app_logger
 
 from predictive_monitoring import (
     PredictiveMonitoringSystem, 
@@ -29,9 +30,7 @@ from predictive_monitoring import (
 from k8s_metrics_collector import KubernetesMetricsCollector
 from kubernetes_rag import KubernetesRAG
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = get_app_logger(__name__, level=logging.INFO)
 
 class AIMonitoringIntegration:
     """Integrates AI monitoring with the web application"""

@@ -22,6 +22,7 @@ from scheduled_autoscaler import ScheduledAutoscaler
 from predictive_monitoring import PredictiveMonitoringSystem
 from ai_monitoring_integration import AIMonitoringIntegration
 from llm_autoscaling_advisor import LLMAutoscalingAdvisor
+from config import PREDICTIVE_SCALING_INTERVAL_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class AutoscalingIntegration:
         
         # Start background thread for periodic predictive scaling
         self.predictive_scaling_thread = None
-        self.predictive_scaling_interval = 300  # 5 minutes (matches LLM rate limit)
+        self.predictive_scaling_interval = PREDICTIVE_SCALING_INTERVAL_SECONDS
         self.predictive_scaling_running = False
         self._start_predictive_scaling_loop()
         

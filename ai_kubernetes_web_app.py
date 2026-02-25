@@ -19,6 +19,7 @@ import threading
 from typing import Any, List, Dict, Optional
 from mcp_client import call_mcp_tool
 from datetime import datetime, timedelta
+from config import JOB_EXPIRY_SECONDS, MCP_MESSAGE_ENDPOINT
 
 # Import predictive monitoring components
 try:
@@ -84,7 +85,6 @@ db = SQLAlchemy(app)
 # In-memory job store: job_id -> {status, result, error, created_at, updated_at}
 recommendation_jobs = {}
 job_lock = threading.Lock()
-JOB_EXPIRY_SECONDS = 300  # 5 minutes
 
 def cleanup_old_jobs():
     """Remove jobs older than JOB_EXPIRY_SECONDS"""
@@ -120,7 +120,7 @@ def inject_current_year():
 # AI-Powered MCP-based Natural Language Processor
 class AIPoweredMCPKubernetesProcessor:
     def __init__(self):
-        self.mcp_server_url = "http://172.18.0.1:5002/message"
+        self.mcp_server_url = MCP_MESSAGE_ENDPOINT
         self.available_tools = None
         self.use_ai = False
         self.anthropic = None
