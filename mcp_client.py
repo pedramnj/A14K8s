@@ -6,12 +6,13 @@ import sys
 import requests
 from typing import Optional, Dict, Any
 from contextlib import AsyncExitStack
+from config import MCP_SERVER_BASE_URL, MCP_HTTP_ENDPOINT
 
 class MCPKubernetesClient:
     def __init__(self):
         self.available_tools = {}
-        self.server_url = "http://127.0.0.1:5002"
-        self.endpoint = "/mcp"
+        self.server_url = MCP_SERVER_BASE_URL
+        self.endpoint = MCP_HTTP_ENDPOINT
         
     async def connect_to_server(self, server_script_path: str = None):
         try:
