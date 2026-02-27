@@ -14,6 +14,7 @@ import logging
 import json
 import os
 import subprocess
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from predictive_monitoring import (
@@ -76,6 +77,27 @@ class PredictiveAutoscaler:
                          state_management: Optional[str] = None) -> Dict[str, Any]:
         """Predict future load and scale proactively"""
         try:
+            decision_start = time.time()
+            stage_timing = {
+                'metrics_collection_s': 0.0,
+                'forecast_s': 0.0,
+                'llm_inference_s': 0.0,
+                'mcda_validation_s': 0.0,
+                'actuation_s': 0.0,
+            }
+
+            def _with_timing(payload: Dict[str, Any]) -> Dict[str, Any]:
+                total_decision_s = max(0.0, time.time() - decision_start)
+                payload['timing_breakdown'] = {
+                    'metrics_collection_s': round(stage_timing['metrics_collection_s'], 4),
+                    'forecast_s': round(stage_timing['forecast_s'], 4),
+                    'llm_inference_s': round(stage_timing['llm_inference_s'], 4),
+                    'mcda_validation_s': round(stage_timing['mcda_validation_s'], 4),
+                    'actuation_s': round(stage_timing['actuation_s'], 4),
+                    'total_decision_s': round(total_decision_s, 4),
+                }
+                return payload
+
             # Trim deployment name and namespace to remove any whitespace
             deployment_name = deployment_name.strip()
             namespace = namespace.strip()
@@ -111,10 +133,10 @@ class PredictiveAutoscaler:
             )
             if not annot_result.get('success'):
                 logger.error(f"❌ Failed to add annotations: {annot_result.get('error')}")
-                return {
+                return _with_timing({
                     'success': False,
                     'error': f"Failed to set predictive autoscaling annotations: {annot_result.get('error')}"
-                }
+                })
             else:
                 logger.info(f"✅ Successfully set annotations: {list(annotations.keys())}")
             
@@ -161,28 +183,32 @@ class PredictiveAutoscaler:
             # Get current deployment status
             deployment_status = self.hpa_manager.get_deployment_replicas(deployment_name, namespace)
             if not deployment_status['success']:
-                return {
+                return _with_timing({
                     'success': False,
                     'error': f'Deployment {deployment_name} not found',
                     'action': 'none'
-                }
+                })
             
             current_replicas = deployment_status['replicas']
             
             # Get deployment-specific metrics
+            metrics_start = time.time()
             deployment_metrics = self._get_deployment_metrics(deployment_name, namespace)
+            stage_timing['metrics_collection_s'] = max(0.0, time.time() - metrics_start)
             cpu_current = deployment_metrics.get('cpu_usage', 0)
             memory_current = deployment_metrics.get('memory_usage', 0)
             
             logger.info(f"Deployment metrics for {deployment_name}: CPU={cpu_current}%, Memory={memory_current}%")
             
             # Get forecasts (use deployment-specific current values if available)
+            forecast_start = time.time()
             cpu_forecast = self.monitoring_system.forecaster.forecast_cpu_usage(
                 hours_ahead=self.prediction_horizon
             )
             memory_forecast = self.monitoring_system.forecaster.forecast_memory_usage(
                 hours_ahead=self.prediction_horizon
             )
+            stage_timing['forecast_s'] = max(0.0, time.time() - forecast_start)
             
             # Override current values with deployment-specific metrics if available
             if cpu_current > 0:
@@ -285,6 +311,9 @@ class PredictiveAutoscaler:
                         max_replicas=max_replicas,
                         hpa_manager=self.hpa_manager
                     )
+                    llm_timing = llm_result.get('timing_breakdown', {}) if isinstance(llm_result, dict) else {}
+                    stage_timing['llm_inference_s'] = float(llm_timing.get('llm_inference_s', 0.0) or 0.0)
+                    stage_timing['mcda_validation_s'] = float(llm_timing.get('mcda_validation_s', 0.0) or 0.0)
                     
                     # Additional validation: Ensure LLM recommendation respects min/max replicas
                     if llm_result.get('success') and llm_result.get('recommendation'):
@@ -390,6 +419,7 @@ class PredictiveAutoscaler:
                         cpu_limit = action['target_cpu']
                         memory_limit = action['target_memory']
                     
+                    vpa_actuation_start = time.time()
                     patch_result = self.vpa_manager.patch_deployment_resources(
                         deployment_name, namespace,
                         cpu_request=action['target_cpu'],
@@ -397,6 +427,7 @@ class PredictiveAutoscaler:
                         cpu_limit=cpu_limit,
                         memory_limit=memory_limit
                     )
+                    stage_timing['actuation_s'] += max(0.0, time.time() - vpa_actuation_start)
                     
                     if patch_result.get('success'):
                         logger.info(f"✅ Predictive Autoscaling patched deployment {deployment_name} resources: CPU={action['target_cpu']}, Memory={action['target_memory']} (direct)")
@@ -425,12 +456,14 @@ class PredictiveAutoscaler:
                                      f"Predictive Autoscaling will scale directly, but HPA may override it.")
                     
                     # Scale directly (Predictive Autoscaling controls scaling independently)
+                    actuation_start = time.time()
                     scale_result = self._scale_deployment(deployment_name, namespace, required_replicas)
+                    stage_timing['actuation_s'] += max(0.0, time.time() - actuation_start)
                     
                     if not scale_result.get('success'):
                         logger.warning(f"⚠️ Failed to scale up: {scale_result.get('error')}")
                     
-                    return {
+                    return _with_timing({
                         'success': True,
                         'action': 'scale_up',
                         'current_replicas': current_replicas,
@@ -448,7 +481,7 @@ class PredictiveAutoscaler:
                                 'trend': memory_forecast.trend
                             }
                         }
-                    }
+                    })
             
             elif (scaling_type == 'hpa' or scaling_type == 'both') and action['action'] == 'scale_down':
                 required_replicas = action.get('target_replicas')
@@ -468,12 +501,14 @@ class PredictiveAutoscaler:
                                      f"Predictive Autoscaling will scale directly, but HPA may override it.")
                     
                     # Scale directly (Predictive Autoscaling controls scaling)
+                    actuation_start = time.time()
                     scale_result = self._scale_deployment(deployment_name, namespace, required_replicas)
+                    stage_timing['actuation_s'] += max(0.0, time.time() - actuation_start)
                     
                     if not scale_result.get('success'):
                         logger.warning(f"⚠️ Failed to scale down: {scale_result.get('error')}")
                     
-                    return {
+                    return _with_timing({
                         'success': True,
                         'action': 'scale_down',
                         'current_replicas': current_replicas,
@@ -491,11 +526,11 @@ class PredictiveAutoscaler:
                                 'trend': memory_forecast.trend
                             }
                         }
-                    }
+                    })
             
             elif action['action'] == 'at_max':
                 # Already at max replicas but high usage detected
-                return {
+                return _with_timing({
                     'success': True,
                     'action': 'at_max',
                     'current_replicas': current_replicas,
@@ -514,14 +549,14 @@ class PredictiveAutoscaler:
                             'trend': memory_forecast.trend
                         }
                     }
-                }
+                })
             else:
                 # CRITICAL: Cap target_replicas to max_replicas even for 'none' action
                 target_replicas_capped = min(current_replicas, max_replicas)
                 if target_replicas_capped != current_replicas:
                     logger.warning(f"🔍🔍🔍 PREDICT_AND_SCALE: Capping current_replicas={current_replicas} to max={max_replicas} for 'none' action")
                 
-                return {
+                return _with_timing({
                     'success': True,
                     'action': 'none',
                     'current_replicas': current_replicas,
@@ -539,18 +574,21 @@ class PredictiveAutoscaler:
                             'trend': memory_forecast.trend
                         }
                     }
-                }
+                })
                 
         except Exception as e:
             import traceback
             error_traceback = traceback.format_exc()
             logger.error(f"Error in predictive scaling: {e}")
             logger.error(f"Traceback: {error_traceback}")
-            return {
+            fallback_result = {
                 'success': False,
                 'error': str(e),
                 'action': 'none'
             }
+            if '_with_timing' in locals():
+                return _with_timing(fallback_result)
+            return fallback_result
     
     def _determine_scaling_action(self, predicted_cpu: float, predicted_memory: float,
                                   current_replicas: int, min_replicas: int, max_replicas: int) -> Dict[str, Any]:

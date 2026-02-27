@@ -21,6 +21,7 @@ Thesis: AI Agent for Kubernetes Management
 import json
 import os
 import logging
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import hashlib
@@ -86,6 +87,9 @@ class LLMAutoscalingAdvisor:
         self.provider = None  # 'gpt_oss' or 'groq'
         self.client = None
         self.model = None
+        self.mcda_profile = os.getenv("MCDA_PROFILE", "balanced")
+        self.mcda_agreement_threshold = float(os.getenv("MCDA_AGREEMENT_THRESHOLD", "0.15"))
+        self.enable_mcda_validation = os.getenv("AUTOSAGE_ENABLE_MCDA_VALIDATION", "1").strip().lower() not in {"0", "false", "no"}
         
         # Deterministic sampling parameters for consistent outputs
         self.temperature = 0.1  # Very low for deterministic outputs (was 0.3)
@@ -138,12 +142,18 @@ class LLMAutoscalingAdvisor:
 
         # Initialize MCDA optimizer for multi-criteria validation of LLM decisions
         self.mcda_optimizer = None
-        if MCDA_AVAILABLE:
+        if self.enable_mcda_validation and MCDA_AVAILABLE:
             try:
-                self.mcda_optimizer = MCDAAutoscalingOptimizer(profile='balanced')
-                logger.info("✅ MCDA optimizer initialized for LLM decision validation")
+                self.mcda_optimizer = MCDAAutoscalingOptimizer(profile=self.mcda_profile)
+                logger.info(
+                    "✅ MCDA optimizer initialized (profile=%s, agreement_threshold=%.3f)",
+                    self.mcda_profile,
+                    self.mcda_agreement_threshold,
+                )
             except Exception as e:
                 logger.warning(f"⚠️ Failed to initialize MCDA optimizer: {e}")
+        elif not self.enable_mcda_validation:
+            logger.info("MCDA validation disabled via AUTOSAGE_ENABLE_MCDA_VALIDATION")
 
     def _get_cache_key(self, deployment_name: str, namespace: str, 
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
@@ -219,11 +229,19 @@ class LLMAutoscalingAdvisor:
         Returns:
             Dict with LLM recommendation including action, reasoning, and confidence
         """
+        llm_inference_s = 0.0
+        mcda_validation_s = 0.0
+
         if not self.client:
             return {
                 'success': False,
                 'error': 'LLM advisor not available (no API key)',
-                'fallback': True
+                'fallback': True,
+                'timing_breakdown': {
+                    'llm_inference_s': llm_inference_s,
+                    'mcda_validation_s': mcda_validation_s,
+                    'llm_total_s': llm_inference_s + mcda_validation_s,
+                },
             }
         
         # CRITICAL: Detect state management FIRST (before cache check) to include in cache key
@@ -259,7 +277,20 @@ class LLMAutoscalingAdvisor:
                         'recommendation': cached['recommendation'],
                         'llm_model': cached.get('llm_model', self.model),
                         'timestamp': cached['timestamp'].isoformat(),
-                        'cached': True
+                        'cached': True,
+                        'timing_breakdown': {
+                            'llm_inference_s': 0.0,
+                            'mcda_validation_s': float(
+                                (cached.get('recommendation', {})
+                                 .get('mcda_validation', {})
+                                 .get('timing_s', 0.0)) or 0.0
+                            ),
+                            'llm_total_s': float(
+                                (cached.get('recommendation', {})
+                                 .get('mcda_validation', {})
+                                 .get('timing_s', 0.0)) or 0.0
+                            ),
+                        },
                     }
                 else:
                     # Cache expired, remove it
@@ -300,7 +331,20 @@ class LLMAutoscalingAdvisor:
                                 'llm_model': best_cache.get('llm_model', self.model),
                                 'timestamp': best_cache['timestamp'].isoformat(),
                                 'cached': True,
-                                'rate_limited': True  # Indicate this was rate-limited but we used cache
+                                'rate_limited': True,  # Indicate this was rate-limited but we used cache
+                                'timing_breakdown': {
+                                    'llm_inference_s': 0.0,
+                                    'mcda_validation_s': float(
+                                        (best_cache.get('recommendation', {})
+                                         .get('mcda_validation', {})
+                                         .get('timing_s', 0.0)) or 0.0
+                                    ),
+                                    'llm_total_s': float(
+                                        (best_cache.get('recommendation', {})
+                                         .get('mcda_validation', {})
+                                         .get('timing_s', 0.0)) or 0.0
+                                    ),
+                                },
                             }
                     
                     logger.info(f"⏸️ Skipping LLM call - only {time_since_last_call:.1f}s since last call (min: {self.min_llm_interval}s)")
@@ -309,7 +353,12 @@ class LLMAutoscalingAdvisor:
                         'success': False,
                         'error': f'LLM call rate-limited (last call {time_since_last_call:.1f}s ago, min interval {self.min_llm_interval}s)',
                         'fallback': True,
-                        'rate_limited': True
+                        'rate_limited': True,
+                        'timing_breakdown': {
+                            'llm_inference_s': 0.0,
+                            'mcda_validation_s': 0.0,
+                            'llm_total_s': 0.0,
+                        },
                     }
         
         try:
@@ -342,6 +391,7 @@ class LLMAutoscalingAdvisor:
             # Make LLM API call with deterministic parameters
             try:
                 import time
+                llm_call_start = time.time()
                 start_time = time.time()
                 
                 print(f"🔍🔍🔍 Making {provider_name} API call to {self.model}...")
@@ -519,6 +569,8 @@ class LLMAutoscalingAdvisor:
             
             # Parse LLM response
             llm_output = response_text if 'response_text' in locals() else response.choices[0].message.content
+            if 'llm_call_start' in locals():
+                llm_inference_s = max(0.0, time.time() - llm_call_start)
             logger.warning(f"🔍🔍🔍 LLM RAW RESPONSE (first 500 chars): {llm_output[:500]}...")
             provider_name = "GPT OSS" if self.provider == 'gpt_oss' else "Groq"
             logger.warning(f"🔍🔍🔍 LLM MODEL USED: {self.model} (Provider: {provider_name})")
@@ -528,6 +580,7 @@ class LLMAutoscalingAdvisor:
             # Pass min/max replicas for validation and context for state management check
             # Also pass deployment_name, namespace, and hpa_manager for fallback state detection in enforcement
             recommendation = self._parse_llm_response(llm_output, min_replicas, max_replicas, current_metrics, current_resources, context, deployment_name, namespace, effective_hpa_manager)
+            mcda_validation_s = float((recommendation.get('mcda_validation', {}) or {}).get('timing_s', 0.0) or 0.0)
             logger.warning(f"🔍🔍🔍 PARSED RECOMMENDATION: scaling_type={recommendation.get('scaling_type') if recommendation else None}, target_replicas={recommendation.get('target_replicas') if recommendation else None}")
             
             now = datetime.now()
@@ -536,7 +589,12 @@ class LLMAutoscalingAdvisor:
                 'recommendation': recommendation,
                 'llm_model': self.model,
                 'timestamp': now.isoformat(),
-                'cached': False
+                'cached': False,
+                'timing_breakdown': {
+                    'llm_inference_s': round(llm_inference_s, 4),
+                    'mcda_validation_s': round(mcda_validation_s, 4),
+                    'llm_total_s': round(llm_inference_s + mcda_validation_s, 4),
+                },
             }
             
             # Cache the result and track LLM call time
@@ -575,7 +633,12 @@ class LLMAutoscalingAdvisor:
             return {
                 'success': False,
                 'error': str(e),
-                'raw_response': llm_output if 'llm_output' in locals() else None
+                'raw_response': llm_output if 'llm_output' in locals() else None,
+                'timing_breakdown': {
+                    'llm_inference_s': round(llm_inference_s, 4),
+                    'mcda_validation_s': round(mcda_validation_s, 4),
+                    'llm_total_s': round(llm_inference_s + mcda_validation_s, 4),
+                },
             }
     
     def _parse_llm_response(self, llm_output: str, min_replicas: int = 1, max_replicas: int = 10,
@@ -1017,6 +1080,7 @@ class LLMAutoscalingAdvisor:
                 recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both'] and
                 recommendation.get('target_replicas') is not None):
             try:
+                mcda_validation_start = time.time()
                 llm_target = recommendation['target_replicas']
                 llm_action = recommendation.get('action', 'maintain')
                 current_reps = context.get('deployment', {}).get('current_replicas', 1) if context else 1
@@ -1040,7 +1104,8 @@ class LLMAutoscalingAdvisor:
                     min_replicas=min_replicas,
                     max_replicas=max_replicas,
                     metrics=mcda_metrics,
-                    forecast=mcda_forecast
+                    forecast=mcda_forecast,
+                    agreement_threshold=self.mcda_agreement_threshold,
                 )
 
                 # Attach MCDA validation data to recommendation
@@ -1053,7 +1118,8 @@ class LLMAutoscalingAdvisor:
                     'dominance_margin': validation['dominance_margin'],
                     'criteria_weights': validation['criteria_weights'],
                     'should_override': validation['should_override'],
-                    'validation_note': validation['validation_note']
+                    'validation_note': validation['validation_note'],
+                    'timing_s': round(max(0.0, time.time() - mcda_validation_start), 4),
                 }
 
                 if validation['should_override']:

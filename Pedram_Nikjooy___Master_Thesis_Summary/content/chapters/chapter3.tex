@@ -1,0 +1,31 @@
+\section*{Results and Conclusions}
+
+AutoSage was deployed on CrownLabs managing a test deployment with 2--9
+replicas. The end-to-end pipeline (collection, forecasting, LLM recommendation,
+MCDA validation) completes within 15--60\,s. The LLM correctly selects HPA for
+stateless and VPA for stateful workloads, with the enforcement layer catching
+reasoning contradictions. MCDA cross-validation confirms that LLM decisions
+generally align with formal optimisation; when divergence occurs, the override
+mechanism and score gap provide an auditable justification. Bootstrap intervals
+widen with the forecast horizon as expected, and Platt-calibrated anomaly
+probabilities replace binary flags with continuous, severity-graded alerts.
+
+We also implemented and executed a direct comparison against native
+autoscalers using a dedicated benchmark script
+(\texttt{autoscaling\_native\_comparison.py}) on CrownLabs. For fairness, each
+method started from the same baseline (2 replicas), then high CPU load was
+applied (\texttt{CPU\_LOAD\_PERCENT=95}) with in-cluster burst requests to
+\texttt{/cpu-load}. Native HPA showed \(0.208\)\,s setup latency and first
+scale-up after \(31.663\)\,s, reaching \(2 \rightarrow 8\) replicas; native VPA
+showed \(0.371\)\,s setup and first recommendation in \(10.432\)\,s. AutoSage
+required \(86.437\)\,s for recommendation generation (LLM+MCDA path), but once
+decided, applied scaling in \(0.256\)\,s and moved from \(2 \rightarrow 4\)
+replicas. This confirms the expected trade-off: native controllers react
+faster, while AutoSage adds deliberation to produce a more conservative and
+auditable decision.
+
+The work demonstrates that pairing LLM reasoning with MCDA validation and
+uncertainty quantification yields a transparent, auditable Kubernetes
+autoscaling system. Future directions include Prometheus integration for
+long-term metrics, reinforcement-learning tuning of MCDA weights, multi-cluster
+support, and SLA-aware scaling with latency and error-rate criteria.

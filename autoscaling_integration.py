@@ -13,6 +13,7 @@ Thesis: AI Agent for Kubernetes Management
 import logging
 import threading
 import time
+import os
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from autoscaling_engine import HorizontalPodAutoscaler
@@ -52,11 +53,12 @@ class AutoscalingIntegration:
         self.llm_advisor = LLMAutoscalingAdvisor()
         
         # Initialize autoscalers (with LLM support and VPA manager)
+        use_llm = os.getenv("AUTOSAGE_USE_LLM", "1").strip().lower() not in {"0", "false", "no"}
         self.predictive_autoscaler = PredictiveAutoscaler(
             self.monitoring_system,
             self.hpa_manager,
             vpa_manager=self.vpa_manager,  # Pass VPA manager for vertical scaling support
-            use_llm=True  # Enable LLM-based recommendations
+            use_llm=use_llm,
         )
         self.scheduled_autoscaler = ScheduledAutoscaler(self.monitoring_system, self.hpa_manager)
         
