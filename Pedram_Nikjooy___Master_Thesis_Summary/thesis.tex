@@ -1,0 +1,39 @@
+% !TEX encoding = UTF-8 Unicode
+% !TEX TS-program = pdflatex
+
+% toptesti document class
+\documentclass[%
+    a4paper, % not needed, by default it is a4paper, or also b5paper can be used
+    corpo=12pt, % dimension of basic font
+    % oneside is generally the way to go
+    twoside, % two side optimizes for two-face printing, having chapters open on the right (aka odd numbers), if you don't want blank pages put oneside here
+    stile=standard,
+    %evenboxes, % not needed, to put supervisors and candidate at the same level
+    tipotesi=magistrale,
+    numerazioneromana, % roman numbering for appendixes and preambles, up to Table of Contents
+    openright, % to force opening on the right for double-sided printing
+    cucitura=7mm, % for printing, 7mm should be enough
+    %dvipsnames, % for compatibility with xcolor, it does not work
+]{toptesi}
+
+\input{common/packages}
+
+\input{common/package_config}
+
+\input{common/new_commands}
+
+\input{common/thesis_info.tex}
+
+\input{common/font_config.tex}
+
+\begin{document}%\layout
+
+\english
+
+\input{common/config}
+
+\input{common/toptesi_config}
+
+\input{content/chapters.tex}
+
+\end{document}

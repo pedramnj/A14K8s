@@ -11,12 +11,14 @@ This script is designed for thesis experiments and produces JSON results with:
 import argparse
 import json
 import math
+import os
 import random
 import statistics
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional
 
 from autoscaling_engine import HorizontalPodAutoscaler
@@ -34,6 +36,10 @@ class AutoscalingComparisonRunner:
         warmup_s: int = 15,
         cooldown_s: int = 15,
         seed_base: int = 42,
+        mcda_profile: str = "balanced",
+        mcda_agreement_threshold: float = 0.15,
+        scenario: str = "short_burst",
+        autosage_profile: str = "full",
     ):
         self.deployment = deployment
         self.namespace = namespace
@@ -42,10 +48,15 @@ class AutoscalingComparisonRunner:
         self.warmup_s = warmup_s
         self.cooldown_s = cooldown_s
         self.seed_base = seed_base
+        self.mcda_profile = mcda_profile
+        self.mcda_agreement_threshold = mcda_agreement_threshold
+        self.scenario = scenario
+        self.autosage_profile = autosage_profile
 
         self.hpa = HorizontalPodAutoscaler()
         self.vpa = VerticalPodAutoscaler()
         self.integration: Optional[AutoscalingIntegration] = None
+        self._python_kubeconfig_path: Optional[str] = None
 
     def _run(self, cmd: str, timeout: int = 30) -> Dict[str, Any]:
         try:
@@ -119,6 +130,36 @@ class AutoscalingComparisonRunner:
             f"done; wait\""
         )
         return self._run(cmd, timeout=90)
+
+    def _apply_scenario_initial_load(self) -> None:
+        # Keep scenario setup deterministic across methods for fair comparison.
+        if self.scenario == "periodic_burst":
+            self._set_cpu_load_percent(75)
+            self._burst_http_load(20)
+        elif self.scenario == "sustained_drift":
+            self._set_cpu_load_percent(65)
+            self._burst_http_load(10)
+        else:
+            # short_burst baseline
+            self._set_cpu_load_percent(95)
+            self._burst_http_load(30)
+
+    def _apply_scenario_midtest_load(self, elapsed_s: float) -> None:
+        if self.scenario == "periodic_burst":
+            # Burst around 20s and 45s for a repeating stress pattern.
+            if 18 <= elapsed_s <= 24 or 43 <= elapsed_s <= 49:
+                self._burst_http_load(18)
+        elif self.scenario == "sustained_drift":
+            # Increase baseline pressure mid-test to emulate drift.
+            if 20 <= elapsed_s <= 28:
+                self._set_cpu_load_percent(80)
+            if 40 <= elapsed_s <= 50:
+                self._set_cpu_load_percent(90)
+                self._burst_http_load(12)
+        else:
+            # short_burst baseline
+            if 50 <= elapsed_s <= 65:
+                self._burst_http_load(20)
 
     def _get_cpu_request_m(self) -> int:
         # Use the first container CPU request as a simple cost proxy baseline.
@@ -246,6 +287,62 @@ class AutoscalingComparisonRunner:
             return res["stdout"].splitlines()[0]
         return "unknown"
 
+    def _ensure_python_kubeconfig(self) -> Optional[str]:
+        """
+        Create a kubeconfig file from the active kubectl context so Python client
+        and kubectl operate on the same cluster context.
+        """
+        if self._python_kubeconfig_path:
+            return self._python_kubeconfig_path
+
+        cfg = self._run("kubectl config view --raw -o json", timeout=20)
+        if not cfg.get("success") or not cfg.get("stdout"):
+            return None
+
+        tmp = NamedTemporaryFile(prefix="autosage_kubeconfig_", suffix=".json", delete=False)
+        tmp.write(cfg["stdout"].encode("utf-8"))
+        tmp.flush()
+        tmp.close()
+        self._python_kubeconfig_path = tmp.name
+        return self._python_kubeconfig_path
+
+    def _verify_realtime_metrics_source(self) -> Dict[str, Any]:
+        if not self.integration or not getattr(self.integration, "ai_integration", None):
+            return {"ok": False, "error": "ai_integration not initialized"}
+
+        ai = self.integration.ai_integration
+        collector = getattr(ai, "metrics_collector", None)
+        if collector is None:
+            return {"ok": False, "error": "metrics_collector missing"}
+        if getattr(collector, "k8s_client", None) is None:
+            return {"ok": False, "error": "k8s_client unavailable (demo fallback path likely active)"}
+
+        try:
+            analysis = ai.get_current_analysis()
+        except Exception as exc:
+            return {"ok": False, "error": f"failed to get current analysis: {exc}"}
+
+        if analysis.get("demo_mode"):
+            return {"ok": False, "error": "demo_mode=true detected in AI monitoring analysis"}
+
+        # Compare context from generated kubeconfig with current kubectl context.
+        expected_context = self._cluster_context()
+        if self._python_kubeconfig_path:
+            ctx_cmd = f"kubectl --kubeconfig '{self._python_kubeconfig_path}' config current-context"
+            ctx = self._run(ctx_cmd, timeout=10)
+            if ctx.get("success") and ctx.get("stdout"):
+                py_context = ctx["stdout"].splitlines()[0]
+                if py_context != expected_context:
+                    return {
+                        "ok": False,
+                        "error": (
+                            f"context mismatch: kubectl={expected_context}, "
+                            f"python_kubeconfig={py_context}"
+                        ),
+                    }
+
+        return {"ok": True, "context": expected_context}
+
     def _extract_metric(self, method_result: Dict[str, Any], metric_path: str) -> Optional[float]:
         current: Any = method_result
         for part in metric_path.split("."):
@@ -357,9 +454,8 @@ class AutoscalingComparisonRunner:
             }
 
         # Drive high CPU and monitor HPA status.
-        self._set_cpu_load_percent(95)
+        self._apply_scenario_initial_load()
         self._wait_rollout()
-        self._burst_http_load(30)
 
         started = time.time()
         first_scale_up_latency = None
@@ -395,9 +491,7 @@ class AutoscalingComparisonRunner:
             if first_scale_up_latency is None and (desired > baseline_replicas or dep_replicas > baseline_replicas):
                 first_scale_up_latency = time.time() - started
 
-            # Add another short burst mid-test to keep pressure.
-            if 50 < (time.time() - started) < 65:
-                self._burst_http_load(20)
+            self._apply_scenario_midtest_load(time.time() - started)
 
             time.sleep(10)
 
@@ -446,9 +540,8 @@ class AutoscalingComparisonRunner:
                 "vpa_not_installed": bool(create_res.get("vpa_not_installed")),
             }
 
-        self._set_cpu_load_percent(95)
+        self._apply_scenario_initial_load()
         self._wait_rollout()
-        self._burst_http_load(20)
 
         started = time.time()
         first_recommendation_latency = None
@@ -503,11 +596,33 @@ class AutoscalingComparisonRunner:
         self._set_replicas(self.min_replicas)
         self._wait_rollout()
         baseline_replicas = self._get_deployment_replicas()
-        self._set_cpu_load_percent(95)
+        self._apply_scenario_initial_load()
         self._wait_rollout()
-        self._burst_http_load(30)
 
-        self.integration = AutoscalingIntegration()
+        kubeconfig_path = self._ensure_python_kubeconfig()
+        if kubeconfig_path:
+            os.environ["KUBECONFIG"] = kubeconfig_path
+        os.environ["MCDA_PROFILE"] = self.mcda_profile
+        os.environ["MCDA_AGREEMENT_THRESHOLD"] = str(self.mcda_agreement_threshold)
+        profile_flags = {
+            "full": {"AUTOSAGE_USE_LLM": "1", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "1"},
+            "llm_no_mcda": {"AUTOSAGE_USE_LLM": "1", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "0"},
+            "rule_only": {"AUTOSAGE_USE_LLM": "0", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "0"},
+        }
+        active_flags = profile_flags.get(self.autosage_profile, profile_flags["full"])
+        os.environ.update(active_flags)
+
+        self.integration = AutoscalingIntegration(kubeconfig_path=kubeconfig_path)
+
+        source_check = self._verify_realtime_metrics_source()
+        if not source_check.get("ok"):
+            return {
+                "success": False,
+                "aborted": True,
+                "aborted_reason": source_check.get("error", "unknown monitoring source issue"),
+                "aborted_demo_mode": True,
+            }
+
         try:
             started = time.time()
             apply_res = self.integration.enable_predictive_autoscaling(
@@ -517,6 +632,15 @@ class AutoscalingComparisonRunner:
                 max_replicas=self.max_replicas,
             )
             recommendation_latency = time.time() - started
+            timing_breakdown = {}
+            if isinstance(apply_res, dict):
+                timing_breakdown = apply_res.get("timing_breakdown", {}) or {}
+
+            if timing_breakdown.get("total_decision_s") is not None:
+                try:
+                    recommendation_latency = float(timing_breakdown.get("total_decision_s"))
+                except Exception:
+                    pass
 
             first_replica_change_latency = None
             peak_replicas = baseline_replicas
@@ -531,8 +655,7 @@ class AutoscalingComparisonRunner:
                 )
                 if first_replica_change_latency is None and replicas != baseline_replicas:
                     first_replica_change_latency = time.time() - poll_start
-                if 50 < (time.time() - poll_start) < 65:
-                    self._burst_http_load(20)
+                self._apply_scenario_midtest_load(time.time() - poll_start)
                 time.sleep(10)
             latency_metrics = self._measure_service_latency(requests=20, sla_latency_s=sla_latency_s)
             cost_proxy = self._cost_proxy(samples)
@@ -549,6 +672,14 @@ class AutoscalingComparisonRunner:
                 "latency_sla": latency_metrics,
                 "cost_proxy": cost_proxy,
                 "samples": samples,
+                "timing_breakdown": {
+                    "metrics_collection_s": timing_breakdown.get("metrics_collection_s"),
+                    "forecast_s": timing_breakdown.get("forecast_s"),
+                    "llm_inference_s": timing_breakdown.get("llm_inference_s"),
+                    "mcda_validation_s": timing_breakdown.get("mcda_validation_s"),
+                    "actuation_s": timing_breakdown.get("actuation_s"),
+                    "total_decision_s": timing_breakdown.get("total_decision_s"),
+                },
             }
         finally:
             try:
@@ -618,6 +749,35 @@ class AutoscalingComparisonRunner:
                     "fairness_checks": {"pre": pre_as, "post": post_as},
                 }
             )
+            if autosage_res.get("aborted_demo_mode"):
+                return {
+                    "success": False,
+                    "aborted": True,
+                    "aborted_reason": autosage_res.get("aborted_reason", "AutoSage demo mode detected"),
+                    "aborted_stage": "autosage",
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "target": {
+                        "deployment": self.deployment,
+                        "namespace": self.namespace,
+                        "min_replicas": self.min_replicas,
+                        "max_replicas": self.max_replicas,
+                    },
+                    "experiment": {
+                        "runs_requested": runs,
+                        "runs_completed_before_abort": run_idx + 1,
+                        "timeout_s_per_method": timeout_s,
+                        "warmup_s": self.warmup_s,
+                        "cooldown_s": self.cooldown_s,
+                        "seed_base": self.seed_base,
+                        "mcda_profile": self.mcda_profile,
+                        "mcda_agreement_threshold": self.mcda_agreement_threshold,
+                        "scenario": self.scenario,
+                        "cluster_context": self._cluster_context(),
+                    },
+                    "native_hpa_runs": hpa_runs,
+                    "native_vpa_runs": vpa_runs,
+                    "autosage_runs": autosage_runs,
+                }
 
         results = {
             "success": True,
@@ -634,6 +794,10 @@ class AutoscalingComparisonRunner:
                 "warmup_s": self.warmup_s,
                 "cooldown_s": self.cooldown_s,
                 "seed_base": self.seed_base,
+                "mcda_profile": self.mcda_profile,
+                "mcda_agreement_threshold": self.mcda_agreement_threshold,
+                "scenario": self.scenario,
+                "autosage_profile": self.autosage_profile,
                 "cluster_context": self._cluster_context(),
             },
             "sla_policy": {
@@ -672,6 +836,12 @@ class AutoscalingComparisonRunner:
                     {
                         "decision_reaction_latency_s": "recommendation_latency_s",
                         "first_applied_change_latency_s": "first_replica_change_latency_s",
+                        "metrics_collection_s": "timing_breakdown.metrics_collection_s",
+                        "forecast_s": "timing_breakdown.forecast_s",
+                        "llm_inference_s": "timing_breakdown.llm_inference_s",
+                        "mcda_validation_s": "timing_breakdown.mcda_validation_s",
+                        "actuation_s": "timing_breakdown.actuation_s",
+                        "total_decision_s": "timing_breakdown.total_decision_s",
                         "p95_latency_s": "latency_sla.p95_s",
                         "sla_violation_rate_pct": "latency_sla.sla_violation_rate_pct",
                         "cost_proxy_avg_requested_vcpu": "cost_proxy.avg_requested_vcpu",
@@ -694,6 +864,30 @@ def main() -> None:
     parser.add_argument("--cooldown", type=int, default=15, help="Cooldown time after each method run (seconds)")
     parser.add_argument("--seed-base", type=int, default=42, help="Base seed used to tag repeated runs")
     parser.add_argument(
+        "--mcda-profile",
+        default="balanced",
+        choices=["balanced", "performance_first", "cost_optimized", "stability_first", "aggressive_scaling"],
+        help="MCDA weight profile used by AutoSage",
+    )
+    parser.add_argument(
+        "--mcda-agreement-threshold",
+        type=float,
+        default=0.15,
+        help="MCDA override threshold (lower = more likely to override LLM choice)",
+    )
+    parser.add_argument(
+        "--scenario",
+        default="short_burst",
+        choices=["short_burst", "periodic_burst", "sustained_drift"],
+        help="Workload scenario profile applied during each run",
+    )
+    parser.add_argument(
+        "--autosage-profile",
+        default="full",
+        choices=["full", "llm_no_mcda", "rule_only"],
+        help="AutoSage ablation profile: full (LLM+MCDA), llm_no_mcda, or rule_only",
+    )
+    parser.add_argument(
         "--sla-latency-threshold",
         type=float,
         default=0.5,
@@ -713,6 +907,10 @@ def main() -> None:
         warmup_s=args.warmup,
         cooldown_s=args.cooldown,
         seed_base=args.seed_base,
+        mcda_profile=args.mcda_profile,
+        mcda_agreement_threshold=args.mcda_agreement_threshold,
+        scenario=args.scenario,
+        autosage_profile=args.autosage_profile,
     )
     results = runner.run_all(timeout_s=args.timeout, sla_latency_s=args.sla_latency_threshold, runs=args.runs)
 
