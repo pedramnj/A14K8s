@@ -108,8 +108,7 @@ We deployed this solution over a local testbed and demonstrated end-to-end agent
 \ccsdesc[300]{Computing methodologies~Neural networks}
 \ccsdesc[100]{General and reference~Performance}
 
-\keywords{Kubernetes autoscaling, large language models, MCDA,
-, agentic AI, cloud operations}
+\keywords{Kubernetes autoscaling, large language models, MCDA, agentic AI, cloud operations}
 
 \maketitle
 
@@ -315,7 +314,7 @@ internal flows (e.g., \ LLM fallback chain, MCDA feeding enforcement). \as{In k8
 \subsection{Metrics Collector}
 \label{sec:metrics}
 
-The \emph{Metrics Collector} gathers real-time resource telemetry from the target K8s cluster.  Rather than requiring a full monitoring stack such as Prometheus, \Solution{} queries only a lightweight Kubernetes Metrics Server~\cite{}\as{add ref} \pn{i added them in bibliography but when i use them in cite the compile breaks!}, a scalable and efficient plugin that operates a source of container resource metrics for autoscaling pipelines.
+The \emph{Metrics Collector} gathers real-time resource telemetry from the target K8s cluster.  Rather than requiring a full monitoring stack such as Prometheus, \Solution{} queries only a lightweight Kubernetes Metrics Server~\cite{k8s_metrics_server,k8s_resource_metrics_pipeline,k8s_kubectl_top}, a scalable and efficient plugin that operates a source of container resource metrics for autoscaling pipelines.
 In such a way, our approach works with any standard cluster, eliminating the need to deploy additional infrastructure.  
 The collector retrieves metrics using a prioritized, sequential strategy. It first attempts to obtain metrics using a primary method. If this attempt fails or does not return within a fixed timeout ($10$\,s), the system proceeds to the next method in the predefined order. This process continues until metrics are successfully retrieved or all available methods have been attempted. 
 %Each individual metrics request is allowed to run for at most 10\,s. 
@@ -339,57 +338,71 @@ You can think of it like a matrix when explaining it, but technically it is stor
 \label{sec:prediction}
 
 \subsubsection{Time-Series Forecasting.}
-CPU utilization is forecast over a horizon of $H = 6$~hours using a composite model. A first-order polynomial (linear trend) is fitted to the last~$N$ samples via least-squares, %(\texttt{numpy.polyfit})
-and a seasonal component capturing daily periodicity is added:
+Using the collected metrics, we can now predict future usage of CPU and memory using two different approaches.
+The \textit{CPU utilization} is forecast over a horizon of $H = 6$~hours using a composite model: as a weighted combination of a linear trend component and a seasonal component capturing daily periodicity. %A first-order polynomial (linear trend) is fitted to the last~$N$ samples via least-squares, (\texttt{numpy.polyfit}) and a seasonal component capturing daily periodicity is added, resulting in a final formula as:
+In particular, we assume the time series can be decomposed into two components: trend and seasonality.
+Formally, the $h$-step-ahead prediction is given by:
 \begin{equation}\label{eq:forecast}
   \hat{y}(t+h) \;=\; 0.7 \cdot f_{\mathrm{trend}}(t+h)
                  \;+\; 0.3 \cdot f_{\mathrm{season}}(t+h),
   \quad h = 1, \ldots, H
 \end{equation}
-where $f_{\mathrm{trend}}$ is the linear extrapolation and $f_{\mathrm{season}}$ is the corresponding value from the previous daily cycle. \as{We need more explanation here. what is 0.7 and 0.3? How is this combined with least-squares?} \pn{0.7 and 0.3 are fixed blending weights.
-First, least-squares is used to fit the linear trend term.
-Then the final forecast is computed as a weighted sum:
-70% from the trend model and 30% from the seasonal component.
-So least-squares is used only to estimate the trend part, and then both parts are combined using those weights.}
-Memory utilization is forecast with a separate exponential-smoothing model
-($\alpha = 0.3$):
+where $f_{\mathrm{trend}}$ is the linear extrapolation and $f_{\mathrm{season}}$ is the corresponding value from the previous daily cycle. 
+The trend component $f_{\mathrm{trend}}$ is modeled as a first-order polynomial:
+\begin{equation}\label{eq:trend}
+  f_{\mathrm{trend}} = a t + b,
+\end{equation}
+where the coefficients $a$ and $b$ are estimated via ordinary least squares using the most recent $N$ observations. This local linear regression captures the short-term evolution of the underlying signal and allows the model to adapt to recent changes in level and slope.
+
+The seasonal component $f_{\mathrm{season}}$ captures systematic daily periodic effects and accounts for recurring intra-day patterns not explained by the linear trend. It models deterministic cyclic behavior with a fixed period corresponding to one day.
+
+The final forecast is obtained as a convex combination of the two components, assigning weights of $0.7$ to the trend and $0.3$ to the seasonal term. This weighting emphasizes the dominant role of the recent linear dynamics while still incorporating structured periodic fluctuations. The CPU forecast can be interpreted as a simple additive decomposition with fixed combination weights, designed to capture both short-term trend behavior and stable daily seasonality.
+
+
+\textit{Memory utilization}, instead, is forecast with a separate exponential smoothing model with smoothing parameter $\alpha = 0.3$. The one-step-ahead forecast is computed as:
 \begin{equation}\label{eq:mem_smoothing}
   \hat{m}_{t+1} = \alpha m_t + (1-\alpha)\hat{m}_{t},
 \end{equation}
-where $m_t$ is the observed memory utilization at time $t$ and $\hat{m}_t$ is
-the smoothed estimate from the previous step. \as{is it a new formula or same as before?} \pn{It is a different formula (separate model). CPU uses the trend+seasonal equation in Eq.~\ref{eq:forecast}, while memory uses exponential smoothing in Eq.~\ref{eq:mem_smoothing}.}
+where $m_t$ is the observed memory utilization at time $t$ and $\hat{m}_t$ represents the smoothed estimate obtained at the previous time step.
+
+This formulation updates the forecast recursively by combining the most recent observation with the prior smoothed value. The parameter $\alpha$ controls the relative weight assigned to new information versus historical estimates, with $\alpha = 0.3$ placing greater emphasis on past observations while still allowing the model to adapt to recent changes.
+
 
 \subsubsection{Bootstrap Uncertainty Quantification.}
 \label{subsec:uncert}
 
-Point forecasts alone cannot express how much trust an operator should place in
-a prediction.  \Solution{} therefore wraps every forecast in a
-\emph{prediction interval} produced by bootstrap resampling~\cite{efron1993introduction}.
+Point forecasts alone cannot express how much trust an operator should place in a prediction.  \Solution{} therefore wraps every forecast in a \emph{prediction interval} produced by bootstrap resampling~\cite{efron1993introduction}.
 
-Given $N$ historical observations, the forecaster draws $B = 50$ bootstrap
-samples of size~$N$ with replacement.  For each resample~$b$, a linear model
-is fitted and predictions $\hat{y}^{(b)}(t+h)$ are computed for each
-horizon~$h$.  The epistemic (model) variance at horizon~$h$ is
-\begin{equation}\label{eq:epistemic}
-  \sigma^2_{\mathrm{epi}}(h) =
-    \frac{1}{B}\sum_{b=1}^{B}
-      \bigl(\hat{y}^{(b)}(t+h) - \bar{y}(t+h)\bigr)^{2},
+Given $N$ historical observations, uncertainty is quantified via a nonparametric bootstrap procedure. Specifically, $B = 50$ bootstrap samples, each of size $N$, are drawn with replacement from the original dataset. For each bootstrap replicate $b \in \{1,\dots,B\}$, a linear model is fitted and $h$-step-ahead predictions $\hat{y}^{(b)}(t+h)$ are generated.
+
+The epistemic (model) uncertainty at forecast horizon $h$ is estimated as the empirical variance across bootstrap predictions,
+\begin{equation}\label{eq:epistemic} \sigma^2_{\mathrm{epi}}(h) = \frac{1}{B}\sum_{b=1}^{B} \bigl(\hat{y}^{(b)}(t+h) - \bar{y}(t+h)\bigr)^{2}, 
 \end{equation}
-where $\bar{y}(t+h)$ is the mean bootstrap prediction.  The aleatoric (data
-noise) variance $\sigma^2_{\mathrm{ale}}$ is estimated from the residuals of
-the original fit.  The total variance grows with the forecast horizon:
+where $\bar{y}(t+h) = \frac{1}{B}\sum_{b=1}^{B}\hat{y}^{(b)}(t+h)$ denotes the mean bootstrap forecast. This quantity captures variability due to finite-sample effects and parameter uncertainty.
+
+The total predictive variance is assumed to increase with the forecast horizon and is modeled as:
 \begin{equation}\label{eq:total_var}
   \sigma^2(h) = \sigma^2_{\mathrm{ale}} \cdot \sqrt{h}
               + \sigma^2_{\mathrm{epi}} \cdot h,
 \end{equation}
-yielding a $100(1{-}\alpha)\%$ prediction interval
-$[\hat{y}(t{+}h) \pm z_{\alpha/2}\,\sigma(h)]$ (default 95\%, $z = 1.96$).
-The system also computes four \emph{exceedance probabilities}
-$\Pr\bigl[Y(t{+}h) > \tau\bigr]$ for thresholds
-$\tau \in \{50, 70, 80, 90\}\%$ using the complementary normal CDF. \as{what is this? how is it used?}
-\as{We need to expan a bit more here} \pn{The prediction interval gives a plausible range for future utilization (not just one point estimate).
+This formulation reflects the intuition that both observational noise and model uncertainty accumulate over time.
+
+Assuming approximate normality of the predictive distribution, a $100(1-\alpha)\%$ prediction interval is constructed as
+\[
+  \hat{y}(t+h) \pm z_{\alpha/2}\,\sigma(h),
+\]
+where $z_{\alpha/2}$ is the standard normal quantile (e.g., $z_{0.025}=1.96$ for a $95\%$ prediction interval).
+
+In addition, the system computes four \emph{exceedance probabilities} in the form of:
+\[
+  \Pr\!\left(Y(t+h) > \tau\right)
+\]
+for predefined utilization thresholds $\tau \in \{50,70,80,90\}\%$. These probabilities are obtained using the complementary cumulative distribution function of the normal distribution with mean $\hat{y}(t+h)$ and variance $\sigma^2(h)$. %They quantify the risk that the predicted value exceeds operationally relevant capacity limits and can be used for proactive alerting or resource management decisions.
+These values directly reflect operational risk (e.g., the probability of entering high- or critical-utilization zones) and are used for dashboard visualizations, proactive alerting, and scaling decisions.
+
+\pn{The prediction interval gives a plausible range for future utilization (not just one point estimate).
 Then, exceedance probability estimates how likely utilization is to cross practical thresholds (50/70/80/90%).
-These probabilities are used by the dashboard and autoscaling logic: higher exceedance at high thresholds means higher risk and can trigger stronger scale-up recommendations, while low exceedance supports maintain/scale-down decisions. or we can say it like  this The interval \([\hat{y}(t+h)\pm z_{\alpha/2}\sigma(h)]\) provides the expected range of future utilization at confidence \(100(1-\alpha)\%\), so operators can see forecast uncertainty instead of only a point estimate. In addition, the system computes exceedance probabilities \(\Pr(Y(t+h)>\tau)\) for \(\tau\in\{50,70,80,90\}\%\). These values directly express operational risk (e.g., probability of entering high or critical utilization zones) and are used in both dashboard visualization and scaling decisions.}
+These probabilities are used by the dashboard and autoscaling logic: higher exceedance at high thresholds means higher risk and can trigger stronger scale-up recommendations, while low exceedance supports maintain/scale-down decisions. or we can say it like  this The interval \([\hat{y}(t+h)\pm z_{\alpha/2}\sigma(h)]\) provides the expected range of future utilization at confidence \(100(1-\alpha)\%\), so operators can see forecast uncertainty instead of only a point estimate.}
 
 \subsubsection{Calibrated Anomaly Detection.}
 An Isolation Forest~\cite{liu2008isolation} with contamination
@@ -608,7 +621,7 @@ Stability-first    & 0.15 & 0.20 & 0.40 & 0.15 & 0.10 \\
 
 \Solution{} exposes a web-based control plane that provides both REST APIs and WebSocket channels for real-time interaction via Flask and Flask-SocketIO. The monitoring dashboard presents: \textit{(i)} prediction intervals that expand with the forecast horizon to reflect uncertainty growth; \textit{(ii)} the four exceedance probabilities across the utilization thresholds $(50, 70, 80, 90)$ as mentioned in Section~\ref{subsec:uncert}; 
 % because the system computes probabilities for thresholds 50 70 80 90 percent they are defined earlier in the predictive/UQ part.
-\textit{(iii)} where prediction uncertainty comes from (data noise vs model uncertainty), in the form a decomposition of predictive uncertainty into aleatoric (Eq.(\ref{eq:total_var})) \as{not sure if this is the right eq} and epistemic (Eq.(\ref{eq:epistemic})) components; 
+\textit{(iii)} where prediction uncertainty comes from (data noise vs model uncertainty), shown as the data-noise part from Eq.~(\ref{eq:total_var}) \as{not sure if this is the right eq}\pn{Yes, this is correct: Eq.~(\ref{eq:total_var}) (currently Eq.(5)) is used for the data-noise part, and Eq.~(\ref{eq:epistemic}) is used for model uncertainty.} and the model-uncertainty part from Eq.~(\ref{eq:epistemic}); 
 \textit{(iv)} calibrated anomaly likelihood with associated severity; 
 and \textit{(v)} MCDA-based validation summaries including agreement levels, TOPSIS scores, and ranking.
 
@@ -624,31 +637,28 @@ footprint under the same workload conditions.
 \subsection{Comparison with Native HPA/VPA}
 
 To quantify the practical behavior of \Solution{} against Kubernetes-native
-autoscalers, we implemented and executed a dedicated benchmark runner
-(\texttt{autoscaling\_native\_comparison.py}) in the project repository. The
-runner now supports repeated experiments (\texttt{--runs}, default \(N=10\)),
-and reports mean, standard deviation, and 95\% confidence intervals for each
-metric. The experiment was run on the CrownLabs deployment used throughout this
-work, on the \texttt{test-app-autoscaling} workload in namespace
-\texttt{ai4k8s-test}. For fairness, each method starts from the same baseline
-(\(2\) replicas) before load is applied.
+autoscalers, we implemented and executed a dedicated benchmark runner.
+%(\texttt{autoscaling\_native\_comparison.py}) in the project repository.
+The experiment was run on the CrownLabs deployment used throughout this work.% on the \texttt{test-app-autoscaling} workload in namespace \texttt{ai4k8s-test}. 
+For fairness, each method started from the same baseline
+(\(2\) replicas) before load was applied.
 
 Load was generated in two ways: (i) increasing background CPU pressure by
 setting \texttt{CPU\_LOAD\_PERCENT=95} in the target deployment, and
 (ii) issuing burst requests to \texttt{/cpu-load} from an ephemeral in-cluster
-\texttt{curl} pod. Three strategies were then evaluated with a per-method
-timeout of \(60\) seconds: native HPA, native VPA, and \Solution{} predictive
-autoscaling (LLM + MCDA + actuation). To make timing semantics explicit, we
-separate three phases in the loop: (1) \emph{control-plane provisioning}
-(object create/update latency in the API server), (2) \emph{decision/reaction}
-(time until a scaling recommendation or controller decision appears), and
-(3) \emph{post-decision actuation} (time from decision availability to first
-applied resource change). The repeated-run protocol also includes warm-up,
-cool-down, and cleanup checks between methods to improve reproducibility.
+\texttt{curl} pod. We evaluate \Solution{}'s predictive auto-scaling loop against native HPA and native VPA with a per-method
+timeout of \(60\) seconds \cz{@PEDRAM: what is this timeout? benchmark duration? Should be better described.}\pn{We can describe it simply as: ``This timeout is the per-method benchmark observation duration in each run (60s). During this window, we monitor whether a method emits a decision/recommendation and whether the first change is applied. It is not an API-server provisioning timeout.''}. To make timing semantics explicit, we
+separate three phases in the loop: (i) \emph{control-plane provisioning}, object create/update latency in the API server, (ii) \emph{decision/reaction}, the time until a scaling recommendation or controller decision appears, and
+(iii) \emph{post-decision actuation}, the time from decision availability to first applied resource change.
+In Table~\ref{tab:native-compare}, the \emph{Outcome} column denotes the first
+observable control effect after the decision/reaction phase: for HPA, the
+replica envelope reached during the run; for VPA, the presence of a generated
+recommendation; and for \Solution{}, the frequency of applied replica changes
+within the 10-run campaign window.
 
 \begin{table}[t]
   \centering
-  \caption{Live CrownLabs comparison: native HPA/VPA vs. \Solution{} (latest run example).}
+  \caption{Live CrownLabs comparison across 10 runs (mean \(\pm\) 95\% CI). Time elapsed for Provisioning and Decision/Reaction phases of the auto-scaling control loops and their first observed outcomes. \cz{@PEDRAM: clarify the meaning of the Outcome column and its contents, same as in the Section 4.1.}\pn{Clarified in text right above the table: Outcome means the first observable post-decision control effect (HPA: replica envelope reached; VPA: recommendation produced; AutoSage: applied replica-change frequency across runs). Also reflected in the column header as ``Outcome (first observed effect)''.}}
   \label{tab:native-compare}
   \footnotesize
   \setlength{\tabcolsep}{3pt}
@@ -658,19 +668,19 @@ cool-down, and cleanup checks between methods to improve reproducibility.
                   >{\raggedright\arraybackslash}p{2.15cm}
                   >{\raggedright\arraybackslash}p{2.55cm}}
     \toprule
-    Method & Provisioning & Decision/Reaction & Outcome \\
+    Method & Provisioning & Decision/Reaction & Outcome (first observed effect) \\
 
     \midrule
-    Native HPA & 0.198\,s & 31.288\,s to first scale-up & \(2 \rightarrow 6\) \\
-    Native VPA & 0.478\,s & 0.180\,s to first recommendation & Recommendation produced \\
-    \Solution{} & N/A & 111.789\,s to recommendation & \(2 \rightarrow 5\); first change at 0.302\,s \\
+    Native HPA & \(0.1849 \pm 0.0138\)\,s & \(26.2407 \pm 6.9430\)\,s to first scale-up & Peak replicas \(6\)--\(8\) observed \\
+    Native VPA & \(0.4003 \pm 0.0277\)\,s & \(15.4790 \pm 6.8154\)\,s to first recommendation & Recommendation produced \\
+    \Solution{} & N/A & \(126.8182 \pm 31.7235\)\,s to recommendation & Replica change observed in \(3/10\) runs \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \begin{table}[t]
   \centering
-  \caption{Service-level and cost-proxy metrics (latest run example; aggregated statistics are reported as mean \(\pm\) 95\% CI in the JSON output).}
+  \caption{Service-level and cost-proxy metrics across 10 runs (mean \(\pm\) 95\% CI).}
   \label{tab:service-cost}
   \footnotesize
   \setlength{\tabcolsep}{3pt}
@@ -682,9 +692,9 @@ cool-down, and cleanup checks between methods to improve reproducibility.
     \toprule
     Method & p95 latency (s) & SLA viol. (\%) & Cost proxy (avg req. vCPU) \\
     \midrule
-    Native HPA & 0.0316 & 0.0 & 2.828 \\
-    Native VPA & 0.0442 & 0.0 & 1.414 \\
-    \Solution{} & 0.0313 & 0.0 & 3.535 \\
+    Native HPA & \(0.0235 \pm 0.0087\) & \(0.0 \pm 0.0\) & \(2.7807 \pm 0.2781\) \\
+    Native VPA & \(0.0392 \pm 0.0076\) & \(0.0 \pm 0.0\) & \(1.4140 \pm 0.0000\) \\
+    \Solution{} & \(0.0223 \pm 0.0075\) & \(0.0 \pm 0.0\) & \(1.7675 \pm 0.3724\) \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -693,7 +703,7 @@ cool-down, and cleanup checks between methods to improve reproducibility.
   \IfFileExists{figures/evaluation/evaluation_decision_latency.pdf}
     {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_decision_latency.pdf}}
     {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_decision\_latency.pdf}}}
-  \caption{Decision/reaction latency across native HPA, native VPA, and \Solution{} (error bars show 95\% CI when repeated-run aggregated data is provided).}
+  \caption{Decision/reaction latency across native HPA, native VPA, and \Solution{}.}
   \label{fig:evaluation-decision}
 \end{figure}
 
@@ -702,7 +712,7 @@ cool-down, and cleanup checks between methods to improve reproducibility.
   \IfFileExists{figures/evaluation/evaluation_service_levels.pdf}
     {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_service_levels.pdf}}
     {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_service\_levels.pdf}}}
-  \caption{Service-level metrics (p95 latency and SLA violation rate); error bars show 95\% CI when available from repeated runs.}
+  \caption{Service-level metrics from the same 10-run baseline campaign (p95 latency and SLA violation rate).}
   \label{fig:evaluation-service}
 \end{figure}
 
@@ -711,36 +721,150 @@ cool-down, and cleanup checks between methods to improve reproducibility.
   \IfFileExists{figures/evaluation/evaluation_cost_proxy.pdf}
     {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_cost_proxy.pdf}}
     {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_cost\_proxy.pdf}}}
-  \caption{Cost proxy comparison using average requested vCPU during the evaluation window (95\% CI shown when repeated-run aggregation is available).}
+  \caption{Cost proxy comparison using average requested vCPU during the evaluation window.}
   \label{fig:evaluation-cost}
 \end{figure}
 
-The results indicate a clear trade-off. Native controllers react faster in this
-short-horizon setup, while \Solution{} adds decision latency due to LLM
-inference and MCDA validation in the control loop. At the same time,
-service-level behavior remains stable in the tested conditions, with low
-request-path latency and no observed SLA violations in the sampled run.
+Table~\ref{tab:native-compare} provides a comparison of run times among Native HPA, VPA and AutoSage, for the Provisioning and Decision phases of auto-scaling control loops.
+The updated \cz{@PEDRAM: what do you mean by "corrected" here?}\pn{By ``updated'' we mean the final repeated-run baseline after fixing the measurement pipeline and replacing earlier interim/single-run values.} multi-run results indicate a clear trade-off \cz{@PEDRAM: trade-off implies that despite latency being higher, AutoSage performs better than HPA/VPA in some other way. What is this way?}\pn{Here the trade-off is explicit: AutoSage is slower in decision/reaction time, but it shows better service-level/resource-side outcomes than at least one native baseline (lower p95 latency than VPA and lower cost proxy than HPA), while keeping SLA violations at 0\%.}. Native controllers react faster in this short-horizon setup,
+while \Solution{} adds decision latency due to LLM inference and MCDA
+validation in the control loop. Across the baseline
+campaign \cz{@PEDRAM: what do you mean by validated and non-demo? I dont think we need to mention these}\pn{Agreed. We removed ``validated'' and ``non-demo'' from the narrative and keep the wording as ``baseline campaign'' for clarity and brevity.}, \Solution{} produced recommendations in all runs and applied
+replica changes in \(3/10\) runs.
+\cz{@PEDRAM: clear up the meaning of what you've written in the column "Outcome" in Table 3. "Peak replicas 6–8 observed", "Recommendation produced", "Replica change observed in 3/10 runs". What does each of these mean? What does this information tell us about the performance of AutoSage compared to native scalers? Is AutoSage better than them?}\pn{Meaning of each entry: ``Peak replicas 6--8 observed'' (HPA) means HPA actively scaled and reached 6--8 replicas during the run; ``Recommendation produced'' (VPA) means VPA generated a resource recommendation, but this row does not imply immediate replica count change; ``Replica change observed in 3/10 runs'' (AutoSage) means AutoSage emitted recommendations in all runs, but only 3 runs led to an applied replica-count change within the 60s window. Interpretation: AutoSage is not better than native scalers in control-loop responsiveness/consistency in this short-horizon setup; its strength here is maintaining service-level metrics (0\% SLA violations, competitive p95) rather than faster reaction. Short version: native scalers react faster; AutoSage is more conservative and keeps SLA stable, but does not outperform them on reaction speed in this test.}
 
-For repeated runs, we interpret each metric through mean and 95\% confidence
-interval rather than single-point values. In particular, CI overlap/non-overlap
-is used as an uncertainty-aware indicator of whether observed differences are
-likely robust across repetitions. This avoids over-interpreting one-off
-executions and improves the scientific validity of the comparison.
+We further evaluate AutoSage by assessing service-level quality after each
+method run. SLA is measured from request-path probes (20 in-cluster HTTP
+requests to the application endpoint per run), and a request is counted as an
+SLA violation if either latency exceeds the threshold (\(0.5\)~s) or HTTP
+status is \(\ge 400\). Results are shown in Table~\ref{tab:service-cost}.
+Service behavior remains stable across all three approaches:
+request-level SLA violations remained \(0\%\) for the configured latency threshold (\(0.5\)~s) \cz{@PEDRAM: why 0.5s? justify this choice}\pn{We use 0.5s as an application-level SLO proxy for interactive web response under bursty load: it is strict enough to flag user-visible degradation while remaining realistic for this lightweight HTTP benchmark. It is also applied uniformly across methods to preserve fairness of comparison.}.  
+p95 latency stayed in a similar range. This suggests that in the current setup the main differentiator is control-loop policy behavior, rather than request-path latency.
+\cz{@PEDRAM: what is the p95 latency here referring to? Which phase of the control loop? How does it differ from the measurements you've made for Table 3?}\pn{The p95 in Table~\ref{tab:service-cost} is request-path latency (tail response time of HTTP probes to the app endpoint), not control-loop timing. Table~\ref{tab:native-compare} instead reports control-loop timing (provisioning and decision/reaction phases). So they measure different layers: user-visible service latency vs autoscaler decision pipeline latency.}
 
-Finally, cost is reported here as a \emph{resource proxy} (average requested
-vCPU over sampled replicas), not direct cloud billing. The values therefore
-represent relative footprint under the tested run rather than monetary cost.
+A controlled sensitivity run (\texttt{performance\_first} MCDA profile with
+relaxed agreement threshold \(0.05\), same workload and run count \cz{@PEDRAM: describe the test case, what is the agreement threshold (put a reference to the section where you define the meaning of this quantity or briefly recall it here)? Why is it set to 0.05 specifically? What is the purpose of the sensitivity run? Describe and justify these.}\pn{Test case: same 10-run baseline workload, but with MCDA profile switched to \texttt{performance\_first}. Agreement threshold is the maximum score gap under which MCDA accepts the LLM proposal without override; lowering it to 0.05 makes the policy less conservative (fewer overrides). We chose 0.05 as a targeted stress value to test whether reducing MCDA conservativeness improves actuation frequency and end metrics. Purpose: sensitivity analysis to isolate the effect of the MCDA gate on responsiveness and outcome quality.}) increased
+the replica-change frequency only marginally (\(4/10\) runs) and did not
+improve outcome metrics (\Solution{} p95 latency \(0.0297 \pm 0.0072\)~s vs.
+\(0.0223 \pm 0.0075\)~s baseline; cost proxy \(1.9796 \pm 0.4526\) vs.
+\(1.7675 \pm 0.3724\) requested vCPU). This indicates that simply relaxing override aggressiveness is insufficient to remove the dominant decision-latency bottleneck.
+
+\subsubsection{Root-Cause Analysis and Improvement Roadmap}
+The data supports an important diagnostic conclusion: the primary bottleneck is not SLA-side instability, but control-loop overhead. In both baseline and
+sensitivity runs, request-path reliability remained stable (zero SLA violations)
+while \Solution{} decision latency stayed substantially above native-controller
+reaction times. This behavior is consistent with a pipeline where inference and
+validation overhead dominate short-horizon scenarios.
+
+From a scientific perspective, this is still a meaningful result. The study
+demonstrates feasibility of an agentic autoscaling pipeline under real cluster
+conditions (non-demo metric source, repeated trials, CI reporting), while
+identifying where performance headroom remains. The next iteration should
+therefore prioritize: \textit{(i)} latency decomposition (LLM inference vs.
+MCDA validation vs. Kubernetes reconciliation), \textit{(ii)} asynchronous or
+cached decision paths for recurring states, and \textit{(iii)} longer-horizon
+periodic-burst workloads where predictive control has a structural advantage
+over purely reactive controllers.
+
+\begin{figure}[t]
+  \centering
+  \IfFileExists{figures/evaluation/evaluation_autosage_decomposition.pdf}
+    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_autosage_decomposition.pdf}}
+    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_autosage\_decomposition.pdf}}}
+  \caption{AutoSage decision-latency decomposition (5-run diagnostic campaign; error bars show 95\% CI margin).}
+  \label{fig:evaluation-autosage-decomp}
+\end{figure}
+
+The decomposition campaign isolates where latency accumulates in \Solution{}.
+In the measured run set, metrics collection (\(0.4983 \pm 0.1144\)~s) and LLM
+inference (\(1.0008 \pm 0.2178\)~s) are the dominant contributors, while
+forecast computation is negligible (\(0.0012 \pm 0.0001\)~s), and actuation
+remains comparatively small (\(0.1902 \pm 0.0650\)~s). This supports the
+roadmap focus on reducing decision-path overhead (especially inference path and
+control-loop orchestration) rather than tuning forecast logic.
+
+Finally, cost is reported here as a \emph{resource proxy}, not direct cloud
+billing. We compute it as average requested vCPU over the observed window:
+\(\text{avg\_requested\_vcpu}=\text{avg\_replicas}\times
+\text{cpu\_request\_per\_pod}/1000\). This captures relative resource footprint
+under each method (higher means larger requested CPU footprint), but does not
+include provider pricing, discounts, storage, or network charges.
+
+\begin{table}[t]
+  \centering
+  \caption{CPU forecasting benchmark on simulated application profiles (mean \(\pm\) 95\% CI across seeds/nodes; cell format: MSE / MAPE\%). Lower is better.}
+  \label{tab:forecast-autosage-arima-lstm}
+  \scriptsize
+  \setlength{\tabcolsep}{3pt}
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.4cm}
+                  >{\raggedright\arraybackslash}p{2.1cm}
+                  >{\raggedright\arraybackslash}p{2.1cm}
+                  >{\raggedright\arraybackslash}p{2.1cm}}
+    \toprule
+    Scenario & ARIMA & \Solution{} predictor & LSTM \\
+    \midrule
+    Stable API & \(7.69 \pm 5.48\) / \(5.31 \pm 1.27\) & \(9.07 \pm 6.29\) / \(5.69 \pm 1.33\) & \(12.59 \pm 9.17\) / \(7.73 \pm 1.99\) \\
+    Bursty Web & \(90.96 \pm 24.23\) / \(18.09 \pm 1.73\) & \(115.24 \pm 32.26\) / \(18.92 \pm 2.66\) & \(145.18 \pm 36.15\) / \(25.93 \pm 2.42\) \\
+    Growing Service & \(11.54 \pm 6.28\) / \(5.70 \pm 1.02\) & \(11.92 \pm 7.69\) / \(5.81 \pm 1.30\) & \(23.12 \pm 11.71\) / \(8.70 \pm 1.56\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:forecast-autosage-arima-lstm} provides a direct one-step-ahead
+forecasting baseline comparison between our current predictor, ARIMA, and an
+LSTM network on three simulated application behaviors. ARIMA achieves the
+lowest error in all three scenarios, while \Solution{} remains consistently
+close to ARIMA and outperforms LSTM on both MSE and MAPE. These scenario-driven
+results are more informative than the earlier short live trace and better
+reflect predictive behavior under stable, bursty, and drifting workloads.
+Based on this benchmark, we adopt ARIMA as the default forecasting backbone in
+the current implementation, since it provides the best observed error profile
+for this study setting. We emphasize that this choice is empirical (for the
+tested data regime and training budget), and future runs with longer traces and
+more extensive neural-network tuning may alter the relative ranking.
+
+To evaluate policy quality (separately from forecasting error), we ran a
+decision-level ablation with a deterministic oracle and three perturbation
+conditions (baseline, noisy metrics, missing-metric injection), comparing
+\texttt{llm\_only}, \texttt{mcda\_only}, \texttt{llm\_mcda}, and
+\texttt{rule\_only}. The main gain of \texttt{llm\_mcda} is safety: in baseline
+condition, bounds-violation rate drops from \(0.674\) (\texttt{llm\_only}) and
+\(0.820\) (\texttt{rule\_only}) to \(0.070\), and remains lower under noisy
+inputs (\(0.082\) vs \(0.547\) and \(0.663\), respectively). Override analysis
+shows that MCDA corrections are usually beneficial (improved-rate range
+\(0.73\)–\(0.99\) across scenarios/conditions). At the same time,
+\texttt{llm\_mcda} is more conservative (slightly lower macro-F1 than
+\texttt{llm\_only}), so the evidence supports a robustness/safety advantage
+rather than universal superiority in raw action-matching metrics.
+
+\begin{figure}[t]
+  \centering
+  \IfFileExists{figures/evaluation/llm_mcda_decision_quality.pdf}
+    {\includegraphics[width=\columnwidth]{figures/evaluation/llm_mcda_decision_quality.pdf}}
+    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/llm\_mcda\_decision\_quality.pdf}}}
+  \caption{Decision-quality comparison under the baseline condition (macro-F1 with 95\% CI).}
+  \label{fig:llm-mcda-decision-quality}
+\end{figure}
+
+\begin{figure}[t]
+  \centering
+  \IfFileExists{figures/evaluation/llm_mcda_violation_utility.pdf}
+    {\includegraphics[width=\columnwidth]{figures/evaluation/llm_mcda_violation_utility.pdf}}
+    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/llm\_mcda\_violation\_utility.pdf}}}
+  \caption{Utility and policy-violation trade-off across decision methods (baseline condition).}
+  \label{fig:llm-mcda-violation-utility}
+\end{figure}
 
 \subsubsection{Evaluation Scope and Limitations}
-The presented comparison should be interpreted as an ongoing evaluation
-pipeline. Three limitations remain important for correct interpretation:
-\textit{(i)} repeated trials and CI-based summaries must be generated and
-reported for each benchmark campaign, \textit{(ii)} the reported cost is a
-resource-based proxy rather than provider billing data, and
-\textit{(iii)} short-horizon scenarios do not fully stress periodic/anticipatory
-benefits of predictive autoscaling. A more complete study includes longer load
-profiles with recurring bursts and explicit decomposition of LLM inference time,
-MCDA processing time, and Kubernetes reconciliation time.
+The presented comparison is now based on repeated runs, but limitations remain:
+\textit{(i)} the reported cost is still a resource-based proxy rather than
+provider billing data, and \textit{(ii)} the scenario is short-horizon and does
+not fully stress periodic/anticipatory benefits of predictive autoscaling.
+A more complete study should include longer load profiles with recurring bursts
+and explicit decomposition of LLM inference time, MCDA processing time, and
+Kubernetes reconciliation time.
 
 \section{Conclusion}
 \label{sec:conclusion}

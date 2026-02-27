@@ -1,0 +1,43 @@
+\section*{Contribution}
+
+AutoSage comprises five integrated layers.
+
+\textbf{Metrics Collection.}
+The system connects via \texttt{kubeconfig} and collects telemetry every
+300\,s through a sequential fallback chain: \texttt{kubectl~top},
+\texttt{metrics.k8s.io} API, and Kubelet summary endpoint. No Prometheus
+deployment is required.
+
+\textbf{Predictive Monitoring \& Uncertainty Quantification.}
+CPU is forecast with a linear-trend plus seasonal composite; memory with
+exponential smoothing ($\alpha\!=\!0.3$). Each forecast is wrapped in a
+bootstrap prediction interval ($B\!=\!50$ resamples) whose total variance
+grows with the horizon:
+$\sigma^2(h) = \sigma^2_\mathrm{ale}\!\cdot\!\sqrt{h} + \sigma^2_\mathrm{epi}\!\cdot\!h$,
+yielding 95\% intervals that naturally widen. Exceedance probabilities
+$\Pr[Y\!>\!\tau]$ are computed for $\tau\!\in\!\{50,70,80,90\}\%$.
+Anomaly detection uses an Isolation Forest calibrated via Platt scaling
+($P = \sigma(As{+}B)$, $A\!=\!{-}5$, $B\!=\!{-}0.5$) into a four-level
+severity distribution.
+
+\textbf{LLM Autoscaling Advisor.}
+A structured prompt (metrics, forecasts, statefulness, HPA/VPA status) is
+sent to an LLM that returns a JSON recommendation (action, target,
+confidence, reasoning). A two-tier fallback chain uses a self-hosted model
+(Qwen, 240\,s timeout, $\theta\!=\!0.1$) with Groq (Llama~3.1-8B, 15\,s) as
+backup. The LLM selects HPA for stateless and VPA for stateful workloads; an
+enforcement layer corrects contradictions automatically.
+
+\textbf{MCDA Cross-Validation.}
+Every LLM recommendation is validated by a TOPSIS module that generates 5--8
+candidate replica counts and scores each on five criteria (cost, performance,
+stability, forecast alignment, response time) under four selectable weight
+profiles. Agreement is classified as \emph{full}, \emph{partial}, or
+\emph{divergent}; if the MCDA score exceeds the LLM's by $\delta\!>\!0.15$,
+the system overrides the LLM choice.
+
+\textbf{Dashboard \& Actuation.}
+A Flask web dashboard with WebSocket support visualises prediction intervals,
+exceedance bars, uncertainty decomposition (aleatoric vs.\ epistemic), anomaly
+severity, and MCDA validation. Approved recommendations are applied via
+\texttt{kubectl~patch}.

@@ -1,0 +1,18 @@
+\section*{Introduction}
+
+Kubernetes is the dominant platform for orchestrating containerised workloads,
+yet its native autoscalers---the Horizontal Pod Autoscaler (HPA) and Vertical
+Pod Autoscaler (VPA)---rely on static thresholds that react \emph{after} load
+changes occur. Large Language Models (LLMs) offer a promising alternative: they
+can reason about deployment context and forecast trends to produce proactive
+scaling decisions. However, LLM outputs are non-deterministic, raising
+reliability concerns in production.
+
+This thesis presents \textbf{AutoSage}, an agentic AI platform that combines
+LLM-driven autoscaling with TOPSIS-based Multi-Criteria Decision Analysis
+(MCDA) cross-validation and bootstrap uncertainty quantification.  The system
+ingests cluster metrics, forecasts demand over a 6-hour horizon with
+growing prediction intervals, and generates scaling recommendations validated
+against five weighted criteria. It supports both HPA and VPA, with the LLM
+selecting the mechanism based on workload statefulness. AutoSage is deployed on
+a CrownLabs Kubernetes testbed at Politecnico di Torino.

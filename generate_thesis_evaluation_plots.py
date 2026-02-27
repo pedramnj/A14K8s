@@ -13,6 +13,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 
+# =========================
+# GLOBAL STYLE (paper-ready)
+# =========================
+plt.rcParams["pdf.fonttype"] = 42
+plt.rcParams["ps.fonttype"] = 42
+plt.rcParams["font.family"] = "sans-serif"
+
+DPI = 300
+FONT_SIZE_LABEL = 10
+FONT_SIZE_TICKS = 9
+FONT_SIZE_LEGEND = 8.5
+GRID_STYLE = ":"
+GRID_ALPHA = 0.6
+GRID_LINEWIDTH = 1.2
+BAR_EDGEWIDTH = 1.2
+
 
 def _read_json(path: Path) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
@@ -85,16 +101,23 @@ def _plot_decision_timing(results: Dict[str, Any], out_dir: Path) -> None:
         errors.append(err)
         colors.append(_method_colors()[method_key])
 
-    fig, ax = plt.subplots(figsize=(6.4, 3.4))
-    bars = ax.bar(labels, values, color=colors, yerr=errors, capsize=5, ecolor="black")
-    ax.set_ylabel("Decision/Reaction Time (s)")
-    ax.set_title("Autoscaling Decision/Reaction Latency")
-    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    fig, ax = plt.subplots(figsize=(6.4, 3.4), dpi=DPI)
+    ax.bar(
+        labels,
+        values,
+        color=colors,
+        yerr=errors,
+        capsize=4,
+        ecolor="black",
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
+    )
+    ax.set_ylabel("Decision/Reaction Time (s)", fontsize=FONT_SIZE_LABEL)
+    ax.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
+    ax.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
     ax.set_axisbelow(True)
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2, val, f"{val:.3f}", ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_decision_latency.pdf", format="pdf")
+    fig.savefig(out_dir / "evaluation_decision_latency.pdf", format="pdf", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -119,7 +142,7 @@ def _plot_latency_and_sla(results: Dict[str, Any], out_dir: Path) -> None:
     x = list(range(len(labels)))
     w = 0.35
 
-    fig, ax1 = plt.subplots(figsize=(6.8, 3.6))
+    fig, ax1 = plt.subplots(figsize=(6.8, 3.6), dpi=DPI)
     b1 = ax1.bar(
         [i - w / 2 for i in x],
         p95_vals,
@@ -130,11 +153,14 @@ def _plot_latency_and_sla(results: Dict[str, Any], out_dir: Path) -> None:
         capsize=4,
         ecolor="black",
         label="p95 latency (s)",
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
     )
-    ax1.set_ylabel("p95 Latency (s)")
+    ax1.set_ylabel("p95 Latency (s)", fontsize=FONT_SIZE_LABEL)
     ax1.set_xticks(x)
-    ax1.set_xticklabels(labels)
-    ax1.grid(axis="y", linestyle="--", alpha=0.30)
+    ax1.set_xticklabels(labels, fontsize=FONT_SIZE_TICKS)
+    ax1.tick_params(axis="y", labelsize=FONT_SIZE_TICKS)
+    ax1.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
     ax1.set_axisbelow(True)
 
     ax2 = ax1.twinx()
@@ -148,15 +174,17 @@ def _plot_latency_and_sla(results: Dict[str, Any], out_dir: Path) -> None:
         capsize=4,
         ecolor="black",
         label="SLA violations (%)",
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
     )
-    ax2.set_ylabel("SLA Violations (%)")
+    ax2.set_ylabel("SLA Violations (%)", fontsize=FONT_SIZE_LABEL)
+    ax2.tick_params(axis="y", labelsize=FONT_SIZE_TICKS)
 
     handles = [b1, b2]
     labels_legend = [h.get_label() for h in handles]
-    ax1.legend(handles, labels_legend, loc="upper left", frameon=False)
-    ax1.set_title("Service-Level Metrics")
+    ax1.legend(handles, labels_legend, loc="upper left", frameon=True, fontsize=FONT_SIZE_LEGEND)
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_service_levels.pdf", format="pdf")
+    fig.savefig(out_dir / "evaluation_service_levels.pdf", format="pdf", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -173,16 +201,92 @@ def _plot_cost_proxy(results: Dict[str, Any], out_dir: Path) -> None:
         errors.append(err)
         colors.append(_method_colors()[method_key])
 
-    fig, ax = plt.subplots(figsize=(6.4, 3.4))
-    bars = ax.bar(labels, values, color=colors, yerr=errors, capsize=5, ecolor="black")
-    ax.set_ylabel("Average Requested vCPU")
-    ax.set_title("Cost Proxy (Resource Footprint)")
-    ax.grid(axis="y", linestyle="--", alpha=0.35)
+    fig, ax = plt.subplots(figsize=(6.4, 3.4), dpi=DPI)
+    ax.bar(
+        labels,
+        values,
+        color=colors,
+        yerr=errors,
+        capsize=4,
+        ecolor="black",
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
+    )
+    ax.set_ylabel("Average Requested vCPU", fontsize=FONT_SIZE_LABEL)
+    ax.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
+    ax.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
     ax.set_axisbelow(True)
-    for bar, val in zip(bars, values):
-        ax.text(bar.get_x() + bar.get_width() / 2, val, f"{val:.3f}", ha="center", va="bottom", fontsize=9)
     fig.tight_layout()
-    fig.savefig(out_dir / "evaluation_cost_proxy.pdf", format="pdf")
+    fig.savefig(out_dir / "evaluation_cost_proxy.pdf", format="pdf", dpi=DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_autosage_decomposition(results: Dict[str, Any], out_dir: Path) -> None:
+    stage_keys = [
+        ("metrics_collection_s", "Metrics"),
+        ("forecast_s", "Forecast"),
+        ("llm_inference_s", "LLM"),
+        ("mcda_validation_s", "MCDA"),
+        ("actuation_s", "Actuation"),
+    ]
+    labels: List[str] = []
+    values: List[float] = []
+    errors: List[float] = []
+
+    for key, label in stage_keys:
+        mean, err = _aggregate_metric(results, "autosage", key)
+        labels.append(label)
+        values.append(mean if mean is not None else 0.0)
+        errors.append(err)
+
+    # Plot in milliseconds and include a zoom panel for tiny stages.
+    values_ms = [v * 1000.0 for v in values]
+    errors_ms = [e * 1000.0 for e in errors]
+
+    fig, (ax_main, ax_zoom) = plt.subplots(
+        2,
+        1,
+        figsize=(6.8, 4.8),
+        dpi=DPI,
+        gridspec_kw={"height_ratios": [3.0, 1.35], "hspace": 0.22},
+        constrained_layout=True,
+    )
+
+    ax_main.bar(
+        labels,
+        values_ms,
+        color="#E15759",
+        yerr=errors_ms,
+        capsize=4,
+        ecolor="black",
+        alpha=0.9,
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
+    )
+    ax_main.set_ylabel("Latency (ms)", fontsize=FONT_SIZE_LABEL)
+    ax_main.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
+    ax_main.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
+    ax_main.set_axisbelow(True)
+    ax_main.set_xticklabels([])
+
+    ax_zoom.bar(
+        labels,
+        values_ms,
+        color="#E15759",
+        yerr=errors_ms,
+        capsize=4,
+        ecolor="black",
+        alpha=0.9,
+        edgecolor="black",
+        linewidth=BAR_EDGEWIDTH,
+    )
+    # Focus small-scale panel so forecast/MCDA are visible.
+    ax_zoom.set_ylim(0, 20)
+    ax_zoom.set_ylabel("Zoom (ms)", fontsize=FONT_SIZE_LABEL)
+    ax_zoom.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
+    ax_zoom.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
+    ax_zoom.set_axisbelow(True)
+    fig.savefig(out_dir / "evaluation_autosage_decomposition.pdf", format="pdf", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -211,18 +315,18 @@ def main() -> None:
 
     plt.rcParams.update(
         {
-            "font.family": "serif",
             "font.size": 10,
-            "axes.titlesize": 11,
-            "axes.labelsize": 10,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
+            "axes.labelsize": FONT_SIZE_LABEL,
+            "xtick.labelsize": FONT_SIZE_TICKS,
+            "ytick.labelsize": FONT_SIZE_TICKS,
+            "legend.fontsize": FONT_SIZE_LEGEND,
         }
     )
 
     _plot_decision_timing(results, output_dir)
     _plot_latency_and_sla(results, output_dir)
     _plot_cost_proxy(results, output_dir)
+    _plot_autosage_decomposition(results, output_dir)
 
     print(f"Saved figures to: {output_dir}")
 
