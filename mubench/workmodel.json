@@ -16,7 +16,7 @@
     "request_method": "rest",
     "workers":   2,
     "threads":   4,
-    "url":       "ingest.default.svc.cluster.local",
+    "url":       "ingest.default.svc.cluster.local:8080",
     "path":      "/api/v1",
     "image":     "msvcbench/microservice:latest",
     "namespace": "default"
@@ -31,9 +31,9 @@
     ],
     "internal_service": {
       "matrix_compute": {
-        "input_size":  2048,
-        "hidden_size": 1024,
-        "num_layers":  6,
+        "input_size":  512,
+        "hidden_size": 256,
+        "num_layers":  4,
         "num_classes": 80,
         "batch_size":  8
       }
@@ -41,7 +41,7 @@
     "request_method": "rest",
     "workers":   2,
     "threads":   4,
-    "url":       "process.default.svc.cluster.local",
+    "url":       "process.default.svc.cluster.local:8080",
     "path":      "/api/v1",
     "image":     "msvcbench/microservice:latest",
     "namespace": "default"
@@ -65,7 +65,7 @@
     "request_method": "rest",
     "workers":   2,
     "threads":   4,
-    "url":       "analyze.default.svc.cluster.local",
+    "url":       "analyze.default.svc.cluster.local:8080",
     "path":      "/api/v1",
     "image":     "msvcbench/microservice:latest",
     "namespace": "default"
