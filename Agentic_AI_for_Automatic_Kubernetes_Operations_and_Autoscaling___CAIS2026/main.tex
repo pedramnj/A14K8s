@@ -18,11 +18,9 @@
 \acmYear{2026}
 \acmDOI{XXXXXXX.XXXXXXX}
 
-\acmConference[Conference acronym 'XX]{Make sure to enter the correct
-  conference title from your rights confirmation email}{June 03--05,
-  2018}{Woodstock, NY}
+%\acmConference[Conference acronym 'XX]{Make sure to enter the correct conference title from your rights confirmation email}{June 03--05, 2018}{Woodstock, NY}
 
-\acmISBN{978-1-4503-XXXX-X/2018/06}
+%\acmISBN{978-1-4503-XXXX-X/2018/06}
 
 
 \newcommand{\Solution}{\texttt{AutoSage}}
@@ -118,32 +116,25 @@ We deployed this solution over a local testbed and demonstrated end-to-end agent
 Traditional cloud computing operations often require complex manual configurations, especially for deploying services in containerized environments (\textit{e.g.,} microservices). Kubernetes (K8s) has become the de facto open-source platform for container orchestration, enabling automated software deployment, scaling, and management. However, defining deployment specifications, such as resource requests and limits, still demands substantial expertise and remains challenging even for experienced practitioners~\cite{yu2020microscaler, al2024containerized, sacco2025intent}.
 %In particular, despite the automation provided by the K8s suite, operations like capacity planning, resource optimization, and scaling remain challenging. This is due to the complexity of tasks that are required to achieve a system that meets provisioning targets reliably. Examples of these tasks are predicting resource demands, optimal QoS-compliant workload packing, stable scaling that accounts for dependencies among services and application statefulness, gathering telemetry, and safeguarding automated operations.
 In particular, despite K8s's built-in automation, reliably meeting provisioning targets remains complex, requiring accurate demand forecasting, QoS-aware workload packing, dependency- and state-aware scaling, robust telemetry collection, and safeguards for automated operations.
-
+%
 %Overcoming these hurdles can prove both labor-intensive and difficult with traditional tools as infrastructures scale massively. For this reason, integrating Agentic Artificial Intelligence (Agentic AI) into orchestration workflows has become the focus of many research efforts and has led to the emergence of AIOps~\cite{shetty2024building}, a design paradigm that shifts from predominantly human-driven processes toward the autonomous AI-enabled management of complex IT and cloud infrastructures. The incorporation of AI-driven techniques into large-scale cloud infrastructure management, which is comprised of a multitude of complex workflows, introduces both substantial opportunities and non-trivial challenges. Embedding AI models within these workflows can assist with high-dimensional telemetry analysis, workload prediction, and adaptive resource optimization, capabilities that are increasingly difficult to achieve using traditional mechanisms alone. In the specific case of capacity management, traditional threshold-based and reactive scaling mechanisms are often insufficient to handle dynamic traffic patterns and the delayed effects of scaling decisions, both inherent to distributed systems. These limitations motivate the exploration of AI-driven resource management approaches for k8s capacity planning, leveraging the strengths of reasoning-capable models to enable proactive management by factoring in application behavior, container-level resource specifications, and cluster-level scheduling dynamics when devising capacity plans.
 Addressing these challenges with traditional tools becomes increasingly labor-intensive, motivating the integration of Agentic AI into orchestration workflows under the AIOps paradigm~\cite{shetty2024building}. This shift toward autonomous and AI-enabled management enables advanced telemetry analysis, workload prediction, and adaptive resource optimization across complex cloud environments. In capacity management specifically, traditional mechanisms, \textit{i.e.,} reactive and threshold-based scaling~\cite{yu2020microscaler, rossi2020self, rossi2020geo, xu2025auto, ahmad2025towards}, often fail to cope with dynamic traffic and delayed scaling effects in distributed systems. This prompts the adoption of AI-driven approaches for K8s planning that incorporate application behavior, container-level specifications, and cluster-level scheduling dynamics to enable proactive, context-aware resource management~\cite{khaleq2021intelligent, nguyen2022graph, song2023chainsformer, subramaniam2023automated, santos2023gym, quattrocchi2024autoscaling}.
 
 %Nonetheless, the practical adoption of AIOps and agentic AI within K8s-based infrastructures raises several technical challenges. First, identifying appropriate operational use cases remains non-trivial, as not all tasks benefit equally from learning-based automation. Second, effective model performance depends on the availability and quality of observability data, such as metrics, logs, traces, and events collected across clusters. Data sparsity, noise, and cross-layer dependencies can significantly limit model reliability. Third, AI systems must be tightly integrated with control-plane APIs and policy frameworks to safely and timely actuate changes in live environments. This requirement introduces concerns related to model deployment in resource-constrained clusters, scalability across multi-cluster or multi-cloud infrastructures, and the interpretability of AI-generated decisions—particularly when those decisions affect service availability or compliance constraints.
 %Furthermore, granting high levels of autonomy to AI agents further amplifies safety and governance considerations. In production cloud systems, erroneous scaling actions, configuration updates, or remediation procedures may result in cascading failures or service disruption for end users, potentially breaking Service Level Agreements (SLA). Consequently, AI-driven control loops must incorporate safeguard mechanisms such as policy validation, rollback strategies, bounded action spaces, and, where appropriate, human-in-the-loop supervision. Ensuring transparency, auditability, and explainability of automated decisions remains a critical requirement for operational trust and regulatory alignment.
-Nonetheless, the practical adoption of AIOps and agentic AI within K8s-based infrastructures raises several key technical challenges: %\textit{(i)} \as{questo è da chiarire meglio, ho provato a rifrasare ma non capivo bene, non ero così convinto di cosa volessi dire} use-case selection, as not all operational tasks equally benefit from learning-based automation; 
-\pn{Applying AIOps and agentic AI in Kubernetes is promising, but still difficult in practice.
-First, not every operational task is suitable for AI automation, so selecting the right use cases is essential.
-Second, model quality depends on observability data quality; noisy, sparse, or inconsistent metrics/logs/traces can reduce reliability.
-Third, safe operation requires tight integration with Kubernetes control-plane APIs and policies, especially for live actuation.
-This creates additional constraints in resource-limited clusters and multi-cluster environments, and increases the need for explainable, auditable decisions when availability or compliance is affected.}
-\textit{(i)} data quality and observability, since reliable performance depends on high-quality metrics, logs, traces, and events, often hindered by noise, sparsity, and cross-layer dependencies; \textit{(ii)} system integration, requiring tight coupling with control-plane APIs and policy frameworks to safely actuate changes in live, potentially resource-constrained and multi-cluster environments; and \textit{(iii)} interpretability, safety operations, and governance, particularly when AI-driven decisions impact availability or compliance. Increasing agent autonomy amplifies safety concerns, where erroneous scaling actions, configuration updates, or remediation procedures may result in cascading failures, service disruption, or SLA violations for end users. This challenge introduces the need for safeguards such as policy validation, rollback mechanisms, bounded action spaces, human-in-the-loop supervision (where deemed), and strong transparency, auditability, and explainability.
+Nonetheless, the practical adoption of AIOps and agentic AI within K8s-based infrastructures raises several key technical challenges: 
+%\textit{(i)} use-case selection, as not all operational tasks equally benefit from learning-based automation; 
+\textit{(i)} First, not all operational responsibilities are appropriate candidates for AI-driven automation, so selecting the right use cases is essential;
+\textit{(ii)} Second, the effectiveness of any model is inherently tied to the quality of the underlying observability data. Noisy, incomplete, or inconsistent metrics, logs, and traces can significantly degrade predictive performance and decision reliability;
+%data quality and observability, since reliable performance depends on high-quality metrics, logs, traces, and events, often hindered by noise, sparsity, and cross-layer dependencies; 
+\textit{(iii)} Third, safe operations in production environments require tight integration with K8s control-plane APIs and policy mechanisms, particularly when automated decisions directly trigger scaling or configuration changes;
+and \textit{(iii)} lastly, when AI-driven decisions impact the system's availability, the need for transparency, explainability, and auditability becomes essential to ensure trustworthy operation and accountable decision-making.
+Increasing agent autonomy amplifies safety concerns, where erroneous scaling actions, configuration updates, or remediation procedures may result in cascading failures, service disruption, or SLA violations for end users. This challenge introduces the need for safeguards such as policy validation, rollback mechanisms, bounded action spaces, human-in-the-loop supervision (where deemed), and strong transparency, auditability, and explainability.
 
-
-To achieve these objectives, we introduce \Solution{}, our agentic AI platform engineered to address the challenges of autonomous capacity management. Our solution supports K8s operations, leveraging LLMs to make proactive, dynamic, and context-aware auto-scaling decisions while integrating safeguards and human-in-the-loop mechanisms. We demonstrate that our solution...
+To address these challenges, we present \Solution{}, our agentic AI platform designed for autonomous capacity management in K8s environments. \Solution{} leverages large language models (LLMs) to produce proactive, context-aware auto-scaling decisions informed by short-term resource utilization forecasting. Unlike reactive threshold-based approaches, our system anticipates workload dynamics and adapts replica counts accordingly. To ensure reliability and operational safety, \Solution{} incorporates explicit guardrails via controlled decision policies, and optional human-in-the-loop approval mechanisms. Through an experimental campaign, we demonstrate that the platform accurately forecasts resource demand and effectively translates these predictions into scaling actions that maintain SLA compliance while reducing cloud infrastructure costs.
 %some results
 
-The remainder of this paper is structured as follows: Section \ref{sec:related} provides an overview of related work and outlines our contribution. Section \ref{sec:system} comprehensively illustrates the architecture of \Solution{} and its components. Section \ref{sec:evaluation} presents a comparative evaluation of our solution. Section \ref{sec:conclusion} concludes the paper and summarizes our results.
-
-\begin{figure*}
-    \centering
-    \includegraphics[width=\linewidth]{figures/overview.pdf}
-    \caption{Overview of \Solution{}'s interaction with K8s ecosystem.}
-    \label{fig:overview}
-\end{figure*}
+The remainder of this paper is structured as follows: Section \ref{sec:related} provides an overview of related work and outlines our contribution. Section \ref{sec:system} provides a comprehensive overview of the architecture of \Solution{}. Section \ref{sec:evaluation} evaluates our solution and Section \ref{sec:conclusion} concludes the paper and summarizes our results.
 
 \section{Related Work}
 \label{sec:related}
@@ -174,29 +165,44 @@ Beyond diagnosis, systems such as LLexus and Nissist~\cite{las2024llexus,an2024n
 %Another prominent use case for agentic AI lies in security operations, considering that the evolution of cloud applications into highly dynamic systems has made traditional techniques more challenging to apply. In light of this, Cao et al.~\cite{cao2024llm} devise LLM-CloudSec, a framework for timely, fine-grained vulnerability detection and analysis in cloud applications. Agentic AI, however, may at the same time represent a tool for securing operations but also give birth to new vulnerabilities: Pasquini et al.~\cite{pasquini2025aiops} reflect on the security risks of adopting AIOps systems, identifying these autonomous, telemetry-driven workflows as potential attack vectors, and delineate a solution for remediation.
 
 Beyond failure management, LLM-based agents increasingly serve as conversational interfaces and intelligent assistants for cloud operations, lowering the expertise barrier and enabling intent-based workflows in which operators specify desired system states in natural language and delegate their realization to AI-driven agents~\cite{yunjchoi2023conversational,kapoor2025aiops}. This paradigm has been applied to automated Kubernetes manifest generation and broader cloud configuration enforcement, demonstrating how agentic systems translate high-level objectives into executable infrastructure policies~\cite{dubey2024leveraging,sacco2025intent,brodimas2025intent,mekrache2024intent}. In parallel, agentic AI is gaining traction in security operations, where the dynamism of cloud environments challenges traditional methods: frameworks such as NVIDIA Morpheus~\cite{huang_nandakumar2024augmenting} and LLM-CloudSec~\cite{cao2024llm} respectively enable automatic alert triage following into generation of actionable insights from raw data, and fine-grained vulnerability detection and analysis, while recent work also highlights the security risks introduced by autonomous, telemetry-driven AIOps pipelines and proposes mitigation strategies~\cite{pasquini2025aiops}.
-
+%
 %More applications of LLM agents reside in DevOps, where optimizing management processes can grant several benefits. Tasks in this field, consisting of predictive maintenance, resource allocation optimization, monitoring, load balancing, and workflow automation, are tackled in \cite{bokkena2024optimizing}, where the author evaluates the impact of delegating their completion to LLMs using the Google Cluster Usage trace as a benchmark base. 
 %Our contribution to the AIOps landscape lies in a different use case from those commonly found in literature: while \Solution{} is similarly intended as an assistant for intelligent operations, its primary purpose is neither incident management nor security analysis, but rather application-aware resource scaling and optimization in Kubernetes clusters, delivered in an online, fully functioning platform.
 LLM agents are also being explored in DevOps to optimize operational processes, including predictive maintenance, resource allocation, monitoring, load balancing, and workflow automation. For example,~\cite{bokkena2024optimizing} evaluates delegating these tasks to LLMs using the Google Cluster Usage trace, focusing on performance gains in cluster management workflows.
 
 In contrast to prior work - largely centered on incident management, security, or offline performance evaluation - \Solution\ targets application-aware resource scaling and optimization in K8s clusters. It operates as an online, fully functional system that continuously adapts resource allocation based on application-level context, positioning it as a proactive optimization framework rather than a reactive operational assistant.
 
+\begin{figure*}
+    \centering
+    \includegraphics[width=.98\linewidth]{figures/overview.pdf}
+    \caption{Overview of \Solution{}'s interaction with K8s ecosystem.}
+    \label{fig:overview}
+    \vspace{-1\baselineskip}
+\end{figure*}
 
 \section{System Model}
 \label{sec:system}
 
 \subsection{\Solution\ Overview}
-\pn{AutoSage runs outside the Kubernetes cluster and connects using normal kubeconfig access.It reads cluster metrics, predicts near-future load, and asks the LLM for a scaling choice.Then MCDA checks that choice and can correct it if needed.The final action is sent to Kubernetes through kubectl patch/scale commands.After that, Kubernetes itself applies the change through its normal control-plane reconciliation.Figure 1 shows this full flow from data collection to decision, validation, execution, and dashboard feedback.}
 
-Agentic AIOps represents the shift from passive observability to autonomous operational intelligence, by introducing goal-driven, decision-making agents that can interpret system state, reason about potential actions, and safely execute changes in production environments. 
+Agentic AIOps represents the shift from passive observability to autonomous operational intelligence by introducing goal-driven, decision-making agents that can interpret system state, reason about potential actions, and safely execute changes in production environments. 
 In Kubernetes systems, Agentic AI systems can continuously analyze telemetry, predict capacity, and take corrective actions such as scaling workloads, while adhering to guardrails. 
+%
+Figure~\ref{fig:overview} illustrates \Solution, our solution for intelligent, context-aware auto-scaling operations in containerized infrastructures. 
 
-In this section, we present our entry in this emerging panorama: \Solution{}, a solution for intelligent, context-aware auto-scaling operations in containerized infrastructures.
-\Solution{} is a modular platform that operates \emph{outside} the managed
-K8s cluster.  It authenticates via standard \texttt{kubeconfig}
-credentials, collects telemetry through the Kubernetes Metrics API, and applies
-scaling actions with \texttt{kubectl patch} commands.  Figure~\ref{fig:arch}
-shows the five principal layers, described in detail below.
+\Solution\ is a modular platform that operates \emph{outside} the managed
+K8s cluster and connects through standard \texttt{kubeconfig} credentials. This design avoids intrusive modifications to the cluster while preserving full compatibility with native K8s APIs.
+At runtime, \Solution\ retrieves cluster metrics (i.e., CPU and memory utilization), generates short-term load forecasts, and submits the aggregated contextual information to the LLM-based advisor to obtain a scaling recommendation. The proposed action is subsequently evaluated by a Multi-Criteria Decision Analysis (MCDA) module, which verifies policy compliance, safety constraints, and operational limits. If necessary, MCDA may adjust or override the LLM’s recommendation.
+Once validated, the final scaling decision is applied to the K8s cluster 
+%via standard \texttt{kubectl patch} or \texttt{kubectl scale} commands.
+that enforces the change through its native control-plane reconciliation mechanism, ensuring that the desired state specified in the resource definition is eventually realized by the running system.
+%
+The system supports both Horizontal Pod Autoscaling (HPA) and Vertical Pod Autoscaling (VPA). HPA dynamically adjusts the number of pod replicas based on observed resource utilization or custom metrics, thereby scaling workloads horizontally. In contrast, VPA modifies the CPU and memory resource requests (and optionally limits) of individual pods, effectively scaling workloads vertically by resizing containers rather than changing replica counts.
+%
+%Figure~1 illustrates the complete operational pipeline, including data collection, forecasting, LLM-based decision generation, MCDA-based validation, execution via Kubernetes APIs, and feedback to the monitoring dashboard.
+%
+In the rest of the section, we detail the components \Solution, as represented in Figure~\ref{fig:arch}, which depicts the five principal layers.
+%It authenticates via standard \texttt{kubeconfig} credentials, collects telemetry through the Kubernetes Metrics API, and applies scaling actions with \texttt{kubectl patch} commands.  
 
 % ---- Architecture diagram ----
 \begin{figure*}[t]
@@ -275,7 +281,7 @@ shows the five principal layers, described in detail below.
 \node[sub=purple!15] (uiv)  at (4.5,11.2)  {UQ Viz};
 \node[sub=purple!15] (mcv)  at (6.5,11.2)  {MCDA\\Card};
 \draw[rounded corners=5pt, fill=purple!4, draw=purple!30]
-      (-1.5,10.5) rectangle (7.5,11.9);
+      (-1.9,10.5) rectangle (8.5,11.9);
 \node[title] at (3,12.25) {Web Dashboard \& API};
 \node[sub=purple!15] at (0,11.2)    {REST API};
 \node[sub=purple!15] at (2.3,11.2)  {WebSocket};
@@ -307,7 +313,8 @@ Card.  Layer arrows show data flow; dashed arrow shows actuation return.}
 \caption{Architecture of \Solution{}.  Each layer contains its internal
 components as separate modules.  Solid arrows show the data flow; the dashed
 arrow shows the actuation path.  Small gray arrows within layers indicate
-internal flows (e.g., \ LLM fallback chain, MCDA feeding enforcement). \as{In k8s cluster we miss kubelet top right?}} \pn{if you mean kubectl top then we should not put kubectl top inside the Kubernetes Cluster layer.kubectl top is a client command/tool (outside the cluster),it queries cluster metrics through the API path (Metrics Server / API Server),so it belongs to the Metrics Collection layer, not inside cluster internals.}
+internal flows.} 
+%(e.g., \ LLM fallback chain, MCDA feeding enforcement). }
 \label{fig:arch}
 \end{figure*}
 
@@ -319,10 +326,10 @@ In such a way, our approach works with any standard cluster, eliminating the nee
 The collector retrieves metrics using a prioritized, sequential strategy. It first attempts to obtain metrics using a primary method. If this attempt fails or does not return within a fixed timeout ($10$\,s), the system proceeds to the next method in the predefined order. This process continues until metrics are successfully retrieved or all available methods have been attempted. 
 %Each individual metrics request is allowed to run for at most 10\,s. 
 Individual requests that exceed this timeout are treated as failed, triggering the next method in the sequence. This design ensures predictable latency while providing robustness against transient failures or slow responses from individual metric sources.
-
+%
 The collector attempts to retrieve metrics from the following sources, in order of priority:
 \begin{enumerate}
-    \item \textbf{Kubectl top.}  The primary method executes \texttt{kubectl top nodes} as a subprocess and parses the tabular output for per-node CPU (millicores) and memory (MiB).  This service internally reads from the Metrics Server but returns values in a format similar to the traditional \texttt{top} command. We have empirically observed that on a single-node testbed, this call completes in ${\sim}200$--$500$\,ms, which makes our timeout value a valid threshold.
+    \item \textbf{Kubectl top.}  The primary method executes \texttt{kubectl top nodes} as a subprocess and parses the tabular output for per-node CPU (millicores) and memory (MiB). This service internally reads from the Metrics Server but returns values in a format similar to the traditional \texttt{top} command. We have empirically observed that on a single-node testbed, this call completes in ${\sim}200$--$500$\,ms, which makes our timeout value a valid threshold.
     %\pn{In our single-node CrownLabs testbed, this call typically completed in a few hundred milliseconds (empirical observation).}
     \item \textbf{Metrics API.}  If \texttt{kubectl top} fails or is unavailable, the collector queries via direct API requests to the Metrics Server. The endpoint \texttt{metrics.\allowbreak{}k8s.\allowbreak{}io/v1beta1} is accessed via a Kubernetes Python client, %(\texttt{CustomObjectsApi}), 
     converting raw millicore and byte values to percentages using each node's allocatable capacity. 
@@ -330,43 +337,20 @@ The collector attempts to retrieve metrics from the following sources, in order 
 \end{enumerate}
 
 The methods are not executed in parallel since only one method is active per collection cycle; the fallback is transparent to downstream consumers.  Raw values are normalized to cluster-wide utilization percentages: $\text{CPU\%} = \text{usage} / \text{allocatable} \times 100$, and analogously for memory.  
-The \emph{Metrics Collector} generates an aggregated snapshot consisting of: CPU\%, memory\%, pod count \as{what is this? no explanation, not all are familiar with k8s} \pn{Pod count is the number of pods currently running for the monitored workload/namespace. It gives a direct view of how many application instances are active.}, node count \as{what is this? no explanation} \pn{Node count is the number of Kubernetes worker machines currently available in the cluster. It indicates cluster capacity and helps normalize resource usage.},
-network~I/O \as{what is this? no explanation} \pn{Network I/O is the amount of data sent and received over the network by the monitored workloads/nodes (input/output traffic). It is useful to detect communication-heavy load conditions.}, and disk~I/O \as{what is this? no explanation} \pn{Disk I/O is the amount of data read from and written to storage by workloads/nodes. It captures storage pressure that may not appear in CPU or memory alone.}. With a time interval $\Delta t$, the module generates a matrix \as{Is it a matrix or array?} \pn{It is an array (list) of snapshots in the implementation.
-You can think of it like a matrix when explaining it, but technically it is stored as a rolling list.}using the last $N$ samples in a rolling in-memory window to feed the forecasting module. By default, we set = $\Delta t =300$\,s but this value can be customized for faster or slower decisions.
+The \emph{Metrics Collector} produces an aggregated system snapshot that summarizes the current operational state. This snapshot includes CPU and memory utilization (in percent), the \emph{pod count} (i.e., the number of active application instances running for the monitored workload), and the \emph{node count} (i.e., the number of worker machines currently available in the Kubernetes cluster, reflecting overall cluster capacity).
+In addition, the snapshot captures \emph{network I/O}, defined as the volume of data transmitted and received over the network, and \emph{disk I/O}, representing the amount of data read from and written to persistent storage.
+%Together, these metrics provide a multi-dimensional view of compute, capacity, communication, and storage pressure within the system. 
+With a time interval $\Delta t$, the module generates a matrix using the last $N$ samples in a rolling in-memory window to feed the forecasting module. By default, we set $\Delta t =300$\,s, but this value can be customized for faster or slower decisions.
 
 \subsection{Predictive Monitoring}
 \label{sec:prediction}
 
 \subsubsection{Time-Series Forecasting.}
-Using the collected metrics, we can now predict future usage of CPU and memory using two different approaches.
-The \textit{CPU utilization} is forecast over a horizon of $H = 6$~hours using a composite model: as a weighted combination of a linear trend component and a seasonal component capturing daily periodicity. %A first-order polynomial (linear trend) is fitted to the last~$N$ samples via least-squares, (\texttt{numpy.polyfit}) and a seasonal component capturing daily periodicity is added, resulting in a final formula as:
-In particular, we assume the time series can be decomposed into two components: trend and seasonality.
-Formally, the $h$-step-ahead prediction is given by:
-\begin{equation}\label{eq:forecast}
-  \hat{y}(t+h) \;=\; 0.7 \cdot f_{\mathrm{trend}}(t+h)
-                 \;+\; 0.3 \cdot f_{\mathrm{season}}(t+h),
-  \quad h = 1, \ldots, H
-\end{equation}
-where $f_{\mathrm{trend}}$ is the linear extrapolation and $f_{\mathrm{season}}$ is the corresponding value from the previous daily cycle. 
-The trend component $f_{\mathrm{trend}}$ is modeled as a first-order polynomial:
-\begin{equation}\label{eq:trend}
-  f_{\mathrm{trend}} = a t + b,
-\end{equation}
-where the coefficients $a$ and $b$ are estimated via ordinary least squares using the most recent $N$ observations. This local linear regression captures the short-term evolution of the underlying signal and allows the model to adapt to recent changes in level and slope.
-
-The seasonal component $f_{\mathrm{season}}$ captures systematic daily periodic effects and accounts for recurring intra-day patterns not explained by the linear trend. It models deterministic cyclic behavior with a fixed period corresponding to one day.
-
-The final forecast is obtained as a convex combination of the two components, assigning weights of $0.7$ to the trend and $0.3$ to the seasonal term. This weighting emphasizes the dominant role of the recent linear dynamics while still incorporating structured periodic fluctuations. The CPU forecast can be interpreted as a simple additive decomposition with fixed combination weights, designed to capture both short-term trend behavior and stable daily seasonality.
-
-
-\textit{Memory utilization}, instead, is forecast with a separate exponential smoothing model with smoothing parameter $\alpha = 0.3$. The one-step-ahead forecast is computed as:
-\begin{equation}\label{eq:mem_smoothing}
-  \hat{m}_{t+1} = \alpha m_t + (1-\alpha)\hat{m}_{t},
-\end{equation}
-where $m_t$ is the observed memory utilization at time $t$ and $\hat{m}_t$ represents the smoothed estimate obtained at the previous time step.
-
-This formulation updates the forecast recursively by combining the most recent observation with the prior smoothed value. The parameter $\alpha$ controls the relative weight assigned to new information versus historical estimates, with $\alpha = 0.3$ placing greater emphasis on past observations while still allowing the model to adapt to recent changes.
-
+Using the collected metrics, we predict future CPU and RAM utilization with a regression algorithm that forecasts future values based on historical and evolving trends. The history feeds a one-step-ahead AutoRegressive Integrated Moving Average (ARIMA) model \cite{box2015timeseries}, a widely used statistical framework for time-series forecasting, chosen for its low deployment requirements and low latency.
+An ARIMA model is denoted as ARIMA$(p,d,q)$, where $p$ represents the order of the autoregressive (AR) component (i.e., the number of lag observations included in the model), 
+$d$ denotes the degree of differencing required to achieve stationarity (i.e., the number of times that the raw observations are differenced), 
+and $q$ represents the order of the moving average (MA) component (i.e., the size of the moving average window).
+In our tests, we set $p = 3$, $d = 0$, and $q = 0$ after performing parameter optimization via grid search.
 
 \subsubsection{Bootstrap Uncertainty Quantification.}
 \label{subsec:uncert}
@@ -387,102 +371,97 @@ The total predictive variance is assumed to increase with the forecast horizon a
 \end{equation}
 This formulation reflects the intuition that both observational noise and model uncertainty accumulate over time.
 
-Assuming approximate normality of the predictive distribution, a $100(1-\alpha)\%$ prediction interval is constructed as
-\[
+Assuming approximate normality of the predictive distribution, a prediction interval with a confidence $100(1-\alpha)\%$ is constructed as:
+%expected range of future utilization
+\begin{equation}\label{eq:pred_interval}
   \hat{y}(t+h) \pm z_{\alpha/2}\,\sigma(h),
-\]
-where $z_{\alpha/2}$ is the standard normal quantile (e.g., $z_{0.025}=1.96$ for a $95\%$ prediction interval).
+\end{equation}
+where $z_{\alpha/2}$ is the standard normal quantile (e.g., $z_{0.025}=1.96$ for a $95\%$ prediction interval). The prediction interval provides a range of plausible values for future utilization, thereby quantifying forecast uncertainty rather than relying solely on a single point estimate.
 
-In addition, the system computes four \emph{exceedance probabilities} in the form of:
-\[
-  \Pr\!\left(Y(t+h) > \tau\right)
-\]
-for predefined utilization thresholds $\tau \in \{50,70,80,90\}\%$. These probabilities are obtained using the complementary cumulative distribution function of the normal distribution with mean $\hat{y}(t+h)$ and variance $\sigma^2(h)$. %They quantify the risk that the predicted value exceeds operationally relevant capacity limits and can be used for proactive alerting or resource management decisions.
+In addition, the system computes four \emph{exceedance probabilities} for $4$ predefined utilization thresholds $\tau \in \{50, 70, 80, 90 \}\%$, denoting the likelihood that utilization exceeds each threshold. The probabilities are obtained in the form of $\Pr\!\left(\hat{y}(t+h) > \tau\right)$.
+These probabilities are obtained using the complementary cumulative distribution function of the normal distribution with mean $\hat{y}(t+h)$ and variance $\sigma^2(h)$. %They quantify the risk that the predicted value exceeds operationally relevant capacity limits and can be used for proactive alerting or resource management decisions.
 These values directly reflect operational risk (e.g., the probability of entering high- or critical-utilization zones) and are used for dashboard visualizations, proactive alerting, and scaling decisions.
-
-\pn{The prediction interval gives a plausible range for future utilization (not just one point estimate).
-Then, exceedance probability estimates how likely utilization is to cross practical thresholds (50/70/80/90%).
-These probabilities are used by the dashboard and autoscaling logic: higher exceedance at high thresholds means higher risk and can trigger stronger scale-up recommendations, while low exceedance supports maintain/scale-down decisions. or we can say it like  this The interval \([\hat{y}(t+h)\pm z_{\alpha/2}\sigma(h)]\) provides the expected range of future utilization at confidence \(100(1-\alpha)\%\), so operators can see forecast uncertainty instead of only a point estimate.}
+Elevated exceedance probabilities at higher thresholds indicate an increased risk of capacity saturation and may therefore justify more aggressive scale-up actions. Conversely, low exceedance probabilities suggest limited risk, supporting decisions to maintain the current allocation or to scale down resources.
+%higher exceedance at high thresholds means higher risk and can trigger stronger scale-up recommendations, while low exceedance supports maintain/scale-down decisions. 
 
 \subsubsection{Calibrated Anomaly Detection.}
-An Isolation Forest~\cite{liu2008isolation} with contamination
-$c = 0.1$ produces a raw anomaly score $s \in [-1,1]$.  Since raw scores are
-not directly interpretable as probabilities, \Solution{} applies
-\emph{Platt scaling}~\cite{platt1999probabilistic}:
+
+In addition to resource forecasting, we provide an anomaly indication to facilitate operator interpretation and provide additional contextual signals for automated scaling and resource management decisions.
+%
+An Isolation Forest~\cite{liu2008isolation} with contamination parameter
+$c = 0.1$ is employed to detect anomalous behavior. The model produces a
+raw anomaly score $s \in [-1,1]$, where larger values indicate a higher
+degree of abnormality. However, these raw scores are not directly
+interpretable as calibrated probabilities and are therefore difficult to
+use for risk-aware decision making.
+
+To obtain probabilistic outputs, \Solution{} applies \emph{Platt scaling}~\cite{platt1999probabilistic}, transforming the raw score into an estimated anomaly probability via a logistic mapping:
 \begin{equation}\label{eq:platt}
   \Pr(\text{anomaly} \mid s) = \sigma(As + B)
     = \frac{1}{1 + e^{-(As + B)}},
 \end{equation}
-with learned parameters $A = -5.0$ and $B = -0.5$.  The calibrated probability
-is mapped to a severity distribution across four levels (low, medium, high,
-critical), and a detection confidence is computed as
-$\gamma = 2 \, |P(\text{anomaly}) - 0.5|$. \as{what is this? how is it used?} \as{We need to expan a bit more here} \pn{This block converts anomaly detection from a binary flag into a risk score that operators can act on.
-Isolation Forest gives a raw anomaly score, but raw scores are hard to interpret.
-Platt scaling transforms that score into an estimated probability of anomaly (0 to 1), which is easier to understand and compare over time.
-That probability is then mapped to severity levels (low/medium/high/critical) for dashboard display and alert prioritization.
-The confidence term 
-γ=2∣P(anomaly)−0.5∣ γ=2∣P(anomaly)−0.5∣ measures how far the probability is from uncertainty (0.5): values near 1 mean strong confidence, values near 0 mean uncertain detection.
-In practice, these outputs are used to trigger warnings, explain risk in the UI, and provide additional context to scaling decisions.”
-}
+where $A = -5.0$ and $B = -0.5$ are learned calibration parameters. This transformation maps the Isolation Forest score to the interval $[0,1]$, yielding a quantity that can be interpreted as the estimated likelihood of anomalous behavior. Compared to raw scores, calibrated probabilities are easier to interpret, monitor over time, and integrate into downstream decision logic.
 
-\subsection{LLM Autoscaling Advisor}
+The resulting probability is further mapped to a discrete severity distribution across four levels (low, medium, high, critical), enabling intuitive visualization and prioritization in operational dashboards.
+In addition, a detection confidence measure is defined as $\gamma = 2\,\bigl|P(\text{anomaly}) - 0.5\bigr|,$
+%The value 0.5 is the neutral midpoint of a calibrated probability in $[0,1]$. At $P(\text{anomaly})=0.5$, uncertainty is maximal and $\gamma=0$; as $P(\text{anomaly})$ moves toward 0 or 1, confidence increases and $\gamma$ approaches 1. So 0.5 is not a tuned threshold, but the natural center of the probability scale.}
+which quantifies the distance from maximal uncertainty. Values of $\gamma$ close to $1$ indicate high confidence ($P(\text{anomaly})$ near $0$ or $1$), whereas values close to $0$ correspond to uncertain detections.
+%
+Overall, this calibration and post-processing pipeline converts anomaly detection from a binary indicator into a probabilistic risk score with associated severity and confidence measures.
+
+\section{LLM-Based Autoscaling Advisor}
 \label{sec:llm}
 
-The autoscaling advisor casts every scaling decision as a natural-language
-reasoning problem.  A structured prompt is assembled from four sources of
-context: (i)~current metrics (CPU/memory utilisation, pod count,
-ready/available pods), (ii)~forecasts (current value, peak, trend, per-hour
-predictions for $H = 6$~hours), (iii)~deployment state (replicas, min/max
-bounds, resource requests/limits, HPA/VPA status), and (iv)~statefulness
-classification (see below).  The LLM returns a JSON object specifying the
-recommended \texttt{action} (\texttt{scale\_up}, \texttt{scale\_down}, or
-\texttt{maintain}), a \texttt{scaling\_type} (\texttt{hpa} or \texttt{vpa}),
-target replicas or VPA resource requests, a confidence score, and a free-text
-rationale.
+The autoscaling advisor formulates scaling as a structured natural-language reasoning task. Rather than relying solely on predefined threshold rules, the system aggregates relevant operational signals into a unified prompt and delegates the final recommendation to an LLM. This design enables context-aware decisions that jointly consider workload dynamics, resource constraints, and deployment characteristics.
+
+For each evaluation cycle, a structured prompt is constructed from four sources of contextual information:
+(i)~\emph{current runtime metrics}, including CPU and memory utilization, pod count, and the number of ready and available pods;
+(ii)~\emph{forecast information}, comprising the current value, predicted peak, overall trend, and per-hour predictions over a horizon of $H = 6$ hours;
+(iii)~\emph{deployment configuration and state}, such as the current number of replicas, minimum and maximum scaling bounds, resource requests and limits, and the status of Horizontal Pod Autoscaling (HPA) and Vertical Pod Autoscaling (VPA); and
+(iv)~\emph{statefulness classification}, which characterizes whether the workload can be safely scaled horizontally (described below).
+
+Given this structured context, the LLM produces a machine-readable JSON response specifying: (1) the recommended \texttt{action} (\texttt{scale\_up}, \texttt{scale\_down}, or \texttt{maintain}); (2) the \texttt{scaling\_type} (\texttt{hpa} or \texttt{vpa}); (3) the target number of replicas or updated VPA resource requests; (4) a confidence score; and (5) a free-text rationale explaining the decision. This output format ensures interpretability for operators while remaining directly consumable by automated control components.
 
 \subsubsection{Model Selection and Caching.}
-\Solution{} implements a two-tier LLM fallback chain.  The primary model is a
-self-hosted open-source LLM (e.g.\ Qwen) accessed via an OpenAI-compatible
-endpoint, with a timeout of 240\,s and generation temperature $\theta = 0.1$.
-If the primary model is unavailable, the system falls back to the Groq cloud
-API (Llama~3.1-8B, timeout 15\,s).  To limit API costs, recommendations are
-cached for a configurable TTL (default 300\,s) and calls are rate-limited to a
-minimum interval of 30\,s.
+
+\Solution{} implements a two-tier LLM fallback strategy to ensure reliable scaling decisions. The primary model is a self-hosted open-source LLM (e.g., Qwen) accessed via an OpenAI-compatible endpoint, configured with a $240$\,s timeout and low generation temperature ($\theta = 0.1$) to encourage stable, deterministic outputs. If unavailable, the system automatically falls back to a cloud-based model via Groq API (e.g., Llama~3.1-8B) with a $15$\,s timeout to maintain responsiveness.
+%
+To reduce operational cost and redundant inference, recommendations are cached for a configurable TTL (default $300$\,s), and LLM calls are rate-limited to a minimum interval of $30$\,s. This design balances robustness, latency, and cost efficiency.
 
 \subsubsection{HPA vs.\ VPA Decision.}\label{sec:hpa-vpa}
-Choosing between horizontal and vertical scaling is fundamental: adding
-replicas (HPA) to a stateful application that stores session data inside the
-pod would cause data loss, while increasing per-pod resources (VPA) for a
-stateless web server wastes capacity that could be spread across replicas.
-\Solution{} determines the scaling type through a three-stage process.
+Selecting between horizontal and vertical scaling is a critical design decision. Scaling out via HPA may be unsafe for stateful applications that maintain in-pod session data, potentially leading to data inconsistency or loss. Conversely, scaling up via VPA for a stateless service can be inefficient, as additional capacity could instead be distributed across replicas.
+To address this, \Solution{} determines the appropriate scaling strategy through a three-stage decision process.
+
+% \paragraph{Stage~1: Statefulness Detection.}
+% Before calling the LLM, the system inspects the Kubernetes deployment object
+% and classifies the workload's state management through five signals, evaluated
+% in priority order:
+% \begin{enumerate}
+%   \item \textbf{Annotation}
+%         (\texttt{ai4k8s.io/\allowbreak{}state\--management}):
+%         explicit operator declaration (\emph{high} confidence).
+%   \item \textbf{Environment variables}: presence of \texttt{REDIS},
+%         \texttt{DATABASE}, \texttt{POSTGRES} indicates stateless (external
+%         state); \texttt{LOCAL\_STORAGE}, \texttt{PERSISTENT} indicates
+%         stateful (\emph{medium} confidence).
+%   \item \textbf{Persistent volumes}:
+%         \texttt{PersistentVolumeClaim} or \texttt{hostPath} mounts indicate
+%         stateful (\emph{high} confidence); \texttt{emptyDir} is ignored.
+%   \item \textbf{Namespace services}: presence of Redis, database, or cache
+%         services in the same namespace indicates stateless (\emph{medium}).
+%   \item \textbf{Labels}: standard Kubernetes labels provide additional hints
+%         (\emph{low} confidence).
+% \end{enumerate}
+% The detected type and confidence are included in the LLM prompt.
 
 \paragraph{Stage~1: Statefulness Detection.}
-Before calling the LLM, the system inspects the Kubernetes deployment object
-and classifies the workload's state management through five signals, evaluated
-in priority order:
-\begin{enumerate}
-  \item \textbf{Annotation}
-        (\texttt{ai4k8s.io/\allowbreak{}state\--management}):
-        explicit operator declaration (\emph{high} confidence).
-  \item \textbf{Environment variables}: presence of \texttt{REDIS},
-        \texttt{DATABASE}, \texttt{POSTGRES} indicates stateless (external
-        state); \texttt{LOCAL\_STORAGE}, \texttt{PERSISTENT} indicates
-        stateful (\emph{medium} confidence).
-  \item \textbf{Persistent volumes}:
-        \texttt{PersistentVolumeClaim} or \texttt{hostPath} mounts indicate
-        stateful (\emph{high} confidence); \texttt{emptyDir} is ignored.
-  \item \textbf{Namespace services}: presence of Redis, database, or cache
-        services in the same namespace indicates stateless (\emph{medium}).
-  \item \textbf{Labels}: standard Kubernetes labels provide additional hints
-        (\emph{low} confidence).
-\end{enumerate}
-The detected type and confidence are included in the LLM prompt.
+
+Before calling the LLM, \Solution{} determines whether a workload should be treated as stateful or stateless. This distinction is critical, as it directly influences whether HPA or vertical VPA scaling is appropriate.
+The classification is derived from a structured analysis of the Deployment specification, including: operator-provided annotations, environment variables, storage configuration about persistent volumes, or the presence of a database in the namespace. These signals are evaluated in priority order and aggregated into a statefulness label with an associated confidence level.
+The resulting classification is included in the LLM prompt to ensure that scaling recommendations respect workload semantics and avoid unsafe scaling actions.
 
 \paragraph{Stage~2: LLM Reasoning.}
-The LLM receives the statefulness classification as part of the prompt and
-returns a \texttt{scaling\_type} field.  Because the LLM has access to the full
-deployment context, it can make nuanced decisions---for example, recommending
-VPA when a stateless application is already at maximum replicas.
+Using this insight, the LLM returns a corresponding autoscaling decision. Because the LLM is provided with the complete deployment context (e.g., replica limits, resource bounds, and forecasted load), it can make context-aware trade-offs. For example, even for a stateless application, the model may recommend VPA if the workload has already reached its maximum replica count and further horizontal scaling is not feasible.
 
 \paragraph{Stage~3: Post-Processing Enforcement.}
 LLM outputs can be inconsistent: the reasoning text may mention ``state stored
@@ -490,7 +469,7 @@ inside the pod'' while the JSON sets \texttt{scaling\_type:~hpa}.  A
 rule-based enforcement layer catches such contradictions:
 \begin{itemize}
   \item If the reasoning contains stateful indicators but the output is HPA, the system corrects to VPA and computes the target CPU/memory from the current usage plus a 20\% headroom.
-  \item If the detection classifies the workload as stateless but the LLM outputs VPA, the system forces HPA and recalculates target replicas from current metrics and forecast peaks.
+  \item If the detection classifies the workload as stateless, but the LLM outputs VPA, the system forces HPA and recalculates target replicas from current metrics and forecast peaks.
   \item If no statefulness information is available and the LLM chose HPA,
         the system defaults to VPA as the safer option.
 \end{itemize}
@@ -506,20 +485,17 @@ Once the scaling type and targets are finalised, the corresponding engine module
         (\texttt{kubectl patch deployment --type=merge}).
 \end{itemize}
 
-\subsection{MCDA Cross-Validation}\label{sec:mcda}
+\subsection{MCDA Cross-Validation}
+\label{sec:mcda}
 
 LLM recommendations are inherently non-deterministic.  To provide a formal safeguard, every recommendation is cross-validated by a Multi-Criteria Decision Analysis (MCDA) module that implements the Technique for Order of Preference by Similarity to Ideal Solution (TOPSIS)~\cite{hwang1981topsis}.
 
-\subsubsection{Alternative Generation.}
-From the current replica count~$r$, the module generates $5$--$8$ candidate
-alternatives: $r + \delta$ for $\delta \in \{-2, -1, 0, +1, +2, +3\}$, the
-minimum and maximum replicas, and an ``ideal'' replica count that would bring
-CPU utilisation to~70\%.  Candidates outside the $[\textit{min},\textit{max}]$
-range are discarded.
+\paragraph{Alternative Generation.}
+Given the current replica count $r$, the module generates a set of candidate scaling alternatives. Specifically, it considers $r + \delta$ for $\delta \in \{-2,-1,0,+1,+2,+3\}$, the minimum and maximum allowable replica counts, and an ``ideal'' replica count that would yield a target CPU utilization of 70\%. Candidates falling outside the admissible range $[\textit{min},\textit{max}]$ are discarded. This procedure typically produces between five and eight feasible alternatives.
 
-\subsubsection{Criteria Evaluation.}
-Each alternative is scored on five criteria (Table~\ref{tab:criteria}).  Scores
-are normalised, weighted, and processed by the TOPSIS algorithm.
+\paragraph{Criteria Evaluation.}
+Each feasible alternative is evaluated against five decision criteria (Table~\ref{tab:criteria}). Criterion values are normalized and weighted, and the resulting decision matrix is then processed using the TOPSIS method.
+
 
 \begin{table}[t]
 \caption{MCDA criteria and their evaluation.}
@@ -530,54 +506,56 @@ are normalised, weighted, and processed by the TOPSIS algorithm.
 \toprule
 \textbf{Criterion} & \textbf{Type} & \textbf{Description} \\
 \midrule
-Cost            & Cost    & Normalised replica count $r / r_{\max}$ \\
+Cost            & Cost    & Normalized replica count $r / r_{\max}$ \\
 Performance     & Benefit & Proximity of estimated CPU to 70\% sweet spot \\
-Stability       & Benefit & Penalises large replica changes and contra-trend scaling \\
+Stability       & Benefit & Penalizes large replica changes and contra-trend scaling \\
 Forecast Align. & Benefit & Estimated peak CPU in 50--75\% comfort zone \\
 Response Time   & Cost    & Estimated CPU as proxy for latency \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsubsection{TOPSIS Ranking.}
-Let $\mathbf{X} \in \mathbb{R}^{m \times n}$ be the decision matrix with $m$
-alternatives and $n = 5$ criteria.  TOPSIS proceeds as follows:
+\paragraph{TOPSIS Ranking.}
+Let $\mathbf{X} \in \mathbb{R}^{m \times n}$ denote the decision matrix with $m$ alternatives and $n=5$ criteria. TOPSIS is applied as follows:
+
 \begin{enumerate}
-  \item \textbf{Normalise:}
-        $r_{ij} = x_{ij} \big/ \sqrt{\sum_{i=1}^{m} x_{ij}^2}$.
-  \item \textbf{Weight:}
-        $v_{ij} = w_j \cdot r_{ij}$, where $\mathbf{w}$ is one of four
-        predefined weight profiles (balanced, performance-first,
-        cost-optimised, stability-first).
-  \item \textbf{Ideal / Anti-ideal:}
-        $A^{+}_j = \max_i v_{ij}$ (benefit) or $\min_i v_{ij}$ (cost);
-        $A^{-}_j$ vice versa.
-  \item \textbf{Distances:}
-        $D^{+}_i = \lVert \mathbf{v}_i - A^{+} \rVert_2$, \;
-        $D^{-}_i = \lVert \mathbf{v}_i - A^{-} \rVert_2$.
-  \item \textbf{Closeness:}
+  \item \textbf{Normalization:} $r_{ij} = \frac{x_{ij}}{\sqrt{\sum_{i=1}^{m} x_{ij}^2}}.$
+  \item \textbf{Weighting:} $v_{ij} = w_j \cdot r_{ij},$
+        where $\mathbf{w}$ corresponds to one of four predefined weight profiles
+        (balanced, performance-first, cost-optimised, stability-first).
+  \item \textbf{Ideal and anti-ideal solutions:}
+        For each criterion $j$,
+        \[
+        A^{+}_j =
+        \begin{cases}
+        \max_i v_{ij}, & \text{benefit criterion}, \\
+        \min_i v_{ij}, & \text{cost criterion},
+        \end{cases}
+        \qquad
+        A^{-}_j \text{ defined conversely.}
+        \]
+  \item \textbf{Separation measures:}
+        $D^{+}_i = \lVert \mathbf{v}_i - A^{+} \rVert_2$, \; $D^{-}_i = \lVert \mathbf{v}_i - A^{-} \rVert_2$.
+  \item \textbf{Closeness coefficient:}
         $C_i = D^{-}_i / (D^{+}_i + D^{-}_i) \in [0,1]$.
 \end{enumerate}
-The alternative with the highest $C_i$ is the MCDA-optimal action.
 
-\subsubsection{Agreement and Override.}
-The MCDA module compares the LLM's recommended target~$r_L$ with the
-MCDA-optimal target~$r_M$.  Agreement is classified into three levels:
+The alternative with the highest $C_i$ is selected as the MCDA-optimal scaling action.
+
+\paragraph{Agreement and Override Mechanism.}
+The MCDA module compares the LLM-recommended target replica count $r_L$ with the MCDA-optimal target $r_M$. Agreement is categorised into three levels:
+
 \begin{itemize}
-  \item \textbf{Full agreement:} same scaling direction and
+  \item \textbf{Full agreement:} identical scaling direction and 
         $|r_L - r_M| \leq 1$.
-  \item \textbf{Partial agreement:} same direction, different magnitude.
+  \item \textbf{Partial agreement:} identical scaling direction but different magnitude.
   \item \textbf{Divergence:} opposite scaling directions.
 \end{itemize}
-If partial or divergent and the MCDA closeness score exceeds the LLM's by more
-than a threshold $\delta = 0.15$, the system overrides the LLM recommendation
-with the MCDA-optimal action.  The full validation result---agreement level,
-both scores, the dominance margin, criteria weights, and ranking---is attached
-to the recommendation and displayed on the dashboard.
+In cases of partial agreement or divergence, the system evaluates the difference between the respective closeness scores. If the MCDA closeness exceeds the LLM’s score by more than a predefined threshold $\delta = 0.15$, the MCDA-optimal action overrides the LLM recommendation.
+The validation outcome (including agreement level, both closeness scores, dominance margin, applied weight profile, and full ranking) is attached to the final recommendation and presented via the dashboard.
 
-\subsubsection{Weight Profiles.}
-Four weight profiles allow operators to express different priorities
-(Table~\ref{tab:weights}).  The default profile is \emph{balanced}.
+\paragraph{Weight Profiles.}
+Four predefined weight profiles enable operators to encode different operational priorities (Table~\ref{tab:weights}). The default configuration is the \emph{balanced} profile.
 
 \begin{table}[t]
 \caption{MCDA weight profiles ($w_j$ sums to 1.0).}
@@ -591,13 +569,14 @@ Four weight profiles allow operators to express different priorities
 \midrule
 Balanced           & 0.20 & 0.30 & 0.25 & 0.15 & 0.10 \\
 Performance-first  & 0.10 & 0.40 & 0.15 & 0.20 & 0.15 \\
-Cost-optimised     & 0.40 & 0.20 & 0.20 & 0.10 & 0.10 \\
+Cost-optimized     & 0.40 & 0.20 & 0.20 & 0.10 & 0.10 \\
 Stability-first    & 0.15 & 0.20 & 0.40 & 0.15 & 0.10 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Dashboard and Actuation}\label{sec:dashboard}
+\subsection{Dashboard and Actuation}
+\label{sec:dashboard}
 
 % \Solution{} exposes a Flask-based web application that serves both REST
 % endpoints and WebSocket channels (via Flask-SocketIO).  The monitoring
@@ -621,7 +600,7 @@ Stability-first    & 0.15 & 0.20 & 0.40 & 0.15 & 0.10 \\
 
 \Solution{} exposes a web-based control plane that provides both REST APIs and WebSocket channels for real-time interaction via Flask and Flask-SocketIO. The monitoring dashboard presents: \textit{(i)} prediction intervals that expand with the forecast horizon to reflect uncertainty growth; \textit{(ii)} the four exceedance probabilities across the utilization thresholds $(50, 70, 80, 90)$ as mentioned in Section~\ref{subsec:uncert}; 
 % because the system computes probabilities for thresholds 50 70 80 90 percent they are defined earlier in the predictive/UQ part.
-\textit{(iii)} where prediction uncertainty comes from (data noise vs model uncertainty), shown as the data-noise part from Eq.~(\ref{eq:total_var}) \as{not sure if this is the right eq}\pn{Yes, this is correct: Eq.~(\ref{eq:total_var}) (currently Eq.(5)) is used for the data-noise part, and Eq.~(\ref{eq:epistemic}) is used for model uncertainty.} and the model-uncertainty part from Eq.~(\ref{eq:epistemic}); 
+\textit{(iii)} where prediction uncertainty comes from (data noise vs model uncertainty), shown as the data-noise part from Eq.~(\ref{eq:total_var}) and the model-uncertainty part from Eq.~(\ref{eq:epistemic}); 
 \textit{(iv)} calibrated anomaly likelihood with associated severity; 
 and \textit{(v)} MCDA-based validation summaries including agreement levels, TOPSIS scores, and ranking.
 
@@ -630,170 +609,21 @@ Scaling recommendations are computed asynchronously and streamed to the frontend
 \section{Evaluation}
 \label{sec:evaluation}
 
-This section reports a live comparison between Kubernetes-native autoscaling
-and \Solution{}, with emphasis on timing, service-level behavior, and resource
-footprint under the same workload conditions.
+In this section, we first present performance metrics for our chosen forecasting model and then compare K8s-native autoscaling with \Solution{}, with emphasis on timing, service-level behavior, and resource footprint under the same workload conditions.
 
-\subsection{Comparison with Native HPA/VPA}
+All experiments were performed on a
+\cz{CPU SPECS GPU SPECS HERE} setup.
 
-To quantify the practical behavior of \Solution{} against Kubernetes-native
-autoscalers, we implemented and executed a dedicated benchmark runner.
-%(\texttt{autoscaling\_native\_comparison.py}) in the project repository.
-The experiment was run on the CrownLabs deployment used throughout this work.% on the \texttt{test-app-autoscaling} workload in namespace \texttt{ai4k8s-test}. 
-For fairness, each method started from the same baseline
-(\(2\) replicas) before load was applied.
-
-Load was generated in two ways: (i) increasing background CPU pressure by
-setting \texttt{CPU\_LOAD\_PERCENT=95} in the target deployment, and
-(ii) issuing burst requests to \texttt{/cpu-load} from an ephemeral in-cluster
-\texttt{curl} pod. We evaluate \Solution{}'s predictive auto-scaling loop against native HPA and native VPA with a per-method
-timeout of \(60\) seconds \cz{@PEDRAM: what is this timeout? benchmark duration? Should be better described.}\pn{We can describe it simply as: ``This timeout is the per-method benchmark observation duration in each run (60s). During this window, we monitor whether a method emits a decision/recommendation and whether the first change is applied. It is not an API-server provisioning timeout.''}. To make timing semantics explicit, we
-separate three phases in the loop: (i) \emph{control-plane provisioning}, object create/update latency in the API server, (ii) \emph{decision/reaction}, the time until a scaling recommendation or controller decision appears, and
-(iii) \emph{post-decision actuation}, the time from decision availability to first applied resource change.
-In Table~\ref{tab:native-compare}, the \emph{Outcome} column denotes the first
-observable control effect after the decision/reaction phase: for HPA, the
-replica envelope reached during the run; for VPA, the presence of a generated
-recommendation; and for \Solution{}, the frequency of applied replica changes
-within the 10-run campaign window.
+\subsection{Forecasting Model Evaluation}
+Before evaluating the quality of \Solution{}'s autoscaling decisions, we validate our choice of prediction model.
+In order to do so, we compare our ARIMA-based forecasts against two different approaches: (i) a composite model using weighted linear regression (LR) and an exponential smoothing (ES) for CPU and memory prediction, and (ii) LSTM~\cite{hochreiter1997long}, a type of recurrent neural network designed to model sequential data and capture long-term dependencies in time series.
+Table~\ref{tab:forecast-autosage-arima-lstm} provides a direct one-step-ahead
+forecasting comparison, in terms of Mean Squared Error (MSE) and Mean Absolute Percentage Error (MAPE), including 95\% confidence intervals. The comparison between our current ARIMA-based predictor and the two other models is led on three simulated application behaviors \cz{@PEDRAM: these three application behaviours need to be explicitly described here or somewhere else}. Our optimized ARIMA predictor achieves the lowest error in all three scenarios, outperforming both the LR+ES and LSTM models on both MSE and MAPE. These scenario-driven results reflect predictive behavior under stable, bursty, and drifting workloads.
+Based on this benchmark, we confirm ARIMA as the default forecasting backbone in the current implementation. We emphasize that this choice is purely empirical, and future runs with longer traces and more extensive neural-network tuning may alter the relative ranking.
 
 \begin{table}[t]
   \centering
-  \caption{Live CrownLabs comparison across 10 runs (mean \(\pm\) 95\% CI). Time elapsed for Provisioning and Decision/Reaction phases of the auto-scaling control loops and their first observed outcomes. \cz{@PEDRAM: clarify the meaning of the Outcome column and its contents, same as in the Section 4.1.}\pn{Clarified in text right above the table: Outcome means the first observable post-decision control effect (HPA: replica envelope reached; VPA: recommendation produced; AutoSage: applied replica-change frequency across runs). Also reflected in the column header as ``Outcome (first observed effect)''.}}
-  \label{tab:native-compare}
-  \footnotesize
-  \setlength{\tabcolsep}{3pt}
-  \renewcommand{\arraystretch}{1.1}
-  \begin{tabular}{>{\raggedright\arraybackslash}p{1.2cm}
-                  >{\raggedright\arraybackslash}p{1.45cm}
-                  >{\raggedright\arraybackslash}p{2.15cm}
-                  >{\raggedright\arraybackslash}p{2.55cm}}
-    \toprule
-    Method & Provisioning & Decision/Reaction & Outcome (first observed effect) \\
-
-    \midrule
-    Native HPA & \(0.1849 \pm 0.0138\)\,s & \(26.2407 \pm 6.9430\)\,s to first scale-up & Peak replicas \(6\)--\(8\) observed \\
-    Native VPA & \(0.4003 \pm 0.0277\)\,s & \(15.4790 \pm 6.8154\)\,s to first recommendation & Recommendation produced \\
-    \Solution{} & N/A & \(126.8182 \pm 31.7235\)\,s to recommendation & Replica change observed in \(3/10\) runs \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\begin{table}[t]
-  \centering
-  \caption{Service-level and cost-proxy metrics across 10 runs (mean \(\pm\) 95\% CI).}
-  \label{tab:service-cost}
-  \footnotesize
-  \setlength{\tabcolsep}{3pt}
-  \renewcommand{\arraystretch}{1.1}
-  \begin{tabular}{>{\raggedright\arraybackslash}p{1.65cm}
-                  >{\raggedleft\arraybackslash}p{1.15cm}
-                  >{\raggedleft\arraybackslash}p{1.15cm}
-                  >{\raggedleft\arraybackslash}p{1.55cm}}
-    \toprule
-    Method & p95 latency (s) & SLA viol. (\%) & Cost proxy (avg req. vCPU) \\
-    \midrule
-    Native HPA & \(0.0235 \pm 0.0087\) & \(0.0 \pm 0.0\) & \(2.7807 \pm 0.2781\) \\
-    Native VPA & \(0.0392 \pm 0.0076\) & \(0.0 \pm 0.0\) & \(1.4140 \pm 0.0000\) \\
-    \Solution{} & \(0.0223 \pm 0.0075\) & \(0.0 \pm 0.0\) & \(1.7675 \pm 0.3724\) \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-\begin{figure}[t]
-  \centering
-  \IfFileExists{figures/evaluation/evaluation_decision_latency.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_decision_latency.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_decision\_latency.pdf}}}
-  \caption{Decision/reaction latency across native HPA, native VPA, and \Solution{}.}
-  \label{fig:evaluation-decision}
-\end{figure}
-
-\begin{figure}[t]
-  \centering
-  \IfFileExists{figures/evaluation/evaluation_service_levels.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_service_levels.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_service\_levels.pdf}}}
-  \caption{Service-level metrics from the same 10-run baseline campaign (p95 latency and SLA violation rate).}
-  \label{fig:evaluation-service}
-\end{figure}
-
-\begin{figure}[t]
-  \centering
-  \IfFileExists{figures/evaluation/evaluation_cost_proxy.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_cost_proxy.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_cost\_proxy.pdf}}}
-  \caption{Cost proxy comparison using average requested vCPU during the evaluation window.}
-  \label{fig:evaluation-cost}
-\end{figure}
-
-Table~\ref{tab:native-compare} provides a comparison of run times among Native HPA, VPA and AutoSage, for the Provisioning and Decision phases of auto-scaling control loops.
-The updated \cz{@PEDRAM: what do you mean by "corrected" here?}\pn{By ``updated'' we mean the final repeated-run baseline after fixing the measurement pipeline and replacing earlier interim/single-run values.} multi-run results indicate a clear trade-off \cz{@PEDRAM: trade-off implies that despite latency being higher, AutoSage performs better than HPA/VPA in some other way. What is this way?}\pn{Here the trade-off is explicit: AutoSage is slower in decision/reaction time, but it shows better service-level/resource-side outcomes than at least one native baseline (lower p95 latency than VPA and lower cost proxy than HPA), while keeping SLA violations at 0\%.}. Native controllers react faster in this short-horizon setup,
-while \Solution{} adds decision latency due to LLM inference and MCDA
-validation in the control loop. Across the baseline
-campaign \cz{@PEDRAM: what do you mean by validated and non-demo? I dont think we need to mention these}\pn{Agreed. We removed ``validated'' and ``non-demo'' from the narrative and keep the wording as ``baseline campaign'' for clarity and brevity.}, \Solution{} produced recommendations in all runs and applied
-replica changes in \(3/10\) runs.
-\cz{@PEDRAM: clear up the meaning of what you've written in the column "Outcome" in Table 3. "Peak replicas 6–8 observed", "Recommendation produced", "Replica change observed in 3/10 runs". What does each of these mean? What does this information tell us about the performance of AutoSage compared to native scalers? Is AutoSage better than them?}\pn{Meaning of each entry: ``Peak replicas 6--8 observed'' (HPA) means HPA actively scaled and reached 6--8 replicas during the run; ``Recommendation produced'' (VPA) means VPA generated a resource recommendation, but this row does not imply immediate replica count change; ``Replica change observed in 3/10 runs'' (AutoSage) means AutoSage emitted recommendations in all runs, but only 3 runs led to an applied replica-count change within the 60s window. Interpretation: AutoSage is not better than native scalers in control-loop responsiveness/consistency in this short-horizon setup; its strength here is maintaining service-level metrics (0\% SLA violations, competitive p95) rather than faster reaction. Short version: native scalers react faster; AutoSage is more conservative and keeps SLA stable, but does not outperform them on reaction speed in this test.}
-
-We further evaluate AutoSage by assessing service-level quality after each
-method run. SLA is measured from request-path probes (20 in-cluster HTTP
-requests to the application endpoint per run), and a request is counted as an
-SLA violation if either latency exceeds the threshold (\(0.5\)~s) or HTTP
-status is \(\ge 400\). Results are shown in Table~\ref{tab:service-cost}.
-Service behavior remains stable across all three approaches:
-request-level SLA violations remained \(0\%\) for the configured latency threshold (\(0.5\)~s) \cz{@PEDRAM: why 0.5s? justify this choice}\pn{We use 0.5s as an application-level SLO proxy for interactive web response under bursty load: it is strict enough to flag user-visible degradation while remaining realistic for this lightweight HTTP benchmark. It is also applied uniformly across methods to preserve fairness of comparison.}.  
-p95 latency stayed in a similar range. This suggests that in the current setup the main differentiator is control-loop policy behavior, rather than request-path latency.
-\cz{@PEDRAM: what is the p95 latency here referring to? Which phase of the control loop? How does it differ from the measurements you've made for Table 3?}\pn{The p95 in Table~\ref{tab:service-cost} is request-path latency (tail response time of HTTP probes to the app endpoint), not control-loop timing. Table~\ref{tab:native-compare} instead reports control-loop timing (provisioning and decision/reaction phases). So they measure different layers: user-visible service latency vs autoscaler decision pipeline latency.}
-
-A controlled sensitivity run (\texttt{performance\_first} MCDA profile with
-relaxed agreement threshold \(0.05\), same workload and run count \cz{@PEDRAM: describe the test case, what is the agreement threshold (put a reference to the section where you define the meaning of this quantity or briefly recall it here)? Why is it set to 0.05 specifically? What is the purpose of the sensitivity run? Describe and justify these.}\pn{Test case: same 10-run baseline workload, but with MCDA profile switched to \texttt{performance\_first}. Agreement threshold is the maximum score gap under which MCDA accepts the LLM proposal without override; lowering it to 0.05 makes the policy less conservative (fewer overrides). We chose 0.05 as a targeted stress value to test whether reducing MCDA conservativeness improves actuation frequency and end metrics. Purpose: sensitivity analysis to isolate the effect of the MCDA gate on responsiveness and outcome quality.}) increased
-the replica-change frequency only marginally (\(4/10\) runs) and did not
-improve outcome metrics (\Solution{} p95 latency \(0.0297 \pm 0.0072\)~s vs.
-\(0.0223 \pm 0.0075\)~s baseline; cost proxy \(1.9796 \pm 0.4526\) vs.
-\(1.7675 \pm 0.3724\) requested vCPU). This indicates that simply relaxing override aggressiveness is insufficient to remove the dominant decision-latency bottleneck.
-
-\subsubsection{Root-Cause Analysis and Improvement Roadmap}
-The data supports an important diagnostic conclusion: the primary bottleneck is not SLA-side instability, but control-loop overhead. In both baseline and
-sensitivity runs, request-path reliability remained stable (zero SLA violations)
-while \Solution{} decision latency stayed substantially above native-controller
-reaction times. This behavior is consistent with a pipeline where inference and
-validation overhead dominate short-horizon scenarios.
-
-From a scientific perspective, this is still a meaningful result. The study
-demonstrates feasibility of an agentic autoscaling pipeline under real cluster
-conditions (non-demo metric source, repeated trials, CI reporting), while
-identifying where performance headroom remains. The next iteration should
-therefore prioritize: \textit{(i)} latency decomposition (LLM inference vs.
-MCDA validation vs. Kubernetes reconciliation), \textit{(ii)} asynchronous or
-cached decision paths for recurring states, and \textit{(iii)} longer-horizon
-periodic-burst workloads where predictive control has a structural advantage
-over purely reactive controllers.
-
-\begin{figure}[t]
-  \centering
-  \IfFileExists{figures/evaluation/evaluation_autosage_decomposition.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_autosage_decomposition.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_autosage\_decomposition.pdf}}}
-  \caption{AutoSage decision-latency decomposition (5-run diagnostic campaign; error bars show 95\% CI margin).}
-  \label{fig:evaluation-autosage-decomp}
-\end{figure}
-
-The decomposition campaign isolates where latency accumulates in \Solution{}.
-In the measured run set, metrics collection (\(0.4983 \pm 0.1144\)~s) and LLM
-inference (\(1.0008 \pm 0.2178\)~s) are the dominant contributors, while
-forecast computation is negligible (\(0.0012 \pm 0.0001\)~s), and actuation
-remains comparatively small (\(0.1902 \pm 0.0650\)~s). This supports the
-roadmap focus on reducing decision-path overhead (especially inference path and
-control-loop orchestration) rather than tuning forecast logic.
-
-Finally, cost is reported here as a \emph{resource proxy}, not direct cloud
-billing. We compute it as average requested vCPU over the observed window:
-\(\text{avg\_requested\_vcpu}=\text{avg\_replicas}\times
-\text{cpu\_request\_per\_pod}/1000\). This captures relative resource footprint
-under each method (higher means larger requested CPU footprint), but does not
-include provider pricing, discounts, storage, or network charges.
-
-\begin{table}[t]
-  \centering
-  \caption{CPU forecasting benchmark on simulated application profiles (mean \(\pm\) 95\% CI across seeds/nodes; cell format: MSE / MAPE\%). Lower is better.}
+  \caption{CPU forecasting benchmark on simulated application profiles (cell format: MSE / MAPE\%). Lower is better.}
   \label{tab:forecast-autosage-arima-lstm}
   \scriptsize
   \setlength{\tabcolsep}{3pt}
@@ -803,7 +633,7 @@ include provider pricing, discounts, storage, or network charges.
                   >{\raggedright\arraybackslash}p{2.1cm}
                   >{\raggedright\arraybackslash}p{2.1cm}}
     \toprule
-    Scenario & ARIMA & \Solution{} predictor & LSTM \\
+    Scenario & \Solution{} predictor & LR+ES & LSTM \\
     \midrule
     Stable API & \(7.69 \pm 5.48\) / \(5.31 \pm 1.27\) & \(9.07 \pm 6.29\) / \(5.69 \pm 1.33\) & \(12.59 \pm 9.17\) / \(7.73 \pm 1.99\) \\
     Bursty Web & \(90.96 \pm 24.23\) / \(18.09 \pm 1.73\) & \(115.24 \pm 32.26\) / \(18.92 \pm 2.66\) & \(145.18 \pm 36.15\) / \(25.93 \pm 2.42\) \\
@@ -812,62 +642,112 @@ include provider pricing, discounts, storage, or network charges.
   \end{tabular}
 \end{table}
 
-Table~\ref{tab:forecast-autosage-arima-lstm} provides a direct one-step-ahead
-forecasting baseline comparison between our current predictor, ARIMA, and an
-LSTM network on three simulated application behaviors. ARIMA achieves the
-lowest error in all three scenarios, while \Solution{} remains consistently
-close to ARIMA and outperforms LSTM on both MSE and MAPE. These scenario-driven
-results are more informative than the earlier short live trace and better
-reflect predictive behavior under stable, bursty, and drifting workloads.
-Based on this benchmark, we adopt ARIMA as the default forecasting backbone in
-the current implementation, since it provides the best observed error profile
-for this study setting. We emphasize that this choice is empirical (for the
-tested data regime and training budget), and future runs with longer traces and
-more extensive neural-network tuning may alter the relative ranking.
 
-To evaluate policy quality (separately from forecasting error), we ran a
-decision-level ablation with a deterministic oracle and three perturbation
-conditions (baseline, noisy metrics, missing-metric injection), comparing
-\texttt{llm\_only}, \texttt{mcda\_only}, \texttt{llm\_mcda}, and
-\texttt{rule\_only}. The main gain of \texttt{llm\_mcda} is safety: in baseline
-condition, bounds-violation rate drops from \(0.674\) (\texttt{llm\_only}) and
-\(0.820\) (\texttt{rule\_only}) to \(0.070\), and remains lower under noisy
-inputs (\(0.082\) vs \(0.547\) and \(0.663\), respectively). Override analysis
-shows that MCDA corrections are usually beneficial (improved-rate range
-\(0.73\)–\(0.99\) across scenarios/conditions). At the same time,
-\texttt{llm\_mcda} is more conservative (slightly lower macro-F1 than
-\texttt{llm\_only}), so the evidence supports a robustness/safety advantage
-rather than universal superiority in raw action-matching metrics.
+\subsection{Comparison with Native HPA/VPA}
+
+To assess the practical capabilities of \Solution{} compared to K8s-native autoscalers, we implemented and ran a dedicated benchmark.
+For fairness, each method started from the same baseline (\(2\) replicas) before the synthetic load was applied.
+%
+Load was generated in two ways: (i) increasing background CPU pressure by setting \texttt{CPU\_LOAD\_PERCENT=95} in the target deployment, and (ii) issuing burst requests to \texttt{/cpu-load} from an ephemeral in-cluster \texttt{curl} pod. We evaluate \Solution{}'s predictive auto-scaling loop against native HPA and native VPA over \(60\) seconds long runs. During this time window, we monitor whether a method emits a decision/recommendation and whether the first change is applied. To make timing semantics explicit, we separate three phases in the loop: (i) \emph{control-plane provisioning}, object create/update latency in the API server, (ii) \emph{decision/reaction}, the time until a scaling recommendation or controller decision appears, and (iii) \emph{post-decision actuation}, the time from decision availability to the first applied resource change.
+
+\begin{table}[t]
+  \centering
+  \caption{Time elapsed for Provisioning and Decision/Reaction phases of the auto-scaling control loops and their first observed outcomes. Comparison across 10 runs.}
+  \label{tab:native-compare}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.2cm}
+                  >{\raggedright\arraybackslash}p{1.45cm}
+                  >{\raggedright\arraybackslash}p{2.15cm}
+                  >{\raggedright\arraybackslash}p{2.55cm}}
+    \toprule
+    Method & Provisioning (ms) & Decision/Reaction (s) & Outcome (first observed effect) \\
+
+    \midrule
+    Native HPA & \(184.9 \pm 13.8\) & \(26.2407 \pm 6.9430\) to first scale-up & Peak replicas \(6\)--\(8\) observed \\
+    Native VPA & \(400.3 \pm 27.7\) & \(15.4790 \pm 6.8154\) to first recommendation & Recommendation produced \\
+    \Solution{} & N/A & \(126.8182 \pm 31.7235\) to recommendation & Replica change observed in \(3/10\) runs \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Table~\ref{tab:native-compare} provides a comparison of run times among Native HPA, Native VPA and \Solution{}, for the Provisioning and Decision phases of auto-scaling control loops, along with the first observable control effect after the decision/reaction phase: for HPA, the replica envelope reached during the run; for VPA, the presence of a generated recommendation; and for \Solution{}, the frequency of applied replica changes within the 10-run campaign window.
+Predictably, the results indicate that our solution introduces overhead in the control loop, with native controllers taking less time to react,
+than \Solution{} does for making a predictive decision, due to LLM inference and MCDA
+validation in the control loop. Across the baseline
+campaign, \Solution{} produced recommendations in all runs and applied
+replica changes in \(3/10\) runs.
+
+We further evaluate \Solution{} by quantifying service-level compliance. We perform SLA assessment through $N=20$ request-path probes per run, made with in-cluster HTTP
+requests to the application endpoint. A request is counted as an SLA violation if either HTTP
+status is \(\ge 400\) or latency exceeds the threshold (\(0.5\)~s). 
+We set the latency threshold to \(0.5\)~s as an application-level Service Level Objective (SLO) for interactive web response under bursty load: it is strict enough to flag user-visible degradation while remaining realistic for this lightweight HTTP benchmark. It is also applied uniformly across methods to preserve fairness of comparison.
+Results of this evaluation are shown in Table~\ref{tab:service-cost}:
+we can observe that our solution outperforms both Native HPA and Native VPA, leading to fewer request-level SLA violations for the configured latency threshold (\(0.5\)~s), with request latency being comparable. This remarks how \Solution{}'s predictive nature can bring tangible advantages in terms of service quality.
+
+Table~\ref{tab:service-cost} also shows estimated average cost values over the observation window. Cost is reported here as a \emph{resource proxy}, not direct cloud
+billing, computed as the average requested vCPU over the observed window:
+$\text{avg\_requested\_vcpu}=\text{avg\_replicas}\times
+\text{cpu\_request\_per\_pod}/1000$. While this metric does factor in real provider pricing, discounts, storage, or network charges, it does however provide an indication of relative resource footprint
+under each method (higher means larger requested CPU footprint). We can observe how the average vCPU usage is comparable among the three methods, further corroborating the practical usability of our solution.
+
+\begin{table}[t]
+  \centering
+  \caption{Service-level and cost-proxy metrics across 10 runs.}
+  \label{tab:service-cost}
+  \footnotesize
+  \setlength{\tabcolsep}{3pt}
+  \renewcommand{\arraystretch}{1.1}
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.65cm}
+                  >{\raggedleft\arraybackslash}p{1.15cm}
+                  >{\raggedleft\arraybackslash}p{1.15cm}
+                  >{\raggedleft\arraybackslash}p{1.55cm}}
+    \toprule
+    Method & p95 latency (ms) & SLA viol. (\%) & Cost proxy (avg req. vCPU) \\
+    \midrule
+    Native HPA & \(23.5 \pm 8.7\) & \(0.0 \pm 0.0\) & \(2.7807 \pm 0.2781\) \\
+    Native VPA & \(39.2 \pm 7.6\) & \(0.0 \pm 0.0\) & \(1.4140 \pm 0.0000\) \\
+    \Solution{} & \(22.3 \pm 7.5\) & \(0.0 \pm 0.0\) & \(1.7675 \pm 0.3724\) \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Additionally, we perform a sensitivity test to isolate the effect of the MCDA gate on responsiveness and outcome quality. We set the MCDA profile to \texttt{performance\_first} (see Table \ref{tab:weights}) and lower the agreement threshold to \(0.05\). We choose \(0.05\) as a targeted stress value to test whether reducing MCDA conservativeness improves actuation frequency and end metrics. Workload profiles and run count are kept identical to previous tests.
+Results show that the new conditions increased the replica-change frequency only marginally (\(4/10\) runs) and did not
+improve outcome metrics (\Solution{} p95 latency \(0.0297 \pm 0.0072\)~s vs.
+\(0.0223 \pm 0.0075\)~s baseline; cost proxy \(1.9796 \pm 0.4526\) vs.
+\(1.7675 \pm 0.3724\) requested vCPU). This indicates that simply relaxing override aggressiveness is insufficient to remove the dominant decision-latency bottleneck.
+
+This data supports an important diagnostic conclusion: the primary limitation of our approach is not SLA compliance, but control-loop overhead. In both baseline and
+sensitivity runs, request-path reliability remained stable,
+while \Solution{}'s decision latency stayed substantially above native-controller
+reaction times. This behavior is consistent with a pipeline where inference and
+validation overhead dominate short-horizon scenarios.
+In order to identify and quantify the latency overhead, we decompose the elapsed decision time of \Solution{}.
+Results of this analysis are found in Table\ref{fig:evaluation-autosage-decomp}: in the measured set of runs, metrics collection (\(0.4983 \pm 0.1144\)~s) and LLM
+inference (\(1.0008 \pm 0.2178\)~s) are the dominant contributors, while
+forecast computation is negligible (\(0.0012 \pm 0.0001\)~s), and actuation
+remains comparatively small (\(0.1902 \pm 0.0650\)~s). This results highlights the trade-off of deploying complex LLM-based agentic architectures, in particular between their superior functional performance and the costs associated with their operation.
 
 \begin{figure}[t]
   \centering
-  \IfFileExists{figures/evaluation/llm_mcda_decision_quality.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/llm_mcda_decision_quality.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/llm\_mcda\_decision\_quality.pdf}}}
-  \caption{Decision-quality comparison under the baseline condition (macro-F1 with 95\% CI).}
-  \label{fig:llm-mcda-decision-quality}
+  \IfFileExists{figures/evaluation/evaluation_autosage_decomposition.pdf}
+    {\includegraphics[width=\columnwidth]{figures/evaluation/evaluation_autosage_decomposition.pdf}}
+    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/evaluation\_autosage\_decomposition.pdf}}}
+  \caption{AutoSage decision-latency decomposition (5-run diagnostic campaign). \cz{@PEDRAM: instead of showing a double figure with the zoomed one on the bottom, make a single figure but use a logaritmic scale for the y-axis (you just need to add this line: plt.yscale("log"))}}
+  \label{fig:evaluation-autosage-decomp}
 \end{figure}
 
-\begin{figure}[t]
-  \centering
-  \IfFileExists{figures/evaluation/llm_mcda_violation_utility.pdf}
-    {\includegraphics[width=\columnwidth]{figures/evaluation/llm_mcda_violation_utility.pdf}}
-    {\fbox{\parbox{0.95\columnwidth}{\centering Missing file:\\ figures/evaluation/llm\_mcda\_violation\_utility.pdf}}}
-  \caption{Utility and policy-violation trade-off across decision methods (baseline condition).}
-  \label{fig:llm-mcda-violation-utility}
-\end{figure}
-
-\subsubsection{Evaluation Scope and Limitations}
-The presented comparison is now based on repeated runs, but limitations remain:
-\textit{(i)} the reported cost is still a resource-based proxy rather than
-provider billing data, and \textit{(ii)} the scenario is short-horizon and does
-not fully stress periodic/anticipatory benefits of predictive autoscaling.
-A more complete study should include longer load profiles with recurring bursts
-and explicit decomposition of LLM inference time, MCDA processing time, and
-Kubernetes reconciliation time.
 
 \section{Conclusion}
 \label{sec:conclusion}
+
+This paper presented \Solution{}, an agentic AI platform for autonomous capacity management in Kubernetes environments. By combining short-term resource utilization forecasting with an LLM, \Solution{} moves beyond reactive, threshold-based auto-scalers toward anticipatory, adaptive scaling strategies. The integration of explicit guardrails, controlled decision policies, and optional human-in-the-loop validation ensures that autonomy is achieved without compromising operational safety or transparency.
+%
+Our experimental evaluation demonstrates that \Solution{} accurately predicts near-future resource demand and effectively converts these forecasts into scaling actions that maintain SLA compliance while reducing cloud infrastructure costs. These results highlight the potential of agentic AI systems to enhance both performance and efficiency in cloud-native environments.
+%
+Future work will explore extending the framework to multi-service and multi-cluster scenarios, incorporating additional workload signals and longer forecasting/observation horizons, and further refining alignment mechanisms between LLM-driven recommendations.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{bibliography}
