@@ -90,6 +90,10 @@ class LLMAutoscalingAdvisor:
         self.mcda_profile = os.getenv("MCDA_PROFILE", "balanced")
         self.mcda_agreement_threshold = float(os.getenv("MCDA_AGREEMENT_THRESHOLD", "0.15"))
         self.enable_mcda_validation = os.getenv("AUTOSAGE_ENABLE_MCDA_VALIDATION", "1").strip().lower() not in {"0", "false", "no"}
+        self.sla_only_mode = os.getenv("AUTOSAGE_SLA_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes"}
+        if self.sla_only_mode:
+            # SLA-first benchmark mode: keep decision path aggressive and avoid conservative overrides.
+            self.enable_mcda_validation = False
         
         # Deterministic sampling parameters for consistent outputs
         self.temperature = 0.1  # Very low for deterministic outputs (was 0.3)
@@ -413,8 +417,9 @@ class LLMAutoscalingAdvisor:
                         print(f"🔍🔍🔍 GPT OSS connection test: {test_response.status_code} (URL: {test_url})")
                         logger.warning(f"🔍🔍🔍 GPT OSS connection test: {test_response.status_code} (URL: {test_url})")
                     except Exception as health_e:
-                        print(f"⚠️⚠️⚠️ GPT OSS connection test failed (non-critical): {health_e}")
-                        logger.warning(f"⚠️⚠️⚠️ GPT OSS connection test failed (non-critical): {health_e}")
+                        print(f"⚠️⚠️⚠️ GPT OSS server unreachable at {test_url}: {health_e} — fast-failing to Groq")
+                        logger.warning(f"⚠️⚠️⚠️ GPT OSS server unreachable at {test_url}: {health_e} — fast-failing to Groq")
+                        raise Exception(f"GPT OSS server unreachable: {health_e}") from health_e
                 
                 # Prepare deterministic sampling parameters
                 # Use different max_tokens based on provider (GPT OSS has smaller context)
@@ -451,14 +456,43 @@ class LLMAutoscalingAdvisor:
                 
                 print(f"🔍🔍🔍 Starting API call at {time.time():.2f}...")
                 logger.warning(f"🔍🔍🔍 Starting API call at {time.time():.2f}...")
-                
-                response = self.client.chat.completions.create(**api_params)
-                
+
+                # Ollama's OpenAI-compat endpoint ignores think:false, so call /api/chat directly
+                # when the endpoint is Ollama (port 11434). This disables chain-of-thought mode,
+                # which is correct for autoscaling decisions — we need direct JSON answers, not
+                # unbounded reasoning that exhausts the token budget and produces empty content.
+                _is_ollama = self.provider == 'gpt_oss' and ':11434' in self.gpt_oss_api_base
+                if _is_ollama:
+                    from urllib.parse import urlparse as _urlparse
+                    _p = _urlparse(self.gpt_oss_api_base)
+                    _base = f"{_p.scheme}://{_p.netloc}"
+                    _ollama_resp = requests.post(
+                        f"{_base}/api/chat",
+                        json={
+                            "model": self.model,
+                            "messages": [
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            "think": False,
+                            "stream": False,
+                            "options": {
+                                "temperature": self.temperature,
+                                "top_p": self.top_p,
+                                "num_predict": max_tokens,
+                            },
+                        },
+                        timeout=240.0,
+                    )
+                    _ollama_resp.raise_for_status()
+                    response_text = _ollama_resp.json()["message"]["content"]
+                else:
+                    response = self.client.chat.completions.create(**api_params)
+                    response_text = response.choices[0].message.content if response.choices else ""
+
                 elapsed_time = time.time() - start_time
                 print(f"🔍🔍🔍 API call completed in {elapsed_time:.2f}s")
                 logger.warning(f"🔍🔍🔍 API call completed in {elapsed_time:.2f}s")
-                
-                response_text = response.choices[0].message.content if response.choices else ""
                 
                 print(f"✅✅✅ {provider_name.upper()} API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
                 logger.warning(f"✅✅✅ {provider_name.upper()} API CALL SUCCESSFUL! Model: {self.model}, Response length: {len(response_text)}")
@@ -1050,6 +1084,41 @@ class LLMAutoscalingAdvisor:
         
         # Validate and enforce min/max replica constraints (only for HPA)
         logger.warning(f"🔍🔍🔍 VALIDATION DEBUG: recommendation={recommendation is not None}, scaling_type={recommendation.get('scaling_type') if recommendation else None}, target_replicas={recommendation.get('target_replicas') if recommendation else None}, min_replicas={min_replicas}, max_replicas={max_replicas}")
+        if self.sla_only_mode and recommendation:
+            # SLA-first override: deterministic aggressive HPA ladder to minimize breach risk.
+            recommendation['scaling_type'] = 'hpa'
+            recommendation['target_cpu'] = None
+            recommendation['target_memory'] = None
+            current_reps = int(context.get('deployment', {}).get('current_replicas', min_replicas)) if context else min_replicas
+            forecast_data = context.get('forecast', {}) if context else {}
+            cpu_now = float(forecast_data.get('cpu', {}).get('current', current_metrics.get('cpu_usage', 0) if current_metrics else 0))
+            mem_now = float(forecast_data.get('memory', {}).get('current', current_metrics.get('memory_usage', 0) if current_metrics else 0))
+            cpu_peak = float(forecast_data.get('cpu', {}).get('peak', cpu_now))
+
+            if cpu_peak >= 85 or cpu_now >= 80 or mem_now >= 85:
+                target = current_reps + 4
+            elif cpu_peak >= 70 or cpu_now >= 65 or mem_now >= 75:
+                target = current_reps + 2
+            elif cpu_peak >= 55 or cpu_now >= 50 or mem_now >= 60:
+                target = current_reps + 1
+            elif cpu_now < 30 and mem_now < 35 and cpu_peak < 45:
+                target = current_reps - 1
+            else:
+                target = current_reps
+
+            target = max(min_replicas, min(max_replicas, target))
+            recommendation['target_replicas'] = target
+            if target > current_reps:
+                recommendation['action'] = 'scale_up'
+            elif target < current_reps:
+                recommendation['action'] = 'scale_down'
+            else:
+                recommendation['action'] = 'maintain'
+            recommendation['reasoning'] = (
+                recommendation.get('reasoning', '')
+                + f" [SLA_ONLY_MODE: enforced aggressive HPA ladder (cpu_now={cpu_now:.1f}, cpu_peak={cpu_peak:.1f}, mem_now={mem_now:.1f})]"
+            )
+
         if recommendation and recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both']:
             if 'target_replicas' in recommendation and recommendation['target_replicas'] is not None:
                 target = recommendation['target_replicas']

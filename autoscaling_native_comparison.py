@@ -40,6 +40,11 @@ class AutoscalingComparisonRunner:
         mcda_agreement_threshold: float = 0.15,
         scenario: str = "short_burst",
         autosage_profile: str = "full",
+        scenario_stress: float = 1.0,
+        background_burst_requests: int = 0,
+        background_burst_jitter: int = 0,
+        background_burst_interval_s: int = 20,
+        latency_probe_requests: int = 20,
     ):
         self.deployment = deployment
         self.namespace = namespace
@@ -52,6 +57,12 @@ class AutoscalingComparisonRunner:
         self.mcda_agreement_threshold = mcda_agreement_threshold
         self.scenario = scenario
         self.autosage_profile = autosage_profile
+        self.scenario_stress = max(0.1, scenario_stress)
+        self.background_burst_requests = max(0, background_burst_requests)
+        self.background_burst_jitter = max(0, background_burst_jitter)
+        self.background_burst_interval_s = max(1, background_burst_interval_s)
+        self.latency_probe_requests = max(1, latency_probe_requests)
+        self._last_background_burst_at_s: Optional[float] = None
 
         self.hpa = HorizontalPodAutoscaler()
         self.vpa = VerticalPodAutoscaler()
@@ -134,32 +145,53 @@ class AutoscalingComparisonRunner:
     def _apply_scenario_initial_load(self) -> None:
         # Keep scenario setup deterministic across methods for fair comparison.
         if self.scenario == "periodic_burst":
-            self._set_cpu_load_percent(75)
-            self._burst_http_load(20)
+            self._set_cpu_load_percent(self._scaled_cpu_percent(75))
+            self._burst_http_load(self._scaled_requests(20))
         elif self.scenario == "sustained_drift":
-            self._set_cpu_load_percent(65)
-            self._burst_http_load(10)
+            self._set_cpu_load_percent(self._scaled_cpu_percent(65))
+            self._burst_http_load(self._scaled_requests(10))
         else:
             # short_burst baseline
-            self._set_cpu_load_percent(95)
-            self._burst_http_load(30)
+            self._set_cpu_load_percent(self._scaled_cpu_percent(95))
+            self._burst_http_load(self._scaled_requests(30))
+        self._apply_background_load(elapsed_s=0.0)
 
     def _apply_scenario_midtest_load(self, elapsed_s: float) -> None:
+        self._apply_background_load(elapsed_s=elapsed_s)
         if self.scenario == "periodic_burst":
             # Burst around 20s and 45s for a repeating stress pattern.
             if 18 <= elapsed_s <= 24 or 43 <= elapsed_s <= 49:
-                self._burst_http_load(18)
+                self._burst_http_load(self._scaled_requests(18))
         elif self.scenario == "sustained_drift":
             # Increase baseline pressure mid-test to emulate drift.
             if 20 <= elapsed_s <= 28:
-                self._set_cpu_load_percent(80)
+                self._set_cpu_load_percent(self._scaled_cpu_percent(80))
             if 40 <= elapsed_s <= 50:
-                self._set_cpu_load_percent(90)
-                self._burst_http_load(12)
+                self._set_cpu_load_percent(self._scaled_cpu_percent(90))
+                self._burst_http_load(self._scaled_requests(12))
         else:
             # short_burst baseline
             if 50 <= elapsed_s <= 65:
-                self._burst_http_load(20)
+                self._burst_http_load(self._scaled_requests(20))
+
+    def _scaled_cpu_percent(self, base_percent: int) -> int:
+        return max(1, min(100, int(round(base_percent * self.scenario_stress))))
+
+    def _scaled_requests(self, base_requests: int) -> int:
+        return max(1, int(round(base_requests * self.scenario_stress)))
+
+    def _apply_background_load(self, elapsed_s: float) -> None:
+        if self.background_burst_requests <= 0:
+            return
+        if self._last_background_burst_at_s is not None:
+            if (elapsed_s - self._last_background_burst_at_s) < self.background_burst_interval_s:
+                return
+        req = self.background_burst_requests
+        if self.background_burst_jitter > 0:
+            req += random.randint(-self.background_burst_jitter, self.background_burst_jitter)
+        req = max(1, req)
+        self._burst_http_load(req)
+        self._last_background_burst_at_s = elapsed_s
 
     def _get_cpu_request_m(self) -> int:
         # Use the first container CPU request as a simple cost proxy baseline.
@@ -192,56 +224,84 @@ class AutoscalingComparisonRunner:
         path: str = "/health",
         sla_latency_s: float = 0.5,
     ) -> Dict[str, Any]:
-        pod_res = self._run(
-            (
-                f"kubectl -n {self.namespace} get pods -l app={self.deployment} "
-                f"-o jsonpath='{{.items[0].metadata.name}}'"
-            ),
-            timeout=20,
-        )
-        pod_name = pod_res.get("stdout", "").strip().strip("'")
-        if not pod_name:
-            return {"success": False, "error": "no running pod found for latency probe", "requests": requests}
+        def _parse_probe_output(text: str) -> Dict[str, List[float]]:
+            out_lat: List[float] = []
+            out_codes: List[int] = []
+            for line in text.splitlines():
+                parts = line.strip().split()
+                if len(parts) != 2:
+                    continue
+                try:
+                    out_lat.append(float(parts[0]))
+                    out_codes.append(int(parts[1]))
+                except Exception:
+                    continue
+            return {"latencies": out_lat, "codes": out_codes}
 
-        probe_code = (
-            "import time, urllib.request, urllib.error\n"
-            "for _ in range(" + str(requests) + "):\n"
-            "    t0=time.time()\n"
-            "    code=0\n"
-            "    try:\n"
-            "        r=urllib.request.urlopen('http://127.0.0.1:8080" + path + "', timeout=5)\n"
-            "        code=getattr(r, 'status', 200)\n"
-            "        r.read(1)\n"
-            "    except urllib.error.HTTPError as e:\n"
-            "        code=e.code\n"
-            "    except Exception:\n"
-            "        code=0\n"
-            "    dt=time.time()-t0\n"
-            "    print(f'{dt:.4f} {code}')\n"
-        )
+        # Probe from a separate in-cluster pod via Service DNS to include realistic request path.
+        service_url = f"http://{self.deployment}.{self.namespace}.svc.cluster.local{path}"
+        probe_pod = f"latency-probe-{int(time.time() * 1000) % 1000000}"
         cmd = (
-            f"kubectl -n {self.namespace} exec {pod_name} -- "
-            f"python -c \"{probe_code}\""
+            f"kubectl -n {self.namespace} run {probe_pod} --rm -i --restart=Never "
+            f"--image=curlimages/curl:8.9.1 --command -- sh -c "
+            f"\"i=0; while [ $i -lt {requests} ]; do "
+            f"curl --connect-timeout 1 --max-time 2 -s -o /dev/null "
+            f"-w '%{{time_total}} %{{http_code}}\\n' {service_url} "
+            f"|| echo '5.0000 0'; "
+            f"i=$((i+1)); "
+            f"done\""
         )
         res = self._run(cmd, timeout=120)
-        if not res.get("success"):
-            return {
-                "success": False,
-                "error": res.get("stderr", "latency probe failed"),
-                "requests": requests,
-            }
+        parsed = _parse_probe_output(res.get("stdout", ""))
 
-        latencies: List[float] = []
-        status_codes: List[int] = []
-        for line in res.get("stdout", "").splitlines():
-            parts = line.strip().split()
-            if len(parts) != 2:
-                continue
-            try:
-                latencies.append(float(parts[0]))
-                status_codes.append(int(parts[1]))
-            except Exception:
-                continue
+        if (not res.get("success")) or (not res.get("stdout", "").strip()) or (not parsed["latencies"]):
+            # Fallback: execute the probe from an app pod to ensure we still collect samples.
+            # This still uses Service DNS (not localhost) to include service routing path.
+            pod_res = self._run(
+                (
+                    f"kubectl -n {self.namespace} get pods -l app={self.deployment} "
+                    f"-o jsonpath='{{.items[0].metadata.name}}'"
+                ),
+                timeout=20,
+            )
+            pod_name = pod_res.get("stdout", "").strip().strip("'")
+            if not pod_name:
+                return {
+                    "success": False,
+                    "error": res.get("stderr", "latency probe failed and no app pod available for fallback"),
+                    "requests": requests,
+                }
+            probe_code = (
+                "import time, urllib.request, urllib.error\n"
+                "for _ in range(" + str(requests) + "):\n"
+                "    t0=time.time()\n"
+                "    code=0\n"
+                "    try:\n"
+                "        r=urllib.request.urlopen('" + service_url + "', timeout=2)\n"
+                "        code=getattr(r, 'status', 200)\n"
+                "        r.read(1)\n"
+                "    except urllib.error.HTTPError as e:\n"
+                "        code=e.code\n"
+                "    except Exception:\n"
+                "        code=0\n"
+                "    dt=time.time()-t0\n"
+                "    print(f'{dt:.4f} {code}')\n"
+            )
+            fallback_cmd = (
+                f"kubectl -n {self.namespace} exec {pod_name} -- "
+                f"python -c \"{probe_code}\""
+            )
+            res = self._run(fallback_cmd, timeout=120)
+            if not res.get("success"):
+                return {
+                    "success": False,
+                    "error": res.get("stderr", "latency probe failed"),
+                    "requests": requests,
+                }
+            parsed = _parse_probe_output(res.get("stdout", ""))
+
+        latencies = parsed["latencies"]
+        status_codes = parsed["codes"]
 
         if not latencies:
             return {"success": False, "error": "no latency samples collected", "requests": requests}
@@ -400,6 +460,7 @@ class AutoscalingComparisonRunner:
 
     def _pre_method_setup(self) -> Dict[str, Any]:
         self._reset_resource_baseline()
+        self._last_background_burst_at_s = None
         self._set_cpu_load_percent(30)
         self._set_replicas(self.min_replicas)
         rollout_ok = self._wait_rollout()
@@ -499,7 +560,9 @@ class AutoscalingComparisonRunner:
         self.hpa.delete_hpa(hpa_name, self.namespace)
         self._set_cpu_load_percent(30)
         self._wait_rollout()
-        latency_metrics = self._measure_service_latency(requests=20, sla_latency_s=sla_latency_s)
+        latency_metrics = self._measure_service_latency(
+            requests=self.latency_probe_requests, sla_latency_s=sla_latency_s
+        )
         cost_proxy = self._cost_proxy(samples)
 
         return {
@@ -554,11 +617,13 @@ class AutoscalingComparisonRunner:
                 recs = status_res.get("status", {}).get("recommendations", [])
             else:
                 recs = []
+            dep_replicas = self._get_deployment_replicas()
 
             has_recommendation = bool(recs)
             samples.append(
                 {
                     "t_s": round(time.time() - started, 1),
+                    "deployment_replicas": dep_replicas,
                     "has_recommendation": has_recommendation,
                     "recommendations_count": len(recs),
                 }
@@ -567,17 +632,17 @@ class AutoscalingComparisonRunner:
             if has_recommendation and first_recommendation_latency is None:
                 first_recommendation_latency = time.time() - started
                 recommendation_snapshot = recs
-                break
+            self._apply_scenario_midtest_load(time.time() - started)
 
             time.sleep(10)
 
         self.vpa.delete_vpa(vpa_name, self.namespace)
         self._set_cpu_load_percent(30)
         self._wait_rollout()
-        latency_metrics = self._measure_service_latency(requests=20, sla_latency_s=sla_latency_s)
-        # Approximate cost proxy for VPA path using constant baseline replica behavior.
-        baseline_samples = [{"deployment_replicas": self._get_deployment_replicas()}]
-        cost_proxy = self._cost_proxy(baseline_samples)
+        latency_metrics = self._measure_service_latency(
+            requests=self.latency_probe_requests, sla_latency_s=sla_latency_s
+        )
+        cost_proxy = self._cost_proxy(samples)
 
         return {
             "success": True,
@@ -608,8 +673,14 @@ class AutoscalingComparisonRunner:
             "full": {"AUTOSAGE_USE_LLM": "1", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "1"},
             "llm_no_mcda": {"AUTOSAGE_USE_LLM": "1", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "0"},
             "rule_only": {"AUTOSAGE_USE_LLM": "0", "AUTOSAGE_ENABLE_MCDA_VALIDATION": "0"},
+            "sla_first": {
+                "AUTOSAGE_USE_LLM": "1",
+                "AUTOSAGE_ENABLE_MCDA_VALIDATION": "0",
+                "AUTOSAGE_SLA_ONLY_MODE": "1",
+            },
         }
         active_flags = profile_flags.get(self.autosage_profile, profile_flags["full"])
+        os.environ.pop("AUTOSAGE_SLA_ONLY_MODE", None)
         os.environ.update(active_flags)
 
         self.integration = AutoscalingIntegration(kubeconfig_path=kubeconfig_path)
@@ -657,7 +728,9 @@ class AutoscalingComparisonRunner:
                     first_replica_change_latency = time.time() - poll_start
                 self._apply_scenario_midtest_load(time.time() - poll_start)
                 time.sleep(10)
-            latency_metrics = self._measure_service_latency(requests=20, sla_latency_s=sla_latency_s)
+            latency_metrics = self._measure_service_latency(
+                requests=self.latency_probe_requests, sla_latency_s=sla_latency_s
+            )
             cost_proxy = self._cost_proxy(samples)
 
             return {
@@ -772,6 +845,11 @@ class AutoscalingComparisonRunner:
                         "mcda_profile": self.mcda_profile,
                         "mcda_agreement_threshold": self.mcda_agreement_threshold,
                         "scenario": self.scenario,
+                        "scenario_stress": self.scenario_stress,
+                        "latency_probe_requests": self.latency_probe_requests,
+                        "background_burst_requests": self.background_burst_requests,
+                        "background_burst_jitter": self.background_burst_jitter,
+                        "background_burst_interval_s": self.background_burst_interval_s,
                         "cluster_context": self._cluster_context(),
                     },
                     "native_hpa_runs": hpa_runs,
@@ -798,6 +876,11 @@ class AutoscalingComparisonRunner:
                 "mcda_agreement_threshold": self.mcda_agreement_threshold,
                 "scenario": self.scenario,
                 "autosage_profile": self.autosage_profile,
+                "scenario_stress": self.scenario_stress,
+                "latency_probe_requests": self.latency_probe_requests,
+                "background_burst_requests": self.background_burst_requests,
+                "background_burst_jitter": self.background_burst_jitter,
+                "background_burst_interval_s": self.background_burst_interval_s,
                 "cluster_context": self._cluster_context(),
             },
             "sla_policy": {
@@ -884,14 +967,44 @@ def main() -> None:
     parser.add_argument(
         "--autosage-profile",
         default="full",
-        choices=["full", "llm_no_mcda", "rule_only"],
-        help="AutoSage ablation profile: full (LLM+MCDA), llm_no_mcda, or rule_only",
+        choices=["full", "llm_no_mcda", "rule_only", "sla_first"],
+        help="AutoSage profile: full, llm_no_mcda, rule_only, or sla_first (SLA-priority aggressive mode)",
     )
     parser.add_argument(
         "--sla-latency-threshold",
         type=float,
         default=0.5,
         help="SLA latency threshold in seconds",
+    )
+    parser.add_argument(
+        "--scenario-stress",
+        type=float,
+        default=1.0,
+        help="Multiplier for scenario load intensity (CPU percent and burst sizes)",
+    )
+    parser.add_argument(
+        "--background-burst-requests",
+        type=int,
+        default=0,
+        help="Static background load: requests per periodic in-cluster burst (0 disables)",
+    )
+    parser.add_argument(
+        "--background-burst-jitter",
+        type=int,
+        default=0,
+        help="Random +- jitter applied to each background burst request count",
+    )
+    parser.add_argument(
+        "--background-burst-interval",
+        type=int,
+        default=20,
+        help="Seconds between background bursts while each method is running",
+    )
+    parser.add_argument(
+        "--latency-probe-requests",
+        type=int,
+        default=20,
+        help="Number of HTTP probes used for each SLA latency measurement",
     )
     parser.add_argument(
         "--output",
@@ -911,6 +1024,11 @@ def main() -> None:
         mcda_agreement_threshold=args.mcda_agreement_threshold,
         scenario=args.scenario,
         autosage_profile=args.autosage_profile,
+        scenario_stress=args.scenario_stress,
+        background_burst_requests=args.background_burst_requests,
+        background_burst_jitter=args.background_burst_jitter,
+        background_burst_interval_s=args.background_burst_interval,
+        latency_probe_requests=args.latency_probe_requests,
     )
     results = runner.run_all(timeout_s=args.timeout, sla_latency_s=args.sla_latency_threshold, runs=args.runs)
 

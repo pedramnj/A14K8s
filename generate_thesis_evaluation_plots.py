@@ -239,20 +239,12 @@ def _plot_autosage_decomposition(results: Dict[str, Any], out_dir: Path) -> None
         values.append(mean if mean is not None else 0.0)
         errors.append(err)
 
-    # Plot in milliseconds and include a zoom panel for tiny stages.
+    # Plot in milliseconds on a logarithmic y-axis for compact visibility.
     values_ms = [v * 1000.0 for v in values]
     errors_ms = [e * 1000.0 for e in errors]
 
-    fig, (ax_main, ax_zoom) = plt.subplots(
-        2,
-        1,
-        figsize=(6.8, 4.8),
-        dpi=DPI,
-        gridspec_kw={"height_ratios": [3.0, 1.35], "hspace": 0.22},
-        constrained_layout=True,
-    )
-
-    ax_main.bar(
+    fig, ax = plt.subplots(figsize=(6.8, 3.8), dpi=DPI)
+    ax.bar(
         labels,
         values_ms,
         color="#E15759",
@@ -263,29 +255,12 @@ def _plot_autosage_decomposition(results: Dict[str, Any], out_dir: Path) -> None
         edgecolor="black",
         linewidth=BAR_EDGEWIDTH,
     )
-    ax_main.set_ylabel("Latency (ms)", fontsize=FONT_SIZE_LABEL)
-    ax_main.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
-    ax_main.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
-    ax_main.set_axisbelow(True)
-    ax_main.set_xticklabels([])
-
-    ax_zoom.bar(
-        labels,
-        values_ms,
-        color="#E15759",
-        yerr=errors_ms,
-        capsize=4,
-        ecolor="black",
-        alpha=0.9,
-        edgecolor="black",
-        linewidth=BAR_EDGEWIDTH,
-    )
-    # Focus small-scale panel so forecast/MCDA are visible.
-    ax_zoom.set_ylim(0, 20)
-    ax_zoom.set_ylabel("Zoom (ms)", fontsize=FONT_SIZE_LABEL)
-    ax_zoom.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
-    ax_zoom.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
-    ax_zoom.set_axisbelow(True)
+    ax.set_ylabel("Latency (ms)", fontsize=FONT_SIZE_LABEL)
+    ax.set_yscale("log")
+    ax.tick_params(axis="both", labelsize=FONT_SIZE_TICKS)
+    ax.grid(axis="y", linestyle=GRID_STYLE, alpha=GRID_ALPHA, linewidth=GRID_LINEWIDTH)
+    ax.set_axisbelow(True)
+    fig.tight_layout()
     fig.savefig(out_dir / "evaluation_autosage_decomposition.pdf", format="pdf", dpi=DPI, bbox_inches="tight")
     plt.close(fig)
 
