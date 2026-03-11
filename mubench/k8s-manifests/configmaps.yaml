@@ -1,0 +1,146 @@
+---
+# ConfigMap: workmodel.json mounted into every service-cell pod
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mubench-workmodel
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench
+    managed-by: ai4k8s
+data:
+  workmodel.json: |
+    {
+      "ingest": {
+        "external_services": [{"seq_len": 100, "services": ["process"]}],
+        "internal_service": {
+          "image_processing": {"width": 640, "height": 480, "iterations": 3}
+        },
+        "request_method": "rest",
+        "workers": 2, "threads": 4,
+        "url": "ingest.default.svc.cluster.local",
+        "path": "/api/v1",
+        "image": "msvcbench/microservice:latest",
+        "namespace": "default"
+      },
+      "process": {
+        "external_services": [{"seq_len": 100, "services": ["analyze"]}],
+        "internal_service": {
+          "matrix_compute": {
+            "input_size": 2048, "hidden_size": 1024,
+            "num_layers": 6, "num_classes": 80, "batch_size": 8
+          }
+        },
+        "request_method": "rest",
+        "workers": 2, "threads": 4,
+        "url": "process.default.svc.cluster.local",
+        "path": "/api/v1",
+        "image": "msvcbench/microservice:latest",
+        "namespace": "default"
+      },
+      "analyze": {
+        "external_services": [{"seq_len": 100, "services": []}],
+        "internal_service": {
+          "video_frames": {
+            "num_frames": 16, "frame_width": 320,
+            "frame_height": 240, "motion_threshold": 25.0
+          }
+        },
+        "request_method": "rest",
+        "workers": 2, "threads": 4,
+        "url": "analyze.default.svc.cluster.local",
+        "path": "/api/v1",
+        "image": "msvcbench/microservice:latest",
+        "namespace": "default"
+      }
+    }
+---
+# ConfigMap: custom Python functions — mounted into every pod's MSConfig directory
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mubench-functions
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench
+    managed-by: ai4k8s
+binaryData: {}
+data:
+  image_processing.py: |
+    import numpy as np
+    def image_processing(params):
+        width      = min(int(params.get("width",      640)), 1920)
+        height     = min(int(params.get("height",     480)), 1080)
+        iterations = min(int(params.get("iterations",   3)),    8)
+        rng = np.random.default_rng(seed=42)
+        frame = rng.integers(0, 256, (height, width, 3), dtype=np.uint8).astype(np.float32)
+        kernel = np.array([[1,2,1],[2,4,2],[1,2,1]], dtype=np.float32) / 16.0
+        for _ in range(iterations):
+            for c in range(3):
+                ch = frame[:, :, c]
+                out = np.zeros_like(ch)
+                for ky in range(3):
+                    for kx in range(3):
+                        out[1:-1, 1:-1] += ch[ky:height-2+ky, kx:width-2+kx] * kernel[ky, kx]
+                frame[:, :, c] = out
+        gray = frame.mean(axis=2)
+        hist, _ = np.histogram(gray.ravel(), bins=256, range=(0.0,255.0))
+        cdf = hist.cumsum().astype(np.float32)
+        cdf_min = cdf[cdf > 0].min()
+        eq_map = ((cdf - cdf_min) / max(float(height*width) - cdf_min, 1.0) * 255.0).clip(0,255)
+        _ = eq_map[gray.astype(np.int32).clip(0,255)]
+        return f"image_processing: size={width}x{height} passes={iterations} mean={frame.mean():.2f} std={frame.std():.2f}"
+
+  matrix_compute.py: |
+    import numpy as np
+    def matrix_compute(params):
+        input_size  = min(int(params.get("input_size",  2048)), 8192)
+        hidden_size = min(int(params.get("hidden_size", 1024)), 4096)
+        num_layers  = min(int(params.get("num_layers",     6)),   12)
+        num_classes = min(int(params.get("num_classes",   80)), 1000)
+        batch_size  = min(int(params.get("batch_size",     8)),   64)
+        rng = np.random.default_rng(seed=7)
+        x = rng.standard_normal((batch_size, input_size)).astype(np.float32)
+        current_size = input_size
+        for i in range(num_layers):
+            next_size = hidden_size if i < num_layers - 1 else num_classes
+            W = rng.standard_normal((current_size, next_size)).astype(np.float32) * 0.01
+            b = rng.standard_normal((next_size,)).astype(np.float32) * 0.01
+            x = np.maximum(0.0, x @ W + b)
+            current_size = next_size
+        x -= x.max(axis=1, keepdims=True)
+        exp_x = np.exp(x)
+        probs = exp_x / exp_x.sum(axis=1, keepdims=True)
+        top_classes = probs.argmax(axis=1)
+        top_scores  = probs.max(axis=1)
+        return f"matrix_compute: batch={batch_size} layers={num_layers} input={input_size} hidden={hidden_size} classes={num_classes} top_class={int(top_classes[0])} mean_score={float(top_scores.mean()):.4f}"
+
+  video_frames.py: |
+    import numpy as np
+    def video_frames(params):
+        num_frames       = min(int(params.get("num_frames",   16)),   64)
+        frame_width      = min(int(params.get("frame_width",  320)), 1280)
+        frame_height     = min(int(params.get("frame_height", 240)),  720)
+        motion_threshold = float(params.get("motion_threshold", 25.0))
+        rng = np.random.default_rng(seed=13)
+        frames = rng.integers(0, 256, (num_frames, frame_height, frame_width), dtype=np.uint8).astype(np.float32)
+        for i in range(1, num_frames):
+            sx, sy = int(rng.integers(-5,6)), int(rng.integers(-5,6))
+            frames[i] = np.roll(np.roll(frames[i], sy, axis=0), sx, axis=1)
+        motion_events = 0; total_flow = 0.0; fft_energies = []
+        prev = frames[0]
+        for i in range(1, num_frames):
+            curr = frames[i]
+            diff = np.abs(curr - prev)
+            if int((diff > motion_threshold).sum()) > (frame_width * frame_height * 0.01):
+                motion_events += 1
+            gx = diff[:, 1:] - diff[:, :-1]
+            gy = diff[1:, :] - diff[:-1, :]
+            mh = min(gx.shape[0], gy.shape[0]); mw = min(gx.shape[1], gy.shape[1])
+            total_flow += float(np.sqrt(gx[:mh,:mw]**2 + gy[:mh,:mw]**2).mean())
+            if i <= 4:
+                fft_energies.append(float(np.abs(np.fft.fft2(curr)).mean()))
+            prev = curr
+        avg_flow = total_flow / max(1, num_frames - 1)
+        avg_energy = float(np.mean(fft_energies)) if fft_energies else 0.0
+        return f"video_frames: frames={num_frames} size={frame_width}x{frame_height} motion_events={motion_events} avg_flow={avg_flow:.3f} fft_energy={avg_energy:.2f}"

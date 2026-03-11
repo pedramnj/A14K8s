@@ -1,0 +1,262 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# muBench — Deployment manifests for CrownLabs k3s
+#
+# Topology:  ingest → process → analyze
+# Functions: image_processing → matrix_compute → video_frames
+#
+# Resource tiers (deliberate bottleneck at analyze):
+#   ingest  : 100m req / 500m limit  — handles bursty ingress
+#   process : 100m req / 500m limit  — moderate compute
+#   analyze : 100m req / 300m limit  — bottleneck → first to trigger HPA
+#
+# initContainer installs numpy before the main container starts.
+# Functions are mounted from the mubench-functions ConfigMap.
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── ingest ────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest
+  namespace: default
+  labels:
+    app: ingest
+    app.kubernetes.io/part-of: mubench
+    managed-by: ai4k8s
+  annotations:
+    autosage.ai4k8s/monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ingest
+  template:
+    metadata:
+      labels:
+        app: ingest
+        app.kubernetes.io/part-of: mubench
+    spec:
+      initContainers:
+      - name: install-numpy
+        image: msvcbench/microservice:latest
+        command: ["pip", "install", "--quiet", "--target", "/extra-pkgs", "numpy"]
+        volumeMounts:
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+      containers:
+      - name: ingest
+        image: msvcbench/microservice:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: PYTHONPATH
+          value: "/extra-pkgs"
+        - name: MS_NAME
+          value: "ingest"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: workmodel
+          mountPath: /MSConfig/workmodel.json
+          subPath: workmodel.json
+        - name: functions
+          mountPath: /MSConfig/InternalServiceFunctions/image_processing.py
+          subPath: image_processing.py
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+        livenessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: workmodel
+        configMap:
+          name: mubench-workmodel
+      - name: functions
+        configMap:
+          name: mubench-functions
+      - name: extra-pkgs
+        emptyDir: {}
+
+---
+# ── process ───────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: process
+  namespace: default
+  labels:
+    app: process
+    app.kubernetes.io/part-of: mubench
+    managed-by: ai4k8s
+  annotations:
+    autosage.ai4k8s/monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: process
+  template:
+    metadata:
+      labels:
+        app: process
+        app.kubernetes.io/part-of: mubench
+    spec:
+      initContainers:
+      - name: install-numpy
+        image: msvcbench/microservice:latest
+        command: ["pip", "install", "--quiet", "--target", "/extra-pkgs", "numpy"]
+        volumeMounts:
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+      containers:
+      - name: process
+        image: msvcbench/microservice:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: PYTHONPATH
+          value: "/extra-pkgs"
+        - name: MS_NAME
+          value: "process"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: workmodel
+          mountPath: /MSConfig/workmodel.json
+          subPath: workmodel.json
+        - name: functions
+          mountPath: /MSConfig/InternalServiceFunctions/matrix_compute.py
+          subPath: matrix_compute.py
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+        livenessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: workmodel
+        configMap:
+          name: mubench-workmodel
+      - name: functions
+        configMap:
+          name: mubench-functions
+      - name: extra-pkgs
+        emptyDir: {}
+
+---
+# ── analyze ───────────────────────────────────────────────────────────────────
+# Tightest CPU limit (300m) — designed to be the first bottleneck under load.
+# AutoSage / Qwen3.5 should recommend scaling this service first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyze
+  namespace: default
+  labels:
+    app: analyze
+    app.kubernetes.io/part-of: mubench
+    managed-by: ai4k8s
+  annotations:
+    autosage.ai4k8s/monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: analyze
+  template:
+    metadata:
+      labels:
+        app: analyze
+        app.kubernetes.io/part-of: mubench
+    spec:
+      initContainers:
+      - name: install-numpy
+        image: msvcbench/microservice:latest
+        command: ["pip", "install", "--quiet", "--target", "/extra-pkgs", "numpy"]
+        volumeMounts:
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+      containers:
+      - name: analyze
+        image: msvcbench/microservice:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: PYTHONPATH
+          value: "/extra-pkgs"
+        - name: MS_NAME
+          value: "analyze"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"     # deliberate bottleneck
+            memory: "256Mi"
+        volumeMounts:
+        - name: workmodel
+          mountPath: /MSConfig/workmodel.json
+          subPath: workmodel.json
+        - name: functions
+          mountPath: /MSConfig/InternalServiceFunctions/video_frames.py
+          subPath: video_frames.py
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+        livenessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      volumes:
+      - name: workmodel
+        configMap:
+          name: mubench-workmodel
+      - name: functions
+        configMap:
+          name: mubench-functions
+      - name: extra-pkgs
+        emptyDir: {}
