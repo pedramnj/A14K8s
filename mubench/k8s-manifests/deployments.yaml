@@ -54,8 +54,16 @@ spec:
         env:
         - name: PYTHONPATH
           value: "/extra-pkgs"
-        - name: MS_NAME
+        - name: APP
           value: "ingest"
+        - name: ZONE
+          value: "default"
+        - name: K8S_APP
+          value: "ingest"
+        - name: PN
+          value: "2"
+        - name: TN
+          value: "4"
         resources:
           requests:
             cpu: "100m"
@@ -65,26 +73,28 @@ spec:
             memory: "256Mi"
         volumeMounts:
         - name: workmodel
-          mountPath: /MSConfig/workmodel.json
+          mountPath: /app/MSConfig/workmodel.json
           subPath: workmodel.json
         - name: functions
-          mountPath: /MSConfig/InternalServiceFunctions/image_processing.py
+          mountPath: /app/MSConfig/InternalServiceFunctions/image_processing.py
           subPath: image_processing.py
         - name: extra-pkgs
           mountPath: /extra-pkgs
         livenessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 30
-          periodSeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 10
+          timeoutSeconds: 5
       volumes:
       - name: workmodel
         configMap:
@@ -136,8 +146,16 @@ spec:
         env:
         - name: PYTHONPATH
           value: "/extra-pkgs"
-        - name: MS_NAME
+        - name: APP
           value: "process"
+        - name: ZONE
+          value: "default"
+        - name: K8S_APP
+          value: "process"
+        - name: PN
+          value: "2"
+        - name: TN
+          value: "4"
         resources:
           requests:
             cpu: "100m"
@@ -147,26 +165,28 @@ spec:
             memory: "256Mi"
         volumeMounts:
         - name: workmodel
-          mountPath: /MSConfig/workmodel.json
+          mountPath: /app/MSConfig/workmodel.json
           subPath: workmodel.json
         - name: functions
-          mountPath: /MSConfig/InternalServiceFunctions/matrix_compute.py
+          mountPath: /app/MSConfig/InternalServiceFunctions/matrix_compute.py
           subPath: matrix_compute.py
         - name: extra-pkgs
           mountPath: /extra-pkgs
         livenessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 30
-          periodSeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 10
+          timeoutSeconds: 5
       volumes:
       - name: workmodel
         configMap:
@@ -220,8 +240,16 @@ spec:
         env:
         - name: PYTHONPATH
           value: "/extra-pkgs"
-        - name: MS_NAME
+        - name: APP
           value: "analyze"
+        - name: ZONE
+          value: "default"
+        - name: K8S_APP
+          value: "analyze"
+        - name: PN
+          value: "2"
+        - name: TN
+          value: "4"
         resources:
           requests:
             cpu: "100m"
@@ -231,26 +259,28 @@ spec:
             memory: "256Mi"
         volumeMounts:
         - name: workmodel
-          mountPath: /MSConfig/workmodel.json
+          mountPath: /app/MSConfig/workmodel.json
           subPath: workmodel.json
         - name: functions
-          mountPath: /MSConfig/InternalServiceFunctions/video_frames.py
+          mountPath: /app/MSConfig/InternalServiceFunctions/video_frames.py
           subPath: video_frames.py
         - name: extra-pkgs
           mountPath: /extra-pkgs
         livenessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 30
-          periodSeconds: 15
+          periodSeconds: 20
+          timeoutSeconds: 5
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /api/v1
+            path: /metrics
             port: 8080
           initialDelaySeconds: 15
           periodSeconds: 10
+          timeoutSeconds: 5
       volumes:
       - name: workmodel
         configMap:
