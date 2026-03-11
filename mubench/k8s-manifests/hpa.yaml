@@ -1,5 +1,6 @@
 ---
-# HPA for ingest — generous limit, scales on sustained load
+# HPA for ingest — capped at 4 to leave RAM headroom for Qwen3.5-2B (3.8 GiB)
+# 3 services × 4 replicas × ~130 MiB = ~1.6 GiB; total fits in 7.2 GiB with Qwen
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -13,7 +14,7 @@ spec:
     kind: Deployment
     name: ingest
   minReplicas: 2
-  maxReplicas: 8
+  maxReplicas: 4
   metrics:
   - type: Resource
     resource:
@@ -36,7 +37,7 @@ spec:
     kind: Deployment
     name: process
   minReplicas: 2
-  maxReplicas: 8
+  maxReplicas: 4
   metrics:
   - type: Resource
     resource:
@@ -45,7 +46,7 @@ spec:
         type: Utilization
         averageUtilization: 70
 ---
-# HPA for analyze — tightest CPU limit, will saturate first
+# HPA for analyze — tightest CPU limit (300m), will saturate first
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -59,7 +60,7 @@ spec:
     kind: Deployment
     name: analyze
   minReplicas: 2
-  maxReplicas: 8
+  maxReplicas: 4
   metrics:
   - type: Resource
     resource:

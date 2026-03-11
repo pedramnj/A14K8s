@@ -47,7 +47,8 @@ kubectl apply -f mubench/k8s-manifests/deployments.yaml
 # 3. Expose via ClusterIP Services
 kubectl apply -f mubench/k8s-manifests/services.yaml
 
-# 4. Create HPAs (70% CPU threshold, 2–8 replicas)
+# 4. Create HPAs (70% CPU threshold, 2–4 replicas)
+# maxReplicas=4 per service: 3×4×130MiB=1.6GiB leaves RAM free for Qwen3.5-2B (3.8GiB)
 kubectl apply -f mubench/k8s-manifests/hpa.yaml
 
 # 5. Wait for pods to be ready (initContainer installs numpy first)
@@ -93,7 +94,7 @@ After load starts, register the muBench deployments with AutoSage's predictive l
 for svc in ingest process analyze; do
   curl -s -X POST http://localhost:5003/autoscaling/predictive/enable \
     -H "Content-Type: application/json" \
-    -d "{\"deployment\": \"$svc\", \"namespace\": \"default\", \"min_replicas\": 2, \"max_replicas\": 8}"
+    -d "{\"deployment\": \"$svc\", \"namespace\": \"default\", \"min_replicas\": 2, \"max_replicas\": 4}"
 done
 ```
 
