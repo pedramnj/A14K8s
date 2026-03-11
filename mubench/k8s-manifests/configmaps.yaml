@@ -14,7 +14,7 @@ data:
       "ingest": {
         "external_services": [{"seq_len": 100, "services": ["process"]}],
         "internal_service": {
-          "image_processing": {"width": 640, "height": 480, "iterations": 3}
+          "image_processing": {"width": 640, "height": 480, "iterations": 6}
         },
         "request_method": "rest",
         "workers": 2, "threads": 4,
@@ -27,8 +27,8 @@ data:
         "external_services": [{"seq_len": 100, "services": ["analyze"]}],
         "internal_service": {
           "matrix_compute": {
-            "input_size": 512, "hidden_size": 256,
-            "num_layers": 4, "num_classes": 80, "batch_size": 8
+            "input_size": 1024, "hidden_size": 512,
+            "num_layers": 6, "num_classes": 80, "batch_size": 16
           }
         },
         "request_method": "rest",
@@ -42,8 +42,8 @@ data:
         "external_services": [{"seq_len": 100, "services": []}],
         "internal_service": {
           "video_frames": {
-            "num_frames": 16, "frame_width": 320,
-            "frame_height": 240, "motion_threshold": 25.0
+            "num_frames": 32, "frame_width": 640,
+            "frame_height": 480, "motion_threshold": 25.0
           }
         },
         "request_method": "rest",

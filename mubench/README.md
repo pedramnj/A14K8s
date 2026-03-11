@@ -108,10 +108,12 @@ Edit `workmodel.json` or the ConfigMap to change per-call work:
 
 | Parameter | Default | Heavy |
 |-----------|---------|-------|
-| `image_processing.iterations` | 3 | 6 |
-| `matrix_compute.num_layers` | 6 | 10 |
-| `matrix_compute.hidden_size` | 1024 | 2048 |
-| `video_frames.num_frames` | 16 | 32 |
+| `image_processing.iterations` | 6 | 3 (light) |
+| `matrix_compute.num_layers` | 6 | 4 (light) |
+| `matrix_compute.hidden_size` | 512 | 256 (light) |
+| `matrix_compute.input_size` | 1024 | 512 (light) |
+| `video_frames.num_frames` | 32 | 16 (light) |
+| `video_frames.frame_width` | 640 | 320 (light) |
 
 After editing `workmodel.json`, update the ConfigMap and restart pods:
 ```bash
