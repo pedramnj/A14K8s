@@ -1,0 +1,51 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest
+  namespace: default
+  labels:
+    app: ingest
+    app.kubernetes.io/part-of: mubench
+spec:
+  type: ClusterIP
+  selector:
+    app: ingest
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: process
+  namespace: default
+  labels:
+    app: process
+    app.kubernetes.io/part-of: mubench
+spec:
+  type: ClusterIP
+  selector:
+    app: process
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyze
+  namespace: default
+  labels:
+    app: analyze
+    app.kubernetes.io/part-of: mubench
+spec:
+  type: ClusterIP
+  selector:
+    app: analyze
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http

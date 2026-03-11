@@ -1,0 +1,33 @@
+{
+  "RunnerParameters": {
+    "ms_access_gateway": "ingest.default.svc.cluster.local:8080",
+    "path":              "/api/v1",
+    "request_method":    "get",
+    "workmodel":         "mubench/workmodel.json",
+    "processes":         1,
+    "threads":           4,
+    "load_phases": [
+      {
+        "phase": "warmup",
+        "duration_s":  60,
+        "requests_per_s": 2
+      },
+      {
+        "phase": "sustained",
+        "duration_s": 300,
+        "requests_per_s": 8
+      },
+      {
+        "phase": "burst",
+        "duration_s": 120,
+        "requests_per_s": 20
+      },
+      {
+        "phase": "cooldown",
+        "duration_s": 120,
+        "requests_per_s": 2
+      }
+    ],
+    "output_file": "mubench/SimulationWorkspace/runner_results.json"
+  }
+}

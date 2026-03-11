@@ -1,0 +1,50 @@
+# One-shot load generator pod — runs wrk for 600s then exits.
+# Apply with: kubectl apply -f loadgen.yaml
+# Delete with: kubectl delete -f loadgen.yaml
+#
+# Phase breakdown (matches RunnerParameters.json phases):
+#   0–60s    warmup    2 conn  — let pods initialise
+#   60–360s  sustained 16 conn — 8 RPS equivalent, crosses 70% CPU on analyze
+#   360–480s burst      32 conn — 20 RPS spike, forces HPA to act
+#   480–600s cooldown   2 conn  — verify scale-down behaviour
+#
+# The script sleeps between phases; wrk runs the full duration of each phase.
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mubench-loadgen
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench
+    role: loadgen
+spec:
+  restartPolicy: Never
+  containers:
+  - name: wrk
+    image: williamyeh/wrk
+    command:
+    - sh
+    - -c
+    - |
+      TARGET="http://ingest:8080/api/v1"
+      echo "=== warmup (60s, 2 conn) ==="
+      wrk -t2 -c2 -d60s "$TARGET"
+
+      echo "=== sustained load (300s, 16 conn) ==="
+      wrk -t4 -c16 -d300s "$TARGET"
+
+      echo "=== burst (120s, 32 conn) ==="
+      wrk -t8 -c32 -d120s "$TARGET"
+
+      echo "=== cooldown (120s, 2 conn) ==="
+      wrk -t2 -c2 -d120s "$TARGET"
+
+      echo "=== load generation complete ==="
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "128Mi"

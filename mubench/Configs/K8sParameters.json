@@ -1,0 +1,13 @@
+{
+  "K8sParameters": {
+    "prefix_yaml_file": "mubench",
+    "namespace":        "default",
+    "image":            "msvcbench/microservice:latest",
+    "cluster_domain":   "cluster",
+    "path":             "/api/v1",
+    "no-apply":         false
+  },
+  "InternalServiceFilePath": "mubench/CustomFunctions",
+  "OutputPath":              "mubench/SimulationWorkspace",
+  "WorkModelPath":           "mubench/workmodel.json"
+}
