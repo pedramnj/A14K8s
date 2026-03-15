@@ -20,3 +20,4 @@ PyYAML>=6.0
 # Optional: For advanced time series analysis
 # statsmodels>=0.14.0
 # prophet>=1.1.0
+openai>=1.0.0
