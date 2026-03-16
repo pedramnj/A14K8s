@@ -1,0 +1,243 @@
+{
+  "timestamp": "2026-03-16T01:28:46Z",
+  "config": {
+    "n_runs": 3,
+    "warmup_s": 15,
+    "window_s": 120,
+    "wrk_connections": 48,
+    "probe_at_s": 90,
+    "sla_threshold_s": 2.0,
+    "hpa_min": 2,
+    "hpa_max": 4,
+    "hpa_cpu_target_pct": 70
+  },
+  "results": {
+    "HPA": {
+      "na": false,
+      "na_reason": null,
+      "trials": [
+        {
+          "provisioning_latency_s": 0.302,
+          "first_scale_latency_s": 36.2,
+          "peak_replicas": 4,
+          "p95_latency_s": 6.8126,
+          "sla_violation_rate": 0.85,
+          "cost_proxy": 0.24,
+          "n_probes": 20
+        },
+        {
+          "provisioning_latency_s": 0.241,
+          "first_scale_latency_s": 36.2,
+          "peak_replicas": 4,
+          "p95_latency_s": 13.9688,
+          "sla_violation_rate": 0.85,
+          "cost_proxy": 0.3025,
+          "n_probes": 20
+        },
+        {
+          "provisioning_latency_s": 0.197,
+          "first_scale_latency_s": 36.2,
+          "peak_replicas": 4,
+          "p95_latency_s": 16.9134,
+          "sla_violation_rate": 0.85,
+          "cost_proxy": 0.265,
+          "n_probes": 20
+        }
+      ],
+      "aggregate": {
+        "provisioning_latency_s": {
+          "mean": 0.2467,
+          "half_ci_95": 0.0969,
+          "values": [
+            0.302,
+            0.241,
+            0.197
+          ]
+        },
+        "first_scale_latency_s": {
+          "mean": 36.2,
+          "half_ci_95": 0.0,
+          "values": [
+            36.2,
+            36.2,
+            36.2
+          ]
+        },
+        "peak_replicas": {
+          "mean": 4,
+          "half_ci_95": 0.0,
+          "values": [
+            4,
+            4,
+            4
+          ]
+        },
+        "p95_latency_s": {
+          "mean": 12.5649,
+          "half_ci_95": 9.5433,
+          "values": [
+            6.8126,
+            13.9688,
+            16.9134
+          ]
+        },
+        "sla_violation_rate": {
+          "mean": 0.85,
+          "half_ci_95": 0.0,
+          "values": [
+            0.85,
+            0.85,
+            0.85
+          ]
+        },
+        "cost_proxy": {
+          "mean": 0.2692,
+          "half_ci_95": 0.0578,
+          "values": [
+            0.24,
+            0.3025,
+            0.265
+          ]
+        }
+      }
+    },
+    "VPA": {
+      "na": true,
+      "na_reason": "VPA CRD not installed",
+      "trials": [
+        {
+          "na": true,
+          "reason": "VPA CRD not installed"
+        }
+      ],
+      "aggregate": {}
+    },
+    "AutoSage": {
+      "na": false,
+      "na_reason": null,
+      "trials": [
+        {
+          "recommendation_latency_s": 93.19,
+          "action": "maintain",
+          "scaling_type": "hpa",
+          "target_replicas": 2,
+          "confidence": 0.95,
+          "actuated": false,
+          "mcda_agreement": "full",
+          "mcda_score_gap": 0,
+          "mcda_override": false,
+          "first_scale_latency_s": null,
+          "peak_replicas": 2,
+          "p95_latency_s": 4.392,
+          "sla_violation_rate": 0.85,
+          "cost_proxy": 0.165,
+          "n_probes": 20,
+          "timing_breakdown": {
+            "metrics_collection_s": 0.597,
+            "recommendation_s": 93.19,
+            "actuation_s": 0.0
+          },
+          "llm_model": "qwen3.5:2b"
+        },
+        {
+          "recommendation_latency_s": 87.8,
+          "action": "maintain",
+          "scaling_type": "hpa",
+          "target_replicas": 2,
+          "confidence": 0.95,
+          "actuated": false,
+          "mcda_agreement": "full",
+          "mcda_score_gap": 0,
+          "mcda_override": false,
+          "first_scale_latency_s": null,
+          "peak_replicas": 2,
+          "p95_latency_s": 6.6948,
+          "sla_violation_rate": 0.7143,
+          "cost_proxy": 0.145,
+          "n_probes": 21,
+          "timing_breakdown": {
+            "metrics_collection_s": 0.535,
+            "recommendation_s": 87.8,
+            "actuation_s": 0.0
+          },
+          "llm_model": "qwen3.5:2b"
+        },
+        {
+          "recommendation_latency_s": 83.73,
+          "action": "maintain",
+          "scaling_type": "hpa",
+          "target_replicas": 2,
+          "confidence": 0.95,
+          "actuated": false,
+          "mcda_agreement": "full",
+          "mcda_score_gap": 0,
+          "mcda_override": false,
+          "first_scale_latency_s": null,
+          "peak_replicas": 2,
+          "p95_latency_s": 12.2439,
+          "sla_violation_rate": 0.85,
+          "cost_proxy": 0.155,
+          "n_probes": 20,
+          "timing_breakdown": {
+            "metrics_collection_s": 0.567,
+            "recommendation_s": 83.73,
+            "actuation_s": 0.0
+          },
+          "llm_model": "qwen3.5:2b"
+        }
+      ],
+      "aggregate": {
+        "recommendation_latency_s": {
+          "mean": 88.24,
+          "half_ci_95": 8.7178,
+          "values": [
+            93.19,
+            87.8,
+            83.73
+          ]
+        },
+        "first_scale_latency_s": {
+          "mean": null,
+          "half_ci_95": null,
+          "values": []
+        },
+        "peak_replicas": {
+          "mean": 2,
+          "half_ci_95": 0.0,
+          "values": [
+            2,
+            2,
+            2
+          ]
+        },
+        "p95_latency_s": {
+          "mean": 7.7769,
+          "half_ci_95": 7.4151,
+          "values": [
+            4.392,
+            6.6948,
+            12.2439
+          ]
+        },
+        "sla_violation_rate": {
+          "mean": 0.8048,
+          "half_ci_95": 0.1439,
+          "values": [
+            0.85,
+            0.7143,
+            0.85
+          ]
+        },
+        "cost_proxy": {
+          "mean": 0.155,
+          "half_ci_95": 0.0184,
+          "values": [
+            0.165,
+            0.145,
+            0.155
+          ]
+        }
+      }
+    }
+  }
+}
