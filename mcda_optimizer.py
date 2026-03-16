@@ -74,11 +74,11 @@ class MCDAAutoscalingOptimizer:
     # Pre-defined weight profiles for different operational priorities
     WEIGHT_PROFILES = {
         'balanced': {
-            'cost': 0.20,
+            'cost': 0.15,
             'performance': 0.30,
             'stability': 0.25,
-            'forecast_alignment': 0.15,
-            'response_time': 0.10
+            'forecast_alignment': 0.25,
+            'response_time': 0.05
         },
         'performance_first': {
             'cost': 0.10,
