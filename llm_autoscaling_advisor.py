@@ -1288,8 +1288,10 @@ class LLMAutoscalingAdvisor:
                 containers = []
             
             # 2. Check deployment annotations (user-provided or explicit) - HIGHEST PRIORITY
-            state_annotation = annotations.get('ai4k8s.io/state-management')
-            logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: Checking annotation 'ai4k8s.io/state-management': {state_annotation}")
+            # Check both annotation namespaces: legacy 'ai4k8s.io/' and current 'autosage.ai4k8s/'
+            state_annotation = (annotations.get('autosage.ai4k8s/state-management') or
+                                annotations.get('ai4k8s.io/state-management'))
+            logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: Checking annotation 'autosage.ai4k8s/state-management' or 'ai4k8s.io/state-management': {state_annotation}")
             logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: All annotations keys: {list(annotations.keys())}")
             logger.warning(f"🔍🔍🔍 STATE DETECTION DEBUG: Full annotations dict: {annotations}")
             if state_annotation:
@@ -1412,7 +1414,8 @@ class LLMAutoscalingAdvisor:
             
             # 6. Check deployment labels
             if not state_info['detected']:
-                state_label = labels.get('ai4k8s.io/state-management')
+                state_label = (labels.get('autosage.ai4k8s/state-management') or
+                               labels.get('ai4k8s.io/state-management'))
                 if state_label:
                     state_info['detected'] = True
                     state_info['source'] = 'label'
