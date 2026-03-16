@@ -689,23 +689,19 @@ class AutoscalingIntegration:
                     
                     if enabled_deployments.get('success') and enabled_deployments.get('count', 0) > 0:
                         logger.info(f"🔄 Periodic predictive scaling: Checking {enabled_deployments.get('count')} enabled deployments")
-                        
-                        for deployment in enabled_deployments.get('deployments', []):
-                            # Skip disabled deployments
-                            if deployment.get('disabled'):
-                                continue
-                            
+
+                        active = [d for d in enabled_deployments.get('deployments', [])
+                                  if not d.get('disabled')]
+
+                        def _scale_one(deployment):
                             deployment_name = deployment.get('deployment_name')
-                            namespace = deployment.get('namespace', 'default')
-                            min_replicas = deployment.get('min_replicas', 2)
-                            max_replicas = deployment.get('max_replicas', 10)
-                            
+                            namespace       = deployment.get('namespace', 'default')
+                            min_replicas    = deployment.get('min_replicas', 2)
+                            max_replicas    = deployment.get('max_replicas', 10)
                             try:
-                                # Execute predictive scaling (this will use LLM recommendations)
                                 result = self.predictive_autoscaler.predict_and_scale(
                                     deployment_name, namespace, min_replicas, max_replicas
                                 )
-                                
                                 if result.get('success'):
                                     action = result.get('action', 'none')
                                     target_replicas = result.get('target_replicas', 0)
@@ -715,6 +711,15 @@ class AutoscalingIntegration:
                                     logger.warning(f"⚠️ Predictive scaling failed for {deployment_name}: {result.get('error')}")
                             except Exception as e:
                                 logger.error(f"❌ Error in periodic predictive scaling for {deployment_name}: {e}")
+
+                        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
+                        with _TPE(max_workers=len(active) or 1) as _ex:
+                            futures = [_ex.submit(_scale_one, d) for d in active]
+                            for f in _ac(futures):
+                                try:
+                                    f.result()
+                                except Exception as e:
+                                    logger.error(f"❌ Parallel scaling task failed: {e}")
                     
                     # Sleep for the interval
                     time.sleep(self.predictive_scaling_interval)

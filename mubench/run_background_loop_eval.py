@@ -61,10 +61,19 @@ def get_cluster_ip(svc, ns=NAMESPACE):
     return r.stdout.strip() if r.returncode == 0 else None
 
 def get_replicas(svc, ns=NAMESPACE):
+    # Try readyReplicas first; fall back to spec.replicas when pods are still initializing
     r = run(["kubectl", "get", "deploy", svc, "-n", ns,
              "-o", "jsonpath={.status.readyReplicas}"])
+    val = r.stdout.strip()
+    if val and val != 'null':
+        try:
+            return int(val)
+        except ValueError:
+            pass
+    r2 = run(["kubectl", "get", "deploy", svc, "-n", ns,
+              "-o", "jsonpath={.spec.replicas}"])
     try:
-        return int(r.stdout.strip() or "0")
+        return int(r2.stdout.strip() or "0")
     except ValueError:
         return 0
 
@@ -187,6 +196,7 @@ def main():
             print(f"  [{svc}] action={action}  target={target_replicas}  conf={confidence}")
             print(f"  [{svc}] mcda={mcda_agreement}  gap={mcda_gap}  llm={llm_s:.1f}s  actuated={actuated}")
 
+            cached = result.get('cached', False)
             cycle_data["decisions"].append({
                 "service":        svc,
                 "cpu_pct":        cpu_pct,
@@ -197,10 +207,13 @@ def main():
                 "mcda_agreement": mcda_agreement,
                 "mcda_score_gap": mcda_gap,
                 "actuated":       actuated,
+                "cached":         cached,
                 "llm_inference_s":round(llm_s, 2) if llm_s else None,
                 "total_s":        elapsed,
                 "timing_breakdown": timing,
             })
+            if cached:
+                print(f"  [{svc}] (cached response)")
 
         results["cycles"].append(cycle_data)
 
@@ -209,8 +222,13 @@ def main():
             json.dump(results, f, indent=2)
         print(f"\n[cycle {cycle}] Results saved to {RESULTS_PATH}")
 
-        # Wait for next cycle (skip wait after last cycle)
+        # Clear LLM cache so next cycle always gets a fresh inference
         if cycle < N_CYCLES:
+            try:
+                autoscaler.llm_advisor._recommendation_cache.clear()
+                print(f"[cycle {cycle}] LLM cache cleared — next cycle will use fresh inference")
+            except Exception:
+                pass
             wait = max(0, LOOP_INTERVAL_S - int(time.time() - cycle_start))
             print(f"[cycle {cycle}] Waiting {wait} s for next cycle ...")
             time.sleep(wait)
