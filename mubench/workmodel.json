@@ -2,7 +2,7 @@
   "ingest": {
     "external_services": [
       {
-        "seq_len": 100,
+        "seq_len": 5,
         "services": ["process"]
       }
     ],
@@ -25,7 +25,7 @@
   "process": {
     "external_services": [
       {
-        "seq_len": 100,
+        "seq_len": 5,
         "services": ["analyze"]
       }
     ],
@@ -50,7 +50,7 @@
   "analyze": {
     "external_services": [
       {
-        "seq_len": 100,
+        "seq_len": 5,
         "services": []
       }
     ],
