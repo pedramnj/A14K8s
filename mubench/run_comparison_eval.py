@@ -64,7 +64,7 @@ RESULTS_PATH     = "/tmp/comparison_results.json"
 PROBE_IMAGE      = "curlimages/curl:8.9.1"
 
 # ── kubectl helper ────────────────────────────────────────────────────────────
-def kubectl(*args, silent=False, timeout=30) -> str:
+def kubectl(*args, silent=False, timeout=60) -> str:
     r = subprocess.run(["kubectl"] + list(args),
                        capture_output=True, text=True, timeout=timeout)
     if not silent and r.returncode != 0:
@@ -161,7 +161,8 @@ def probe_latency() -> dict:
             "n_probes": len(latencies),
         }
     except subprocess.TimeoutExpired:
-        kubectl("delete", "pod", probe_name, "--ignore-not-found", silent=True)
+        kubectl("delete", "pod", probe_name, "--ignore-not-found",
+                "--force", "--grace-period=0", silent=True, timeout=60)
         return {"p95_s": None, "sla_violation_rate": None, "n_probes": 0}
     except Exception as e:
         print(f"  [probe error] {e}")
