@@ -463,29 +463,53 @@ class LLMAutoscalingAdvisor:
                 # unbounded reasoning that exhausts the token budget and produces empty content.
                 _is_ollama = self.provider == 'gpt_oss' and ':11434' in self.gpt_oss_api_base
                 if _is_ollama:
+                    import threading as _threading
                     from urllib.parse import urlparse as _urlparse
                     _p = _urlparse(self.gpt_oss_api_base)
                     _base = f"{_p.scheme}://{_p.netloc}"
-                    _ollama_resp = requests.post(
-                        f"{_base}/api/chat",
-                        json={
-                            "model": self.model,
-                            "messages": [
-                                {"role": "system", "content": system_prompt},
-                                {"role": "user", "content": user_prompt},
-                            ],
-                            "think": False,
-                            "stream": False,
-                            "options": {
-                                "temperature": self.temperature,
-                                "top_p": self.top_p,
-                                "num_predict": max_tokens,
-                            },
-                        },
-                        timeout=240.0,
-                    )
-                    _ollama_resp.raise_for_status()
-                    response_text = _ollama_resp.json()["message"]["content"]
+                    _ollama_result = {}
+                    _ollama_error = {}
+                    _OLLAMA_SOFT_TIMEOUT = int(os.getenv("OLLAMA_SOFT_TIMEOUT_S", "60"))
+
+                    def _ollama_call():
+                        try:
+                            r = requests.post(
+                                f"{_base}/api/chat",
+                                json={
+                                    "model": self.model,
+                                    "messages": [
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_prompt},
+                                    ],
+                                    "think": False,
+                                    "stream": False,
+                                    "options": {
+                                        "temperature": self.temperature,
+                                        "top_p": self.top_p,
+                                        "num_predict": max_tokens,
+                                    },
+                                },
+                                timeout=240.0,
+                            )
+                            r.raise_for_status()
+                            _ollama_result['text'] = r.json()["message"]["content"]
+                        except Exception as _e:
+                            _ollama_error['exc'] = _e
+
+                    _t = _threading.Thread(target=_ollama_call, daemon=True)
+                    _t.start()
+                    _t.join(timeout=_OLLAMA_SOFT_TIMEOUT)
+
+                    if 'text' in _ollama_result:
+                        response_text = _ollama_result['text']
+                    elif 'exc' in _ollama_error:
+                        raise _ollama_error['exc']
+                    else:
+                        # Soft timeout expired — fall through to Groq fallback
+                        elapsed_so_far = time.time() - start_time
+                        print(f"⏱️⏱️⏱️ Ollama soft timeout ({_OLLAMA_SOFT_TIMEOUT}s) reached after {elapsed_so_far:.1f}s — falling back to Groq")
+                        logger.warning(f"⏱️ Ollama soft timeout ({_OLLAMA_SOFT_TIMEOUT}s) reached — falling back to Groq")
+                        raise TimeoutError(f"Ollama did not respond within {_OLLAMA_SOFT_TIMEOUT}s (soft timeout)")
                 else:
                     response = self.client.chat.completions.create(**api_params)
                     response_text = response.choices[0].message.content if response.choices else ""

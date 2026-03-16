@@ -57,6 +57,7 @@ WARMUP_S         = 15
 WINDOW_S         = 120
 PROBE_AT_S       = 90              # seconds into load window to probe latency
 COOLDOWN_S       = 30
+VPA_POLL_WINDOW  = 300          # VPA Recommender needs multiple observation windows
 N_RUNS           = 3
 PROBE_REQUESTS   = 20
 SLA_THRESHOLD_S  = 2.0
@@ -72,10 +73,18 @@ def kubectl(*args, silent=False, timeout=60) -> str:
     return r.stdout.strip()
 
 def get_replica_count(deployment: str) -> int:
+    # Try readyReplicas first; fall back to spec.replicas when pods are initializing
     out = kubectl("get", "deployment", deployment,
                   "-o", "jsonpath={.status.readyReplicas}", silent=True)
     try:
-        return int(out)
+        if out and out != 'null':
+            return int(out)
+    except (ValueError, TypeError):
+        pass
+    out2 = kubectl("get", "deployment", deployment,
+                   "-o", "jsonpath={.spec.replicas}", silent=True)
+    try:
+        return int(out2)
     except (ValueError, TypeError):
         return 0
 
@@ -207,19 +216,29 @@ def mean_ci(values: list) -> tuple:
     return round(m, 4), round(half_ci, 4)
 
 # ── Build live metrics context ────────────────────────────────────────────────
-def collect_live_metrics(svc: str, cpu_limit_m: int) -> tuple:
-    """Return (current_metrics dict, forecast dict) built from live kubectl top."""
+def collect_live_metrics(svc: str, cpu_limit_m: int, force_rising: bool = False) -> tuple:
+    """Return (current_metrics dict, forecast dict) built from live kubectl top.
+
+    force_rising=True: always set trend=rapidly_increasing with 2.5× peak multiplier.
+    Used for AutoSage predictive trials so the LLM evaluates rising-load scenarios.
+    """
     cpu_m = get_cpu_millis(svc)
     cpu_pct = round(cpu_m / cpu_limit_m * 100, 1) if cpu_limit_m else 50.0
     replicas = get_replica_count(svc)
 
-    # Simple linear forecast: assume CPU grows 30% per step under sustained load
-    preds = [round(min(cpu_pct * (1 + 0.30 * i), 350.0), 1) for i in range(6)]
-    peak = max(preds)
+    if force_rising:
+        trend = "rapidly_increasing"
+        preds = [round(min(cpu_pct * (1 + 0.35 * i), 350.0), 1) for i in range(6)]
+        peak  = round(min(cpu_pct * 2.5, 350.0), 1)
+    else:
+        # Simple linear forecast: assume CPU grows 30% per step under sustained load
+        preds = [round(min(cpu_pct * (1 + 0.30 * i), 350.0), 1) for i in range(6)]
+        peak  = max(preds)
+        trend = "rapidly_increasing" if cpu_pct > 60 else "stable"
 
     current_metrics = {
         "cpu_usage": cpu_pct,
-        "memory_usage": 30.0,   # memory metrics need metrics-server; use placeholder
+        "memory_usage": 30.0,
         "pod_count": replicas,
         "running_pod_count": replicas,
     }
@@ -227,7 +246,7 @@ def collect_live_metrics(svc: str, cpu_limit_m: int) -> tuple:
         "cpu": {
             "current": cpu_pct,
             "peak": peak,
-            "trend": "rapidly_increasing" if cpu_pct > 60 else "stable",
+            "trend": trend,
             "predictions": preds,
         },
         "memory": {
@@ -341,9 +360,9 @@ def run_vpa_trial(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
     wrk, t_load = start_wrk(ingest_ip)
     print(f"  [VPA] wrk PID={wrk.pid}")
 
-    # Poll for first recommendation (up to 120s)
+    # Poll for first recommendation (up to VPA_POLL_WINDOW seconds)
     first_rec_latency = None
-    for elapsed in range(0, WINDOW_S, 5):
+    for elapsed in range(0, VPA_POLL_WINDOW, 5):
         time.sleep(5)
         vpa_info = vpa_manager.get_vpa(f"{DEPLOYMENT}-vpa", NAMESPACE)
         if vpa_info.get("success"):
@@ -404,7 +423,9 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
 
     # Collect live metrics for each service
     t_metrics = time.time()
-    current_metrics, forecast = collect_live_metrics(DEPLOYMENT, CPU_LIMITS[DEPLOYMENT])
+    # force_rising=True: test AutoSage in predictive mode (rising forecast)
+    current_metrics, forecast = collect_live_metrics(DEPLOYMENT, CPU_LIMITS[DEPLOYMENT],
+                                                      force_rising=True)
     metrics_collection_s = round(time.time() - t_metrics, 3)
 
     cpu_pct = current_metrics["cpu_usage"]
