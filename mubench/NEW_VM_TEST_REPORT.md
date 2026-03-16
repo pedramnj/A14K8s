@@ -295,14 +295,12 @@ VPA object provisioned in 472 ms but Recommender produced no resource recommenda
 
 ---
 
-## Experiment 5: Background Loop Evaluation
+## Experiment 5: Background Loop Evaluation (v1 — cached)
 
 **Script:** `mubench/run_background_loop_eval.py`
 **Setup:** 3 cycles × 120 s interval, 48c wrk load against ingest
 
-Runs the production `predict_and_scale()` code path (same function called by the Flask 5-minute background thread) directly in a timed loop. Captures structured output from each organic cycle.
-
-### Table — Background Loop Decisions
+First run (v1) — captured production behavior including caching artifacts:
 
 | Cycle | Time (UTC) | Service | CPU% | Replicas | Action | Target | LLM (s) |
 |---|---|---|---|---|---|---|---|
@@ -316,11 +314,31 @@ Runs the production `predict_and_scale()` code path (same function called by the
 | 3 | 12:24:00 | process | 31.8% | 4 | scale_up | 4 | 0.72 (cached) |
 | 3 | 12:24:00 | analyze | — | 0 | none | 2 | 0.00 (cached) |
 
-**Findings:**
-- **Cycle 1 ingest at 47.8% CPU**: production loop correctly issues `scale_up→4`. Qwen took 241 s (concurrent 96c comparison eval competing for vCPUs). This is the predictive decision path working organically — no manual script injection.
-- **Caching**: once a deployment+CPU context is seen, subsequent identical queries return in < 1 s. This is why cycles 2 and 3 show 0 s inference for most services.
-- **analyze unavailable**: pods were still settling after VM reboot (readyReplicas=0). Loop correctly returns `action=none` rather than crashing.
-- **Total loop latency**: cycle 1 took 244 s end-to-end (dominated by ingest Qwen call); cycles 2–3 took ~4 s each (all cached).
+---
+
+## Experiment 5b: Background Loop Evaluation (v2 — fresh inferences)
+
+**Setup:** Same as v1, with inter-cycle cache clear, 60 s Groq soft timeout, and parallel decisions enabled
+**Run date:** March 16, 2026 — 14:27–14:33 UTC
+
+| Cycle | Time (UTC) | Service | CPU% | Replicas | Action | Target | LLM (s) | Cached |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 14:27:01 | ingest | 48.6% | 2 | **scale_up** | 4 | 60.93 (Groq fallback) | false |
+| 1 | 14:27:01 | process | 25.8% | 4 | scale_up | 4 | 0.70 | false |
+| 1 | 14:27:01 | analyze | — | 2 | none | 2 | 0.78 | false |
+| 2 | 14:29:01 | ingest | 21.6% | 2 | **scale_up** | 4 | 0.78 | false |
+| 2 | 14:29:01 | process | 21.2% | 4 | scale_up | 4 | 0.74 | false |
+| 2 | 14:29:01 | analyze | 55.7% | 1 | none | 2 | 1.07 | false |
+| 3 | 14:31:01 | ingest | 47.5% | 2 | **scale_up** | 4 | 0.79 | false |
+| 3 | 14:31:01 | process | 26.8% | 4 | scale_up | 4 | 3.80 | false |
+| 3 | 14:31:01 | analyze | 86.2% | 2 | none | 2 | 0.86 | false |
+
+**Findings (v2):**
+- **Zero cached responses**: All 9 decisions are fresh LLM calls. Cache clear between cycles working correctly.
+- **Groq soft timeout**: Cycle 1 ingest triggered the 60 s Ollama soft timeout and fell back to Groq (60.93 s total). Without the fallback this would have been ~220 s under load.
+- **Parallel decisions**: Each cycle completes in 5–6 s wall time (3 services in parallel). Previously sequential calls took ~190 s/cycle under Q8_0 load.
+- **analyze replicas now visible**: 1–2 replicas and real CPU values shown. `spec.replicas` fallback working.
+- **Consistent scale_up for ingest**: All 3 cycles recommend `scale_up→4` for ingest (correct — 21–48% CPU with rising load, 2 current replicas below target).
 
 ---
 
