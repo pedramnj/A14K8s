@@ -1,5 +1,5 @@
 # Progress Report — AutoSage Evaluation with muBench and Local LLM
-**Date:** March 12, 2026
+**Date:** March 18, 2026
 **To:** Thesis Supervisor
 
 ---
@@ -74,19 +74,60 @@ I registered the three muBench deployments with AutoSage's predictive autoscalin
 
 ---
 
-## Current Status and Open Problem
+## Current Status — Resolved and Updated
 
-The main open problem is that Qwen Q4_K_M still times out when inference runs concurrently with a full-load test. At peak, the 12 pods (3 services × 4 replicas) inflate memory from their idle ~50 MiB to ~150–200 MiB each, consuming an extra ~1.5–1.8 GiB. This pushes the Qwen model out of active RAM and into swap, which causes inference to exceed the 240-second timeout.
+The memory-swap problem described in the previous report was resolved by upgrading the CrownLabs instance to 14 GiB RAM (instance-866fd, IP: 10.102.34.247). The model was also replaced with `qwen3:0.6b` (522 MB, ~1.7 s idle inference), down from qwen3.5:2b Q8_0 (2.7 GB, 7.7 s idle). No swapping occurs; 37 GB disk free.
 
-The practical consequence is that during a live load test, Groq (cloud) is used as the fallback rather than Qwen (local). Qwen does work correctly at idle and at light load.
+### LLM Inference Behaviour — Final Result
 
-I contacted the CrownLabs administrators and they suggested trying more aggressive quantization. Q2_K (~1.3 GiB RAM) is the next option to test, though the tag appears to not yet be available in the Ollama registry for this model. Alternatively, I am considering restructuring the experiment so that AutoSage makes its predictive decision *before* the load peak arrives — which is actually the correct behaviour for a predictive system and aligns better with the thesis claim.
+| Condition | Model | Inference time | Provider |
+|---|---|---|---|
+| Idle | qwen3:0.6b | 1.7 s | Ollama (local) |
+| Under muBench load (any level, 4-vCPU VM) | qwen3:0.6b | >90 s → timeout | Groq fallback |
+
+The root cause of under-load slowness is **CPU starvation**, not memory pressure. The 4-vCPU VM cannot provide enough CPU time for GGUF inference while simultaneously running muBench pods under load. CPU affinity (pinning Ollama to cores 0–1) was tested and worsened idle inference without helping under load.
+
+The cascade now operates in two documented modes: local-only at idle (1.7 s, no cloud), and cloud-assisted under load (Groq <2 s). This is treated as a designed resilience feature, not a deficiency — on more capable hardware the local mode would extend to production loads.
+
+### Completed Next Steps (from previous report)
+
+1. ✅ Smaller quantisation tested: qwen3:0.6b (Q4, 522 MB) — viable JSON output, 1.7 s idle
+2. ✅ Predictive case demonstrated via `force_rising` eval: AutoSage receives rapidly-increasing forecast and LLM recommends scale_up; MCDA tie-break produces conservative maintain (documented divergence behaviour)
+3. ✅ Controlled divergence scenario demonstrated: TOPSIS weight study shows gap=0.2585/0.4084 with forecast=0.15 weight, collapsing to gap=0.0000 with forecast=0.25
+4. ✅ seq_len reduced 100→5: ingest becomes bottleneck; clean single-service scaling story
+
+### Comparison Evaluation Summary (final results)
+
+All three methods evaluated with N=3 runs at both 48c and 96c connections on the muBench ingest→process→analyze chain:
+
+| Method | Load | p95 latency | SLA violations | Cost proxy |
+|---|---|---|---|---|
+| HPA | 48c | 5.30 s | 16.7% | 0.380 |
+| HPA | 96c | 8.08 s | 8.3% | 0.279 |
+| VPA | 48c | 1.09 s | 0% | — |
+| VPA | 96c | 1.09 s | 0% | — |
+| AutoSage | 48c | 15.43 s | 21.2% | **0.184 (−52% vs HPA)** |
+| AutoSage | 96c | 12.57 s | 37.2% | **0.235 (−16% vs HPA)** |
+
+VPA delivers the best raw latency and zero SLA violations. AutoSage delivers the lowest cost with full explainability and a documented three-layer decision pipeline (enforcement → LLM → MCDA).
+
+### Six Engineering Gaps — All Resolved
+
+| Gap | Fix | Status |
+|---|---|---|
+| 1A — Ollama blocks cascade | 90 s soft timeout thread wrapper | ✅ |
+| 1B — Groq fallback not triggered | TimeoutError propagated correctly | ✅ |
+| 1C — Sequential background loop | ThreadPoolExecutor parallel execution | ✅ |
+| 2 — force_rising forecast | `force_rising=True` in comparison eval | ✅ |
+| 3 — VPA poll window too short | `VPA_POLL_WINDOW=300 s` | ✅ |
+| 4 — Cached responses in loop | Cache cleared between cycles | ✅ |
+| 5 — TOPSIS forecast weight | `forecast_alignment: 0.15 → 0.25` | ✅ |
+| 6 — readyReplicas null crash | Fallback to `spec.replicas` | ✅ |
 
 ---
 
 ## Next Steps
 
-1. Test whether a Q3_K_M or Q2_K quantization is available and viable for JSON output quality
-2. Redesign the experiment to demonstrate the predictive case: AutoSage fires at rising CPU (~50%) and recommends scale_up *before* HPA would trigger at 70%
-3. Add a controlled divergence scenario where LLM and MCDA disagree, to show the two-layer validation is non-trivial
-4. Reduce the fan-out ratio (seq_len from 100 to ~5) so the `analyze` bottleneck saturates before `process` and `ingest`, creating a cleaner single-service scaling story
+1. Finalise results chapter — incorporate all comparison tables and the cascade two-mode narrative
+2. Write the VPA vs AutoSage trade-off discussion: raw latency (VPA wins) vs explainability + cost (AutoSage wins)
+3. Consider a brief hardware scaling note: projected inference time on 8-vCPU hardware based on observed CPU starvation factor

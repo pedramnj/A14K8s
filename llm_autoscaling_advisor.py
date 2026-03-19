@@ -469,7 +469,7 @@ class LLMAutoscalingAdvisor:
                     _base = f"{_p.scheme}://{_p.netloc}"
                     _ollama_result = {}
                     _ollama_error = {}
-                    _OLLAMA_SOFT_TIMEOUT = int(os.getenv("OLLAMA_SOFT_TIMEOUT_S", "60"))
+                    _OLLAMA_SOFT_TIMEOUT = int(os.getenv("OLLAMA_SOFT_TIMEOUT_S", "90"))
 
                     def _ollama_call():
                         try:
