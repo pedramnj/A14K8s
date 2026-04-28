@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoscaleai-agent
+  labels:
+    app: autoscaleai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoscaleai
+  template:
+    metadata:
+      labels:
+        app: autoscaleai
+    spec:
+      containers:
+        - name: autoscaleai
+          image: your-registry/autoscaleai:latest
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus.monitoring.svc.cluster.local:9090"
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
