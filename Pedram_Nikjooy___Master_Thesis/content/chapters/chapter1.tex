@@ -1,0 +1,147 @@
+\chapter{Introduction}
+\label{sec:introduction}
+
+Agentic Artificial Intelligence (Agentic AI) denotes a class of AI systems engineered
+to function as autonomous, goal-oriented agents. These systems are capable of perceiving
+their environment, reasoning about defined objectives, and executing actions with minimal
+human intervention. Agentic AI represents an evolution of traditional rule-based control
+systems, improving upon the latter by integrating advanced decision-making components,
+such as reinforcement learning algorithms or large language models (LLMs), that
+serve as the central reasoning engine. These core models are complemented by additional
+architectural components, including persistent memory modules, planning algorithms,
+specialized tool interfaces, and feedback mechanisms. Together, these elements enable
+structured, multi-step task execution and adaptive behavior in dynamic
+environments~\cite{agentic2025acharya}.
+Owing to these capabilities, Agentic AI systems are applicable across a wide range of
+domains, including healthcare, cybersecurity, autonomous software development, industrial
+control systems, and process automation.
+
+In the field of information technology, such solutions offer a compelling approach to
+managing systems that are becoming increasingly large, dynamic, and complex in order to
+meet evolving market demands. In this context, the \gls{AIOps} paradigm~\cite{GartnerAIOpsDefinition}
+represents a shift from traditional operations, primarily driven by human expertise
+and manual effort, toward partially or fully autonomous processes enabled by AI.
+
+This transition presents both opportunities and challenges. On the one hand, the
+integration of AI models into operational workflows can streamline processes,
+significantly accelerate decision-making, reduce operational costs, and mitigate the
+impact of human error. On the other hand, the practical adoption of AIOps systems
+entails addressing a multitude of critical challenges, including the identification
+of appropriate use cases, the observability and quality of contextual data required
+to adapt and operate AI models, interfacing said models with their target environments,
+the deployment of large-scale models in resource-constrained environments, the
+scalability of solutions to massive infrastructures, and the limited transparency
+and interpretability of AI-driven decision-making mechanisms.
+Additionally, granting a high degree of autonomy to AI systems introduces significant
+safety concerns, particularly in critical scenarios where incorrect decisions may
+result in service degradation or disruption for end users. Consequently, the integration
+of AI agents must be accompanied by robust safeguard mechanisms and, where appropriate,
+human oversight, which remains a desirable requirement in current deployments.
+
+Specifically in the context of cloud systems, \gls{LLM}-based Agentic AI possesses a
+great deal of unexpressed potential, both as a helper for human operators and as
+fully autonomous entities capable of running, orchestrating, and troubleshooting
+operations. Agents may prove useful for detecting anomalies, predicting faults,
+performing root cause analysis, and allocating resources~\cite{cheng2023ai}.
+Recently, efforts have been expended in defining guidelines and design principles,
+paving the road towards the development of novel solutions in this
+field~\cite{shetty2024building}; however, many research avenues remain unexplored.
+
+\section{Problem Statement}
+\label{sec:problem}
+
+Kubernetes has become the de facto standard for orchestrating containerized
+workloads in production cloud environments. Its built-in autoscaling mechanisms—the
+\gls{HPA} and the \gls{VPA}—address resource management by adjusting replica counts
+and resource limits in response to observed metrics. Despite their widespread adoption,
+both mechanisms share a fundamental limitation: they are \textit{reactive}. The HPA
+waits for \gls{CPU} utilization to cross a threshold before scaling; the VPA waits
+for a stable observation window before updating resource requests. In both cases,
+provisioning lag allows SLA violations to accumulate before additional capacity
+arrives.
+
+Three further problems motivate this work:
+
+\begin{enumerate}
+  \item \textbf{No forecasting.} Neither HPA nor VPA considers predicted future load.
+  An approaching traffic burst is invisible until it materializes as metric pressure.
+
+  \item \textbf{Single-criterion optimization.} HPA optimizes for a single metric
+  (typically CPU). Real operational trade-offs—cost vs.\ performance vs.\ stability—are
+  not considered.
+
+  \item \textbf{No explainability.} Neither mechanism produces a human-readable
+  explanation for its actions. An operator observing an unexpected scale event cannot
+  determine why it occurred without inspecting raw metric history and control-loop
+  logs. This opacity is a barrier in regulated environments and in organizations
+  seeking auditability of infrastructure cost.
+\end{enumerate}
+
+\section{Proposed Approach and Contributions}
+\label{sec:contributions}
+
+In this setting, we introduce \textbf{Ai4k8s}, an agentic AI platform engineered to
+support safe, intelligent Kubernetes operations. Ai4k8s leverages the capabilities
+of \glspl{LLM} to make dynamic, context-aware autoscaling decisions and provides a
+full decision trace for every action it takes. Ai4k8s implements a three-layer pipeline:
+
+\begin{enumerate}
+  \item \textbf{Enforcement layer} — applies hard safety rules to block physically
+  impossible or operationally unsafe scaling actions before any model is consulted.
+
+  \item \textbf{LLM reasoning layer} — a quantized local language model
+  (\textit{qwen3:0.6b}, 522~MB) reads live cluster metrics, a time-series forecast,
+  and deployment metadata to produce a plain-English scaling recommendation. A
+  graceful cascade (local LLM $\to$ cloud LLM $\to$ regex fallback) ensures
+  availability under resource contention.
+
+  \item \textbf{\gls{MCDA} optimization layer} — a TOPSIS optimizer scores all
+  candidate actions across five criteria (cost, performance, stability, forecast
+  alignment, response time) and confirms or overrides the LLM recommendation.
+\end{enumerate}
+
+The principal contributions of this thesis are:
+
+\begin{itemize}
+  \item A novel three-layer autoscaling architecture that combines deterministic
+  safety rules, \gls{LLM} reasoning, and multi-criteria optimization in a single
+  production-grade pipeline.
+
+  \item Demonstration that a sub-gigabyte on-premises LLM is sufficient to drive
+  Kubernetes autoscaling at 1.7~s latency on commodity hardware, with no cloud
+  dependency at idle.
+
+  \item A 52\% reduction in compute cost proxy compared to native HPA, with full
+  decision explainability, validated on the muBench microservice benchmark.
+
+  \item An open-source implementation available at \url{https://ai4k8s.online} with
+  a live web dashboard, MCP tool server, and structured evaluation harness.
+\end{itemize}
+
+\section{Thesis Structure}
+\label{sec:structure}
+
+The remainder of this thesis is organized as follows:
+
+\begin{itemize}
+  \item \textbf{Chapter~\ref{ch:background}} introduces the background on Kubernetes
+  autoscaling, the AIOps paradigm, LLMs as reasoning engines, and multi-criteria
+  decision analysis. It surveys related work and positions Ai4k8s in the literature.
+
+  \item \textbf{Chapter~\ref{ch:design}} describes the Ai4k8s system architecture
+  in detail, covering the Ai4k8s decision pipeline, the local LLM deployment
+  strategy, the MCDA optimizer, and the predictive monitoring subsystem.
+
+  \item \textbf{Chapter~\ref{ch:implementation}} discusses the implementation,
+  focusing on the engineering challenges encountered—LLM cascade design, Ollama
+  integration, TOPSIS weight calibration, and the parallel background autoscaling
+  loop—and the solutions developed.
+
+  \item \textbf{Chapter~\ref{ch:evaluation}} presents the experimental setup and
+  results: bottleneck analysis with seq\_len tuning, predictive scale-up
+  demonstration, HPA/VPA mode selection accuracy, and the structured three-way
+  comparison (HPA vs.\ VPA vs.\ Ai4k8s) across multiple load levels.
+
+  \item \textbf{Chapter~\ref{ch:conclusions}} summarizes the findings, discusses
+  limitations, and outlines directions for future work.
+\end{itemize}
