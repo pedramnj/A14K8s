@@ -36,8 +36,11 @@ kubeProxy:            { enabled: false }
 kubeStateMetrics:
   enabled: true
 
+# Disabled: port 9100 is already used by another node_exporter on the host.
+# We get pod-level CPU/memory from cAdvisor (kubelet) + kube-state-metrics,
+# which is what the AutoScaleAI RL baseline actually consumes.
 nodeExporter:
-  enabled: true
+  enabled: false
 
 prometheus:
   prometheusSpec:
