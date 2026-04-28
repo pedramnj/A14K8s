@@ -1,0 +1,37 @@
+# RBAC for the AutoScaleAI inference daemon.
+# Scoped to a single namespace (default) and the smallest set of verbs needed:
+#   - read deployments to know current replica count
+#   - patch deployments/scale to set the new replica count
+# No cluster-wide permissions, no secret access.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: autoscaleai
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: autoscaleai-scaler
+  namespace: default
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: autoscaleai-scaler
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: autoscaleai
+    namespace: default
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: autoscaleai-scaler
