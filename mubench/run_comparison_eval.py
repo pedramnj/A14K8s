@@ -532,6 +532,104 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
         "llm_model": rec_result.get("llm_model", "?"),
     }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# METHOD 4 — AutoScaleAI (PPO RL baseline)
+# Vendored at baselines/autoscaleai with two upstream bug fixes and a
+# production inference daemon (runner.py). See baselines/autoscaleai/RUNNER_README.md
+# for build/deploy details. The image is pre-built on the VM as
+# localhost/autoscaleai:v1 and imported into k3s containerd.
+# ══════════════════════════════════════════════════════════════════════════════
+AUTOSCALEAI_MANIFESTS_DIR = os.path.join(_ROOT, "baselines", "autoscaleai", "k8s-manifests")
+HPA_MANIFEST_PATH         = os.path.join(_ROOT, "mubench", "k8s-manifests", "hpa.yaml")
+
+def _wait_for_pod_ready(label: str, namespace: str = NAMESPACE, timeout_s: int = 90) -> bool:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        out = kubectl("get", "pods", "-n", namespace, "-l", label,
+                      "-o", "jsonpath={.items[0].status.containerStatuses[0].ready}",
+                      silent=True)
+        if out.strip().lower() == "true":
+            return True
+        time.sleep(2)
+    return False
+
+
+def run_autoscaleai_trial(ingest_ip: str, run_idx: int) -> dict:
+    print(f"\n  [AutoScaleAI run {run_idx+1}/{N_RUNS}] tearing down conflicting controllers …")
+    # AutoScaleAI is the sole controller during this trial. HPAs would fight
+    # the RL agent on every tick, so we delete them and restore at the end.
+    for svc in SERVICES:
+        delete_hpa_if_exists(svc)
+        delete_vpa_if_exists(f"{svc}-vpa")
+    for svc in SERVICES:
+        reset_replicas(svc)
+
+    # Apply manifests — provisioning latency = "kubectl apply" → "controller Ready"
+    print(f"  [AutoScaleAI] applying RL controller manifests …")
+    t_create = time.time()
+    out = subprocess.run(
+        ["kubectl", "apply", "-k", AUTOSCALEAI_MANIFESTS_DIR],
+        capture_output=True, text=True, timeout=60,
+    )
+    if out.returncode != 0:
+        return {"error": f"apply failed: {out.stderr.strip()[:200]}"}
+
+    if not _wait_for_pod_ready("app=autoscaleai", timeout_s=90):
+        kubectl("delete", "-k", AUTOSCALEAI_MANIFESTS_DIR, silent=True)
+        kubectl("apply", "-f", HPA_MANIFEST_PATH, silent=True)
+        return {"error": "controller did not become Ready within 90s"}
+    provisioning_latency = time.time() - t_create
+
+    print(f"  [AutoScaleAI] controller Ready in {provisioning_latency:.1f}s  — warmup {WARMUP_S}s …")
+    time.sleep(WARMUP_S)
+
+    initial_replicas = get_replica_count(DEPLOYMENT)
+    wrk, t_load = start_wrk(ingest_ip)
+    print(f"  [AutoScaleAI] wrk PID={wrk.pid}  — monitoring {WINDOW_S}s …")
+
+    scale_event = threading.Event()
+    watcher_results = []
+    watcher = threading.Thread(
+        target=watch_replicas,
+        args=(DEPLOYMENT, initial_replicas, WINDOW_S, scale_event, watcher_results),
+        daemon=True,
+    )
+    watcher.start()
+
+    time.sleep(PROBE_AT_S)
+    print(f"  [AutoScaleAI] T+{PROBE_AT_S}s — running latency probe …")
+    probe = probe_latency()
+
+    watcher.join(timeout=WINDOW_S - PROBE_AT_S + 10)
+    try:
+        wrk.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        wrk.kill()
+
+    # Always tear down the RL controller and restore HPAs, even on errors above.
+    print(f"  [AutoScaleAI] tearing down RL controller, restoring HPAs …")
+    kubectl("delete", "-k", AUTOSCALEAI_MANIFESTS_DIR, silent=True)
+    kubectl("apply", "-f", HPA_MANIFEST_PATH, silent=True)
+
+    watch = watcher_results[0] if watcher_results else {}
+    first_scale = watch.get("first_scale_latency_s")
+    if first_scale is not None:
+        first_scale += WARMUP_S
+
+    cost_proxy = round(
+        watch.get("avg_replicas", HPA_MIN) * CPU_REQUEST_M / 1000, 4
+    )
+
+    return {
+        "provisioning_latency_s": round(provisioning_latency, 3),
+        "first_scale_latency_s": first_scale,
+        "peak_replicas": watch.get("peak_replicas"),
+        "p95_latency_s": probe.get("p95_s"),
+        "sla_violation_rate": probe.get("sla_violation_rate"),
+        "cost_proxy": cost_proxy,
+        "n_probes": probe.get("n_probes"),
+    }
+
 # ── Results aggregation ───────────────────────────────────────────────────────
 def aggregate(trials: list, fields: list) -> dict:
     agg = {}
@@ -618,7 +716,7 @@ def print_results_table(all_results: dict):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    print_section("muBench HPA / VPA / AutoSage Comparison Evaluation")
+    print_section("muBench HPA / VPA / AutoSage / AutoScaleAI Comparison Evaluation")
     print(f"  Runs per method : {N_RUNS}")
     print(f"  Warmup          : {WARMUP_S}s")
     print(f"  Load window     : {WINDOW_S}s  ({WRK_CONNECTIONS} connections)")
@@ -705,6 +803,28 @@ def main():
          "p95_latency_s", "sla_violation_rate", "cost_proxy"],
     )
     all_results["AutoSage"] = {"trials": autosage_trials, "aggregate": autosage_agg}
+
+    print(f"  cooldown {COOLDOWN_S}s …")
+    time.sleep(COOLDOWN_S)
+
+    # ── Method 4: AutoScaleAI (PPO RL baseline) ──────────────────────────────
+    print_section("METHOD 4 — AutoScaleAI (PPO RL baseline)")
+    autoscaleai_trials = []
+    for i in range(N_RUNS):
+        trial = run_autoscaleai_trial(ingest_ip, i)
+        autoscaleai_trials.append(trial)
+        if trial.get("error"):
+            print(f"  [AutoScaleAI] trial {i+1} errored: {trial['error']}")
+        if i < N_RUNS - 1:
+            print(f"  cooldown {COOLDOWN_S}s …")
+            time.sleep(COOLDOWN_S)
+
+    autoscaleai_agg = aggregate(
+        [t for t in autoscaleai_trials if not t.get("error")],
+        ["provisioning_latency_s", "first_scale_latency_s", "peak_replicas",
+         "p95_latency_s", "sla_violation_rate", "cost_proxy"],
+    )
+    all_results["AutoScaleAI"] = {"trials": autoscaleai_trials, "aggregate": autoscaleai_agg}
 
     # ── Print table ──────────────────────────────────────────────────────────
     print_results_table(all_results)
