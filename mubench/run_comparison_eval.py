@@ -51,8 +51,8 @@ HPA_MIN          = 2
 HPA_MAX          = 4
 HPA_CPU_TARGET   = 70              # %
 WRK_THREADS      = 4
-WRK_CONNECTIONS  = 48
-WRK_DURATION     = "120s"
+WRK_CONNECTIONS  = int(os.environ.get("WRK_CONNECTIONS", "48"))
+WRK_DURATION     = os.environ.get("WRK_DURATION", "120s")
 WARMUP_S         = 15
 WINDOW_S         = 120
 PROBE_AT_S       = 90              # seconds into load window to probe latency
@@ -61,7 +61,7 @@ VPA_POLL_WINDOW  = 300          # VPA Recommender needs multiple observation win
 N_RUNS           = 3
 PROBE_REQUESTS   = 20
 SLA_THRESHOLD_S  = 2.0
-RESULTS_PATH     = "/tmp/comparison_results.json"
+RESULTS_PATH     = os.environ.get("RESULTS_PATH", "/tmp/comparison_results.json")
 PROBE_IMAGE      = "curlimages/curl:8.9.1"
 
 # ── kubectl helper ────────────────────────────────────────────────────────────
