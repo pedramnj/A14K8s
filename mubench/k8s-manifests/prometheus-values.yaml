@@ -1,0 +1,58 @@
+# Minimal kube-prometheus-stack values for the CrownLabs 4-vCPU / 14-GiB testbed.
+#
+# Goals
+# - Surface CPU / memory / HTTP metrics for the muBench services
+# - Provide a Prometheus endpoint at the cluster-internal name expected by the
+#   AutoScaleAI RL baseline (http://prometheus-kube-prometheus-prometheus.monitoring.svc:9090)
+# - Stay below ~1 GiB additional steady-state RAM and minimal CPU
+#
+# Disabled subsystems (we don't need them for the eval):
+# - Grafana, Alertmanager, persistent volumes, custom rules
+# - Most node-exporter collectors (we use kube-state-metrics + cAdvisor)
+
+defaultRules:
+  create: false
+
+alertmanager:
+  enabled: false
+
+grafana:
+  enabled: false
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 50m,  memory: 64Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+
+kubeApiServer:        { enabled: true }
+kubelet:              { enabled: true }
+kubeControllerManager: { enabled: false }
+coreDns:              { enabled: false }
+kubeDns:              { enabled: false }
+kubeEtcd:             { enabled: false }
+kubeScheduler:        { enabled: false }
+kubeProxy:            { enabled: false }
+
+kubeStateMetrics:
+  enabled: true
+
+# Disabled: port 9100 is already used by another node_exporter on the host.
+# We get pod-level CPU/memory from cAdvisor (kubelet) + kube-state-metrics,
+# which is what the AutoScaleAI RL baseline actually consumes.
+nodeExporter:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: "30s"
+    evaluationInterval: "30s"
+    retention: "2h"
+    retentionSize: "1GiB"
+    enableAdminAPI: false
+    walCompression: true
+    storageSpec: {}        # use emptyDir, no PV
+    resources:
+      requests: { cpu: 100m, memory: 384Mi }
+      limits:   { cpu: 500m, memory: 1Gi }
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false

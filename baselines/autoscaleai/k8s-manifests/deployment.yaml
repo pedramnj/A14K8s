@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autoscaleai-controller
+  namespace: default
+  labels:
+    app: autoscaleai
+    role: rl-baseline
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: autoscaleai
+  template:
+    metadata:
+      labels:
+        app: autoscaleai
+        role: rl-baseline
+    spec:
+      serviceAccountName: autoscaleai
+      containers:
+        - name: autoscaleai
+          image: localhost/autoscaleai:v1
+          imagePullPolicy: Never        # local image imported via k3s ctr
+          env:
+            - name: PROMETHEUS_URL
+              value: "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090"
+            - name: TARGET_NAMESPACE
+              value: "default"
+            - name: TARGET_DEPLOYMENTS
+              value: "ingest,process,analyze"
+            - name: MIN_REPLICAS
+              value: "2"
+            - name: MAX_REPLICAS
+              value: "4"
+            - name: TICK_SECONDS
+              value: "10"
+            - name: CPU_REQUEST_MILLICORES
+              value: "125"
+            - name: RPS_PROXY_MAX_CORES
+              value: "2.0"
+            - name: LOG_LEVEL
+              value: "INFO"
+          ports:
+            - name: health
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 20
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "256Mi"
+            limits:
+              cpu: "300m"
+              memory: "512Mi"
