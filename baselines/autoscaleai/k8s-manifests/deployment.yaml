@@ -20,7 +20,7 @@ spec:
       serviceAccountName: autoscaleai
       containers:
         - name: autoscaleai
-          image: localhost/autoscaleai:v1
+          image: localhost/autoscaleai:v2
           imagePullPolicy: Never        # local image imported via k3s ctr
           env:
             - name: PROMETHEUS_URL
