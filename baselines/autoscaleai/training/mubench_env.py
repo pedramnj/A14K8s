@@ -52,10 +52,11 @@ class MubenchConfig:
     min_replicas: int = 2
     max_replicas: int = 4
 
-    # Per-pod service capacity (millicores worth of throughput in arbitrary units)
-    # ingest pods request 125 m, limit 500 m. We model a single pod as serving
-    # roughly 12 req/s before saturation under matrix_compute-style work.
-    pod_capacity_req_per_s: float = 12.0
+    # Per-pod service capacity. Tuned so 4 replicas comfortably serve the
+    # burst peak (cap=100 vs peak=60 → ~60% utilisation at max replicas) and
+    # 2 replicas saturate (cap=50 vs peak=60 → ρ=1.2). This makes scaling
+    # decisions consequential without forcing always-max.
+    pod_capacity_req_per_s: float = 25.0
 
     # SLA target (2 s) — matches the eval harness `SLA_THRESHOLD_S`.
     sla_seconds: float = 2.0
@@ -63,10 +64,13 @@ class MubenchConfig:
     # Scaling cost — same shape as upstream: 0.1 per replica per step
     cost_per_replica: float = 0.1
 
-    # Reward weights
+    # Reward weights — tuned so cost differential at idle (0.39 per step
+    # between 2 and 4 replicas) accumulates over the long idle phase to
+    # outweigh peak-burst SLA penalties. The previous (1.0 / 0.5 / 5.0)
+    # made the always-max strategy globally optimal.
     w_latency: float = 1.0
-    w_cost: float = 0.5
-    w_sla: float = 5.0
+    w_cost: float = 2.0
+    w_sla: float = 2.0
 
     # Episode length — 200 control steps ≈ 200 × 5 s = ~16 min of simulated wall time
     episode_length: int = 200
@@ -75,8 +79,9 @@ class MubenchConfig:
     rps_proxy_max: float = 100.0   # upper bound for request_rate normalisation
 
     # Workload schedule (req/s at each step) — wrk-like burst
-    # Ramp-up over 30 steps, sustained 100 steps, ramp-down 30 steps, idle remainder
-    burst_peak: float = 80.0
+    # Burst peak well within max-replica capacity so 4 replicas can serve it
+    # with mild SLA pressure; 2 replicas clearly saturate.
+    burst_peak: float = 60.0
     burst_idle: float = 5.0
 
 
