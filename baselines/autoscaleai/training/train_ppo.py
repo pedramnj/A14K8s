@@ -52,7 +52,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", type=Path,
                    default=HERE.parent / "artifacts" / "mubench_ppo_v1.zip")
-    p.add_argument("--tb-log", type=Path, default=Path("/tmp/sb3-tb-mubench"))
+    p.add_argument("--tb-log", type=Path, default=None,
+                   help="optional tensorboard log dir (requires `pip install tensorboard`)")
     p.add_argument("--eval-episodes", type=int, default=20)
     return p.parse_args()
 
@@ -60,7 +61,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.tb_log.mkdir(parents=True, exist_ok=True)
+    tb_log_arg = None
+    if args.tb_log is not None:
+        args.tb_log.mkdir(parents=True, exist_ok=True)
+        tb_log_arg = str(args.tb_log)
 
     env = make_vec_env(make_env(args.seed), n_envs=args.n_envs, seed=args.seed)
 
@@ -81,7 +85,7 @@ def main() -> int:
         ent_coef=0.01,
         seed=args.seed,
         verbose=1,
-        tensorboard_log=str(args.tb_log),
+        tensorboard_log=tb_log_arg,
     )
 
     print(f"Training PPO for {args.steps} env steps "
