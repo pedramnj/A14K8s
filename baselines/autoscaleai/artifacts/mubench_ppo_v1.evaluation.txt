@@ -1,0 +1,9 @@
+Trained: mubench_ppo_v1.zip
+Steps: 50000
+net_arch: 128x128
+
+Episodes evaluated:        20
+Mean episode reward:       -161.265 ± 1.339
+Mean SLA violation rate:   0.00%
+Mean avg replicas:         3.26
+Mean avg latency (s):      0.771

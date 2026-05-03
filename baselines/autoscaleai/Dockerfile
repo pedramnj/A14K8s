@@ -22,16 +22,16 @@ WORKDIR /app
 COPY requirements-runner.txt /app/requirements-runner.txt
 RUN pip install -r /app/requirements-runner.txt
 
-# Copy the vendored upstream code + our runner in one layer.
-COPY agent/ /app/agent/
+# Copy the vendored upstream code (collector + scaler with our bug fixes)
+# + our runner. Note: agent/ and env/ are NOT copied — we use sb3 in
+# place of upstream's hand-rolled PolicyNetwork at runtime.
 COPY collector/ /app/collector/
-COPY env/ /app/env/
 COPY executor/ /app/executor/
 COPY runner.py /app/runner.py
-# autoscale_agent.pt is the upstream pretrained checkpoint. The k8s deployment
-# can override this via a ConfigMap mount at /app/autoscale_agent.pt if we
-# later fine-tune on muBench.
-COPY autoscale_agent.pt /app/autoscale_agent.pt
+# The trained sb3 archive — produced by training/train_ppo.py on a
+# muBench-shaped simulator (see training/README.md). The runner loads
+# this with PPO.load(...).
+COPY artifacts/mubench_ppo_v1.zip /app/mubench_ppo_v1.zip
 
 # Drop privileges. The runner only needs outbound HTTP to Prometheus + the
 # K8s API; the ServiceAccount is what grants RBAC, not the OS user.

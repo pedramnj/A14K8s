@@ -1,24 +1,23 @@
-"""Production inference daemon for the vendored AutoScaleAI baseline.
+"""Production inference daemon for the AutoScaleAI baseline.
 
-Upstream ships training code, a simulator, and a checkpoint, but no
-deployable inference loop — the kubernetes/deployment.yaml just points to
-"your-registry/autoscaleai:latest" with no entrypoint defined.
+Loads the PPO policy we trained on a muBench-shaped simulator
+(`baselines/autoscaleai/training/`) and uses it to scale Kubernetes
+deployments based on live Prometheus metrics.
 
-This runner ties the upstream pieces together and runs as a Kubernetes pod:
+Each TICK_SECONDS, for each TARGET_DEPLOYMENT:
+  - query Prometheus for total per-pod CPU rate (cores)
+  - read the current replica count via the K8s API
+  - build the 3-d observation `[cpu_util, replicas_norm, request_rate_norm]`
+    in the order matching `training/mubench_env.py`
+  - call `model.predict(obs, deterministic=True)` -> {0=down, 1=noop, 2=up}
+  - patch `deployments/scale` if the action moves the count, clamped to
+    [MIN_REPLICAS, MAX_REPLICAS]
 
-    1. Loads the bundled `autoscale_agent.pt` PPO checkpoint (Actor-Critic
-       MLP, 3 inputs -> 3 actions).
-    2. On every TICK_S seconds, for each TARGET_DEPLOYMENT:
-         - queries Prometheus for per-pod CPU rate (proxy for RPS)
-         - reads current replicas from the K8s API
-         - builds the 3-d state vector matching the simulator's expectation
-           [rps_norm, replicas_norm, cpu_util]
-         - calls agent.act(state) -> {0=down, 1=noop, 2=up}
-         - patches the deployment scale subresource (min/max clamped)
-    3. Exposes a /metrics + /healthz HTTP endpoint on PORT for liveness.
+The runner exposes a /healthz + /metrics HTTP endpoint on HEALTH_PORT for
+liveness probes and observability.
 
-Configuration is via environment variables (see DEFAULT_CONFIG below).
-The daemon is single-threaded and stateless across restarts.
+Configuration is via environment variables (see Config.from_env). The
+daemon is single-threaded and stateless across restarts.
 """
 from __future__ import annotations
 
@@ -32,10 +31,11 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 import numpy as np
+from stable_baselines3 import PPO
 
-# Vendored modules
+# Vendored modules — we keep upstream's collector and scaler (with the
+# two upstream bug fixes) but replace its agent with the sb3-trained policy.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from agent.model import AutoScaleAgent
 from collector.metrics import PrometheusCollector
 from executor.scaler import K8sScaler
 
@@ -76,7 +76,7 @@ class Config:
             max_replicas=int(os.getenv("MAX_REPLICAS", "4")),
             tick_seconds=float(os.getenv("TICK_SECONDS", "10")),
             model_path=os.getenv(
-                "MODEL_PATH", "/app/autoscale_agent.pt"
+                "MODEL_PATH", "/app/mubench_ppo_v1.zip"
             ),
             state_dim=int(os.getenv("STATE_DIM", "3")),
             action_dim=int(os.getenv("ACTION_DIM", "3")),
@@ -128,20 +128,30 @@ def get_replica_count(scaler: K8sScaler, namespace: str, name: str) -> int:
 
 
 def build_state(cpu_cores: float, replicas: int, cfg: Config) -> np.ndarray:
-    """Map real cluster signals onto the simulator's expected 3-d state.
+    """Map real cluster signals onto the trained policy's 3-d observation.
 
-    The bundled checkpoint was trained on a simulator with state
-    [rps_norm, replicas_norm, cpu_util_per_pod]. We approximate:
-      - rps_norm: total CPU rate (cores) clipped to RPS_PROXY_MAX_CORES
-      - replicas_norm: replicas / max_replicas
-      - cpu_util_per_pod: cpu_cores / (replicas * cpu_request_cores), capped at 1
+    Order matches `training/mubench_env.py:MubenchScalingEnv._obs`:
+        s[0] = cpu_util_per_pod   in [0, 1]
+        s[1] = replicas_norm      in [0, 1]
+        s[2] = rps_norm           in [0, 1]
+
+    Notes:
+      - cpu_util is computed against the per-pod CPU *request* (125 m), so
+        a value of 1.0 means each pod is using its full request
+        allotment — past that point K8s starts throttling. This matches
+        the simulator's "rho = arrival/capacity" intuition.
+      - rps_norm is approximated by total CPU rate (cores) clipped to
+        RPS_PROXY_MAX_CORES. We don't have a first-class request-rate
+        metric on muBench without instrumenting the services, and CPU
+        rate is a reasonable proxy because all three services are
+        compute-bound.
     """
     request_cores = cfg.cpu_request_millicores / 1000.0
     capacity_cores = max(1e-6, replicas * request_cores)
     cpu_util_per_pod = min(1.0, cpu_cores / capacity_cores)
-    rps_norm = min(1.0, cpu_cores / max(1e-6, cfg.rps_proxy_max_cores))
     replicas_norm = replicas / max(1, cfg.max_replicas)
-    return np.array([rps_norm, replicas_norm, cpu_util_per_pod], dtype=np.float32)
+    rps_norm = min(1.0, cpu_cores / max(1e-6, cfg.rps_proxy_max_cores))
+    return np.array([cpu_util_per_pod, replicas_norm, rps_norm], dtype=np.float32)
 
 
 ACTION_NAMES = {0: "scale_down", 1: "noop", 2: "scale_up"}
@@ -159,9 +169,11 @@ def control_loop(cfg: Config) -> None:
     log.info("starting control loop: %s", cfg)
     collector = PrometheusCollector(base_url=cfg.prometheus_url, mode="real")
     scaler = K8sScaler(in_cluster=True, mode="real")
-    agent = AutoScaleAgent(state_dim=cfg.state_dim, action_dim=cfg.action_dim)
-    agent.load(cfg.model_path)
-    log.info("loaded model from %s", cfg.model_path)
+    # CPU device — the testbed has no GPU. sb3 picks the device on load
+    # but we pin to CPU explicitly so a CUDA-built torch wheel doesn't
+    # try to allocate on a GPU that isn't there.
+    model = PPO.load(cfg.model_path, device="cpu")
+    log.info("loaded sb3 PPO model from %s", cfg.model_path)
 
     while True:
         tick_start = time.time()
@@ -170,7 +182,11 @@ def control_loop(cfg: Config) -> None:
                 cpu_cores = collector.get_cpu_usage(namespace=cfg.namespace, deployment=dep)
                 current = get_replica_count(scaler, cfg.namespace, dep)
                 state = build_state(cpu_cores, current, cfg)
-                action = agent.act(state)
+                # deterministic=True so two pods seeing the same metrics
+                # would always emit the same action. Stochastic during
+                # training, deterministic during inference.
+                action_arr, _ = model.predict(state, deterministic=True)
+                action = int(action_arr)
                 target = decide_target(action, current, cfg)
 
                 decision = {
