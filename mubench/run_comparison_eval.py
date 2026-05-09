@@ -471,8 +471,12 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     print(f"  [AutoSage] action={action}  scaling_type={scaling_type}"
           f"  target_replicas={target_replicas}  conf={confidence:.2f}"
           f"  ({recommendation_latency_s:.1f}s)")
+    # The advisor writes the field as `score_difference` (not `score_gap`);
+    # the older key is kept as a fallback for backward-compatibility with
+    # any historical JSON snapshots that may have used the old name.
+    score_gap = mcda.get('score_difference', mcda.get('score_gap', 0))
     print(f"  [AutoSage] MCDA: agreement={mcda.get('agreement','?')}"
-          f"  gap={mcda.get('score_gap',0):.4f}"
+          f"  gap={score_gap:.4f}"
           f"  override={mcda.get('should_override',False)}")
 
     # Actuate: apply scaling if advisor says scale_up
@@ -516,7 +520,9 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
         "confidence": round(confidence, 3),
         "actuated": actuated,
         "mcda_agreement": mcda.get("agreement", "N/A"),
-        "mcda_score_gap": round(mcda.get("score_gap", 0), 4),
+        "mcda_score_gap": round(
+            mcda.get("score_difference", mcda.get("score_gap", 0)), 4
+        ),
         "mcda_override": mcda.get("should_override", False),
         "first_scale_latency_s": first_scale,
         "peak_replicas": watch.get("peak_replicas"),
