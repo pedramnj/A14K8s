@@ -21,10 +21,21 @@ Author: Pedram Nikjooy
 Thesis: AI Agent for Kubernetes Management
 """
 
+import os
 import numpy as np
 import logging
 from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass, field
+
+# --- Cost-criterion compression knob (Phase H, Knob 2) ----------------------
+# Applies a non-linear transform to the per-alternative cost score:
+#     cost = (target / max_replicas) ** MCDA_COST_EXPONENT
+# Default 1.0 reproduces the Phase G behaviour (linear cost). Setting to 0.5
+# applies sqrt compression: cost values for [2, 3, 4] replicas with max=4 go
+# from [0.50, 0.75, 1.00] down to [0.71, 0.87, 1.00], shrinking the cost
+# differential between adjacent actions and letting Performance carry more
+# weight in TOPSIS distances. See thesis_reports/EASY_EXPLAINER.md (Phase H).
+MCDA_COST_EXPONENT = float(os.getenv("MCDA_COST_EXPONENT", "1.0"))
 
 logger = logging.getLogger(__name__)
 
@@ -224,8 +235,13 @@ class MCDAAutoscalingOptimizer:
         safe_target = max(target, 1)
         safe_current = max(current_replicas, 1)
 
-        # --- Cost: normalized by max_replicas (linear, more replicas = more cost) ---
-        cost = target / max(max_replicas, 1)
+        # --- Cost: normalised by max_replicas, then optionally compressed via
+        # MCDA_COST_EXPONENT < 1 (e.g. 0.5 = sqrt). Shrinking the dynamic
+        # range of cost across alternatives means the cost criterion contributes
+        # less to TOPSIS distances, so Performance/Forecast carry more weight
+        # at the threshold edge.
+        cost_raw = target / max(max_replicas, 1)
+        cost = cost_raw ** MCDA_COST_EXPONENT
 
         # --- Performance: how close estimated CPU will be to the 60-80% sweet spot ---
         # Estimate CPU at this replica count (proportional redistribution)

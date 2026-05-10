@@ -91,6 +91,15 @@ class LLMAutoscalingAdvisor:
         self.mcda_agreement_threshold = float(os.getenv("MCDA_AGREEMENT_THRESHOLD", "0.15"))
         self.enable_mcda_validation = os.getenv("AUTOSAGE_ENABLE_MCDA_VALIDATION", "1").strip().lower() not in {"0", "false", "no"}
         self.sla_only_mode = os.getenv("AUTOSAGE_SLA_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes"}
+
+        # Phase H, Knob 3 — burst-override path. When enabled, the advisor
+        # bypasses the MCDA validation block entirely if (a) measured CPU is
+        # above the threshold and (b) we have replica headroom. The override
+        # adds +1 replica per tick (not a jump to max), and stops when the
+        # deployment hits maxReplicas. Disabled by default to preserve
+        # baseline Ai4k8s behaviour for paper comparisons.
+        self.burst_override_enabled = os.getenv("BURST_OVERRIDE_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+        self.burst_override_cpu_pct = float(os.getenv("BURST_OVERRIDE_CPU_PCT", "60"))
         if self.sla_only_mode:
             # SLA-first benchmark mode: keep decision path aggressive and avoid conservative overrides.
             self.enable_mcda_validation = False
@@ -1168,8 +1177,61 @@ class LLMAutoscalingAdvisor:
         else:
             logger.warning(f"⚠️ VALIDATION: Skipping validation - scaling_type={recommendation.get('scaling_type') if recommendation else None} is not HPA/both")
 
+        # Phase H, Knob 3 — burst-override: skip the MCDA validation block
+        # entirely when CPU is high and there's headroom. The override drives
+        # the recommendation to current+1 (clamped at max_replicas) and tags
+        # the mcda_validation dict with agreement='bypassed' so downstream
+        # logging and reporting still has a non-empty record.
+        burst_override_active = False
+        if (self.burst_override_enabled and recommendation and
+                recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both']):
+            try:
+                cpu_now = float(current_metrics.get('cpu_usage', 0) if current_metrics else 0)
+                current_reps_for_burst = (
+                    context.get('deployment', {}).get('current_replicas', 1)
+                    if context else 1
+                )
+                if (cpu_now > self.burst_override_cpu_pct
+                        and current_reps_for_burst < max_replicas):
+                    new_target = min(current_reps_for_burst + 1, max_replicas)
+                    old_target = recommendation.get('target_replicas')
+                    old_action = recommendation.get('action', 'maintain')
+                    recommendation['target_replicas'] = new_target
+                    recommendation['action'] = 'scale_up'
+                    recommendation['mcda_validation'] = {
+                        'agreement': 'bypassed',
+                        'should_override': False,
+                        'score_difference': 0.0,
+                        'mcda_score': 0.0,
+                        'llm_score': 0.0,
+                        'mcda_target': new_target,
+                        'dominance_margin': 0.0,
+                        'criteria_weights': {},
+                        'validation_note': (
+                            f'Burst override active: CPU={cpu_now:.1f}% > '
+                            f'{self.burst_override_cpu_pct:.1f}% threshold, '
+                            f'replica headroom available ({current_reps_for_burst}<{max_replicas}); '
+                            'MCDA validation bypassed.'
+                        ),
+                        'timing_s': 0.0,
+                    }
+                    recommendation['reasoning'] = (
+                        recommendation.get('reasoning', '') +
+                        f' [BURST OVERRIDE: CPU={cpu_now:.1f}% > {self.burst_override_cpu_pct:.1f}%, '
+                        f'changed from {old_action}→{old_target} to scale_up→{new_target}, MCDA bypassed]'
+                    )
+                    logger.warning(
+                        "⚡ BURST OVERRIDE: CPU=%.1f%% > %.1f%% AND headroom (%d<%d) — "
+                        "scaling to %d, MCDA bypassed.",
+                        cpu_now, self.burst_override_cpu_pct,
+                        current_reps_for_burst, max_replicas, new_target,
+                    )
+                    burst_override_active = True
+            except Exception as e:
+                logger.warning(f"⚠️ Burst override check failed (non-fatal): {e}")
+
         # MCDA Validation: Cross-check LLM decision against formal multi-criteria optimization
-        if (self.mcda_optimizer and recommendation and
+        if (not burst_override_active and self.mcda_optimizer and recommendation and
                 recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both'] and
                 recommendation.get('target_replicas') is not None):
             try:
