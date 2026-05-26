@@ -742,15 +742,21 @@ def print_results_table(all_results: dict):
                       f"actuation={tb.get('actuation_s','?'):.3f}s")
                 break   # one representative line is enough
 
-    # Per-run detail for AutoSage
+    # Per-run detail for AutoSage. Phase I: VPA decisions have
+    # target_replicas=None but target_cpu/target_memory set, so format
+    # defensively (no `{None:<3}` blowups) and show resource targets too.
     if "AutoSage" in all_results and not all_results["AutoSage"].get("na"):
         print_section("AutoSage Per-Run Details")
         for i, t in enumerate(all_results["AutoSage"].get("trials", []), 1):
+            tr = t.get("target_replicas")
+            tr_str = str(tr) if tr is not None else "—"
+            tc = t.get("target_cpu") or "—"
+            tm = t.get("target_memory") or "—"
             print(f"  Run {i}: action={t.get('action','?'):<12} "
-                  f"scaling_type={t.get('scaling_type','?'):<6} "
-                  f"target_replicas={t.get('target_replicas','?'):<3} "
+                  f"type={t.get('scaling_type','?'):<6} "
+                  f"replicas={tr_str:<3} cpu={tc:<8} mem={tm:<8} "
                   f"conf={t.get('confidence',0):.2f}  "
-                  f"rec_latency={t.get('recommendation_latency_s','?'):.1f}s  "
+                  f"rec_latency={t.get('recommendation_latency_s',0):.1f}s  "
                   f"model={t.get('llm_model','?')}")
             print(f"         MCDA agreement={t.get('mcda_agreement','?')}  "
                   f"gap={t.get('mcda_score_gap',0):.4f}  "
@@ -870,10 +876,8 @@ def main():
     )
     all_results["AutoScaleAI"] = {"trials": autoscaleai_trials, "aggregate": autoscaleai_agg}
 
-    # ── Print table ──────────────────────────────────────────────────────────
-    print_results_table(all_results)
-
-    # ── Save JSON ─────────────────────────────────────────────────────────────
+    # ── Save JSON FIRST (before any pretty-printing) ─────────────────────────
+    # If a downstream print blows up, the eval data is still on disk.
     output = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "config": {
@@ -886,6 +890,8 @@ def main():
             "hpa_min": HPA_MIN,
             "hpa_max": HPA_MAX,
             "hpa_cpu_target_pct": HPA_CPU_TARGET,
+            "workload": WORKLOAD,
+            "deployment": DEPLOYMENT,
         },
         "results": {
             method: {
@@ -901,6 +907,12 @@ def main():
     with open(RESULTS_PATH, "w") as f:
         json.dump(output, f, indent=2, default=str)
     print(f"\n  Results saved to {RESULTS_PATH}")
+
+    # ── Print table (best-effort; results are already persisted) ─────────────
+    try:
+        print_results_table(all_results)
+    except Exception as e:
+        print(f"\n  [print warning] pretty-print failed (results already saved): {e}")
 
     # ── Mean ± CI summary ────────────────────────────────────────────────────
     print_section("MEAN ± 95% CI SUMMARY")
