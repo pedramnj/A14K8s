@@ -429,6 +429,12 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
                        hpa_manager: HorizontalPodAutoscaler, run_idx: int) -> dict:
     print(f"\n  [AutoSage run {run_idx+1}/{N_RUNS}] resetting replicas → {HPA_MIN} …")
     reset_replicas(DEPLOYMENT)
+    # Phase I: reset per-pod resources to the manifest baseline between
+    # trials so each AutoSage run starts from the same point. Otherwise
+    # a VPA actuation from trial N drifts the resource floor for trial N+1.
+    kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
+            f"--requests=cpu={CPU_REQUEST_M}m,memory=128Mi",
+            "-n", NAMESPACE, silent=True)
     # Pin maxReplicas=2 to freeze HPA reaction so AutoSage captures pre-HPA state
     for svc in SERVICES:
         kubectl("patch", "hpa", svc, "-n", NAMESPACE,
@@ -537,10 +543,17 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
                   f"cpu={new_cpu}, mem={new_mem}")
     actuation_s = round(time.time() - t_actuate, 3)
 
-    # Probe latency at T+90s (we've already spent ~30s + recommendation_latency_s)
+    # Probe latency at T+90s (we've already spent ~30s + recommendation_latency_s).
+    # Phase I: if we just actuated a VPA change the deployment is rolling
+    # — wait for the new pods to be Ready before probing, otherwise the
+    # probe hits half-restarted pods and records timeouts.
     probe_wait = max(0, PROBE_AT_S - 30 - recommendation_latency_s)
     if probe_wait > 0:
         time.sleep(probe_wait)
+    if actuated and scaling_type in ("vpa", "both"):
+        print(f"  [AutoSage] waiting for VPA rollout to finish …")
+        kubectl("rollout", "status", f"deployment/{DEPLOYMENT}",
+                "-n", NAMESPACE, "--timeout=60s", silent=True)
     print(f"  [AutoSage] running latency probe …")
     probe = probe_latency()
 
