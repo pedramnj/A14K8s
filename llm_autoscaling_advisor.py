@@ -1230,15 +1230,74 @@ class LLMAutoscalingAdvisor:
             except Exception as e:
                 logger.warning(f"⚠️ Burst override check failed (non-fatal): {e}")
 
-        # MCDA Validation: Cross-check LLM decision against formal multi-criteria optimization
-        if (not burst_override_active and self.mcda_optimizer and recommendation and
-                recommendation.get('scaling_type', 'hpa').lower() in ['hpa', 'both'] and
-                recommendation.get('target_replicas') is not None):
+        # MCDA Validation: Cross-check LLM decision against formal multi-criteria optimization.
+        # Phase I: the gate is no longer scaling_type='hpa' only. VPA
+        # recommendations also flow through MCDA so the unified TOPSIS pool
+        # (horizontal + vertical alternatives) can second-guess them.
+        rec_scaling_type = (recommendation.get('scaling_type', 'hpa').lower()
+                            if recommendation else 'hpa')
+        has_hpa_target = (recommendation is not None
+                          and recommendation.get('target_replicas') is not None)
+        has_vpa_target = (recommendation is not None
+                          and rec_scaling_type in ('vpa', 'both')
+                          and recommendation.get('target_cpu') is not None
+                          and recommendation.get('target_memory') is not None)
+        if (not burst_override_active and self.mcda_optimizer and recommendation
+                and (has_hpa_target or has_vpa_target)):
             try:
                 mcda_validation_start = time.time()
-                llm_target = recommendation['target_replicas']
                 llm_action = recommendation.get('action', 'maintain')
                 current_reps = context.get('deployment', {}).get('current_replicas', 1) if context else 1
+
+                # Parse current per-pod resource requests (e.g. "100m" → 100,
+                # "128Mi" → 128). Same format as _parse_llm_response lines
+                # 821-843 in this file; kept local to minimise blast radius.
+                current_resources_ctx = (context.get('deployment', {}).get('current_resources', {})
+                                          if context else {}) or {}
+
+                def _parse_cpu_str(s):
+                    if s is None:
+                        return None
+                    s = str(s).strip()
+                    try:
+                        if s.endswith('m'):
+                            return int(float(s[:-1]))
+                        if s.endswith('n'):
+                            return max(1, int(float(s[:-1]) / 1_000_000))
+                        return int(float(s) * 1000)
+                    except (ValueError, TypeError):
+                        return None
+
+                def _parse_mem_str(s):
+                    if s is None:
+                        return None
+                    s = str(s).strip()
+                    try:
+                        if s.endswith('Mi'):
+                            return int(float(s[:-2]))
+                        if s.endswith('Gi'):
+                            return int(float(s[:-2]) * 1024)
+                        if s.endswith('Ki'):
+                            return max(1, int(float(s[:-2]) / 1024))
+                        return int(float(s))
+                    except (ValueError, TypeError):
+                        return None
+
+                current_cpu_m = _parse_cpu_str(current_resources_ctx.get('cpu_request'))
+                current_memory_mi = _parse_mem_str(current_resources_ctx.get('memory_request'))
+
+                # LLM's target resources, when it picked VPA
+                llm_target_cpu_m = None
+                llm_target_memory_mi = None
+                if rec_scaling_type in ('vpa', 'both'):
+                    llm_target_cpu_m = _parse_cpu_str(recommendation.get('target_cpu'))
+                    llm_target_memory_mi = _parse_mem_str(recommendation.get('target_memory'))
+
+                # For VPA-only recommendations, llm_target replicas stay at
+                # the current count; the LLM is not asking for horizontal change.
+                llm_target = recommendation.get('target_replicas')
+                if llm_target is None:
+                    llm_target = current_reps
 
                 # Build metrics and forecast for MCDA
                 forecast_data = context.get('forecast', {}) if context else {}
@@ -1261,6 +1320,11 @@ class LLMAutoscalingAdvisor:
                     metrics=mcda_metrics,
                     forecast=mcda_forecast,
                     agreement_threshold=self.mcda_agreement_threshold,
+                    llm_scaling_type=rec_scaling_type,
+                    llm_target_cpu_m=llm_target_cpu_m,
+                    llm_target_memory_mi=llm_target_memory_mi,
+                    current_cpu_m=current_cpu_m,
+                    current_memory_mi=current_memory_mi,
                 )
 
                 # Attach MCDA validation data to recommendation
@@ -1269,6 +1333,9 @@ class LLMAutoscalingAdvisor:
                     'llm_score': validation['llm_score'],
                     'mcda_score': validation['mcda_score'],
                     'mcda_target': validation['mcda_target'],
+                    'mcda_target_cpu_m': validation.get('mcda_target_cpu_m', -1),
+                    'mcda_target_memory_mi': validation.get('mcda_target_memory_mi', -1),
+                    'mcda_scaling_type': validation.get('mcda_scaling_type', 'hpa'),
                     'score_difference': validation['score_difference'],
                     'dominance_margin': validation['dominance_margin'],
                     'criteria_weights': validation['criteria_weights'],
@@ -1278,30 +1345,68 @@ class LLMAutoscalingAdvisor:
                 }
 
                 if validation['should_override']:
-                    old_target = recommendation['target_replicas']
+                    old_target = recommendation.get('target_replicas')
+                    old_cpu = recommendation.get('target_cpu')
+                    old_mem = recommendation.get('target_memory')
                     old_action = recommendation['action']
-                    recommendation['target_replicas'] = max(min_replicas, min(validation['mcda_target'], max_replicas))
+                    old_type = rec_scaling_type
+                    mcda_type = validation.get('mcda_scaling_type', 'hpa')
 
-                    if recommendation['target_replicas'] > current_reps:
-                        recommendation['action'] = 'scale_up'
-                    elif recommendation['target_replicas'] < current_reps:
-                        recommendation['action'] = 'scale_down'
+                    if mcda_type == 'vpa':
+                        # MCDA picked a vertical alternative — overwrite the
+                        # resource fields and clear/normalise replicas to
+                        # the current value.
+                        new_cpu_m = max(1, int(validation.get('mcda_target_cpu_m', 0) or 0))
+                        new_mem_mi = max(1, int(validation.get('mcda_target_memory_mi', 0) or 0))
+                        recommendation['scaling_type'] = 'vpa'
+                        recommendation['target_cpu'] = f"{new_cpu_m}m"
+                        recommendation['target_memory'] = f"{new_mem_mi}Mi"
+                        recommendation['target_replicas'] = None
+                        recommendation['action'] = validation.get('mcda_action', 'maintain')
+                        recommendation['reasoning'] = (recommendation.get('reasoning', '') +
+                            f' [MCDA OVERRIDE → VPA: was {old_type}:{old_action}→'
+                            f'(replicas={old_target}, cpu={old_cpu}, mem={old_mem}); now '
+                            f'vpa:{recommendation["action"]}→(cpu={new_cpu_m}m, mem={new_mem_mi}Mi). '
+                            f'MCDA score={validation["mcda_score"]:.4f} vs LLM score={validation["llm_score"]:.4f}, '
+                            f'agreement={validation["agreement"]}]')
+                        logger.warning(
+                            f"📊 MCDA OVERRIDE → VPA: {old_type}:{old_action}→"
+                            f"(reps={old_target}, cpu={old_cpu}, mem={old_mem}) became "
+                            f"vpa:{recommendation['action']}→(cpu={new_cpu_m}m, mem={new_mem_mi}Mi) "
+                            f"(score gap={validation['score_difference']:.4f})"
+                        )
                     else:
-                        recommendation['action'] = 'maintain'
+                        recommendation['scaling_type'] = 'hpa'
+                        recommendation['target_replicas'] = max(
+                            min_replicas, min(validation['mcda_target'], max_replicas))
+                        # Clear VPA fields if any
+                        recommendation['target_cpu'] = None
+                        recommendation['target_memory'] = None
 
-                    recommendation['reasoning'] = (recommendation.get('reasoning', '') +
-                        f' [MCDA OVERRIDE: Changed from {old_action}→{old_target} to '
-                        f'{recommendation["action"]}→{recommendation["target_replicas"]} '
-                        f'(MCDA score={validation["mcda_score"]:.4f} vs LLM score={validation["llm_score"]:.4f}, '
-                        f'agreement={validation["agreement"]})]')
+                        if recommendation['target_replicas'] > current_reps:
+                            recommendation['action'] = 'scale_up'
+                        elif recommendation['target_replicas'] < current_reps:
+                            recommendation['action'] = 'scale_down'
+                        else:
+                            recommendation['action'] = 'maintain'
 
-                    logger.warning(f"📊 MCDA OVERRIDE: {old_action}→{old_target} changed to "
-                                   f"{recommendation['action']}→{recommendation['target_replicas']} "
-                                   f"(score gap={validation['score_difference']:.4f})")
+                        recommendation['reasoning'] = (recommendation.get('reasoning', '') +
+                            f' [MCDA OVERRIDE: Changed from {old_type}:{old_action}→'
+                            f'(replicas={old_target}, cpu={old_cpu}, mem={old_mem}) to '
+                            f'hpa:{recommendation["action"]}→{recommendation["target_replicas"]} replicas '
+                            f'(MCDA score={validation["mcda_score"]:.4f} vs LLM score={validation["llm_score"]:.4f}, '
+                            f'agreement={validation["agreement"]})]')
+
+                        logger.warning(f"📊 MCDA OVERRIDE: {old_type}:{old_action}→"
+                                       f"(replicas={old_target}, cpu={old_cpu}, mem={old_mem}) changed to "
+                                       f"hpa:{recommendation['action']}→{recommendation['target_replicas']} replicas "
+                                       f"(score gap={validation['score_difference']:.4f})")
                 else:
                     logger.warning(f"📊 MCDA VALIDATION: LLM decision confirmed "
                                    f"(agreement={validation['agreement']}, "
-                                   f"score_gap={validation['score_difference']:.4f})")
+                                   f"score_gap={validation['score_difference']:.4f}, "
+                                   f"llm_type={rec_scaling_type}, "
+                                   f"mcda_type={validation.get('mcda_scaling_type', 'hpa')})")
 
             except Exception as e:
                 logger.warning(f"⚠️ MCDA validation failed (non-fatal): {e}")

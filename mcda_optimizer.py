@@ -37,14 +37,37 @@ from dataclasses import dataclass, field
 # weight in TOPSIS distances. See thesis_reports/EASY_EXPLAINER.md (Phase H).
 MCDA_COST_EXPONENT = float(os.getenv("MCDA_COST_EXPONENT", "1.0"))
 
+# --- VPA restart penalty (Phase I) ------------------------------------------
+# Vertical scaling causes the pod to restart; horizontal scaling does not.
+# When a vertical alternative is evaluated, add this much to its
+# stability_risk so MCDA does not over-prefer VPA just because it has no
+# flap-tracking history. Env-gated for bracketing.
+MCDA_VPA_RESTART_PENALTY = float(os.getenv("MCDA_VPA_RESTART_PENALTY", "0.3"))
+
+# --- VPA multiplier grid (Phase I) ------------------------------------------
+# Per-pod CPU and memory requests are scaled by these multipliers against
+# the current request to form the vertical candidate pool. The (1.0, 1.0)
+# tuple is excluded as it represents "no change". Kept small to keep the
+# combined alternative-pool size manageable for TOPSIS.
+VPA_MULTIPLIER_GRID = (0.7, 1.0, 1.3, 1.6)
+
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ScalingAlternative:
-    """One candidate scaling action to be evaluated by MCDA"""
+    """One candidate scaling action to be evaluated by MCDA.
+
+    Horizontal alternatives change ``target_replicas`` and leave
+    ``target_cpu_m``/``target_memory_mi`` at the sentinel ``-1``
+    ("unchanged"). Vertical alternatives keep ``target_replicas`` equal
+    to the current count and change the per-pod resource fields.
+    """
     name: str
     target_replicas: int
+    target_cpu_m: int = -1              # millicores; -1 = unchanged
+    target_memory_mi: int = -1          # MiB;        -1 = unchanged
+    scaling_type: str = 'hpa'           # 'hpa' or 'vpa'
     estimated_cost: float = 0.0         # normalized 0-1 (lower is better)
     estimated_performance: float = 0.0  # normalized 0-1 (higher is better)
     stability_risk: float = 0.0         # normalized 0-1 (lower is better)
@@ -65,6 +88,10 @@ class MCDAResult:
     criteria_weights: Dict[str, float]
     reasoning: str
     criteria_scores: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # Phase I additions — populated when a vertical alternative wins.
+    target_cpu_m: int = -1
+    target_memory_mi: int = -1
+    scaling_type: str = 'hpa'
 
 
 class MCDAAutoscalingOptimizer:
@@ -149,9 +176,12 @@ class MCDAAutoscalingOptimizer:
     def generate_alternatives(self, current_replicas: int,
                                min_replicas: int, max_replicas: int,
                                metrics: Dict[str, Any],
-                               forecast: Dict[str, Any]) -> List[ScalingAlternative]:
+                               forecast: Dict[str, Any],
+                               current_cpu_m: Optional[int] = None,
+                               current_memory_mi: Optional[int] = None,
+                               ) -> List[ScalingAlternative]:
         """
-        Generate candidate scaling actions to evaluate.
+        Generate candidate horizontal scaling actions to evaluate.
 
         Creates alternatives around the current replica count, including:
         - The current count (maintain)
@@ -165,9 +195,14 @@ class MCDAAutoscalingOptimizer:
             max_replicas: Maximum allowed replicas
             metrics: Current metrics dict with 'cpu_percent', 'memory_percent'
             forecast: Forecast dict with 'predicted_cpu', 'predicted_memory', 'cpu_trend'
+            current_cpu_m: Current per-pod CPU request (millicores). Optional;
+                when supplied together with current_memory_mi, criterion
+                scores use the unified Phase-I model. When ``None``, the
+                Phase H horizontal-only formulas are used unchanged.
+            current_memory_mi: Current per-pod memory request (MiB). See above.
 
         Returns:
-            List of ScalingAlternative objects to rank
+            List of horizontal-axis ScalingAlternative objects.
         """
         cpu = metrics.get('cpu_percent', 50.0)
         mem = metrics.get('memory_percent', 50.0)
@@ -212,67 +247,191 @@ class MCDAAutoscalingOptimizer:
         alternatives = []
         for target in sorted(candidates):
             alt = self._evaluate_alternative(
-                target, current_replicas, min_replicas, max_replicas,
-                cpu, mem, peak_cpu, peak_mem,
-                cpu_forecast, mem_forecast, cpu_trend
+                target_replicas=target,
+                target_cpu_m=current_cpu_m if current_cpu_m is not None else -1,
+                target_memory_mi=current_memory_mi if current_memory_mi is not None else -1,
+                current_replicas=current_replicas,
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+                current_cpu_m=current_cpu_m,
+                current_memory_mi=current_memory_mi,
+                cpu=cpu, mem=mem,
+                peak_cpu=peak_cpu, peak_mem=peak_mem,
+                cpu_forecast=cpu_forecast, mem_forecast=mem_forecast,
+                cpu_trend=cpu_trend,
+                scaling_type='hpa',
             )
             alternatives.append(alt)
 
         return alternatives
 
-    def _evaluate_alternative(self, target: int, current_replicas: int,
+    def generate_vpa_alternatives(self, current_replicas: int,
+                                   min_replicas: int, max_replicas: int,
+                                   current_cpu_m: int,
+                                   current_memory_mi: int,
+                                   metrics: Dict[str, Any],
+                                   forecast: Dict[str, Any],
+                                   multipliers: Tuple[float, ...] = VPA_MULTIPLIER_GRID,
+                                   ) -> List[ScalingAlternative]:
+        """
+        Generate candidate vertical scaling actions (CPU/memory request changes).
+
+        Emits the cross product of ``multipliers`` over CPU and memory,
+        excluding the (1.0, 1.0) no-change tuple. Replica count is held
+        at ``current_replicas`` for every vertical alternative.
+
+        Args:
+            current_replicas: Current replica count (held constant).
+            min_replicas / max_replicas: Used by the cost normaliser only.
+            current_cpu_m: Current per-pod CPU request in millicores.
+            current_memory_mi: Current per-pod memory request in MiB.
+            metrics: Current metrics dict with 'cpu_percent', 'memory_percent'.
+            forecast: Forecast dict (same shape as generate_alternatives).
+            multipliers: Per-axis multiplier grid. Default is the Phase-I
+                grid (0.7, 1.0, 1.3, 1.6).
+
+        Returns:
+            List of vertical-axis ScalingAlternative objects.
+        """
+        if current_cpu_m is None or current_memory_mi is None:
+            return []
+
+        cpu = metrics.get('cpu_percent', 50.0)
+        mem = metrics.get('memory_percent', 50.0)
+        cpu_forecast = forecast.get('predicted_cpu', [cpu] * 6)
+        mem_forecast = forecast.get('predicted_memory', [mem] * 6)
+        cpu_trend = forecast.get('cpu_trend', 'stable')
+
+        if not cpu_forecast:
+            cpu_forecast = [cpu] * 6
+        if not mem_forecast:
+            mem_forecast = [mem] * 6
+
+        peak_cpu = max(cpu_forecast)
+        peak_mem = max(mem_forecast)
+
+        alternatives = []
+        for cpu_mult in multipliers:
+            for mem_mult in multipliers:
+                if cpu_mult == 1.0 and mem_mult == 1.0:
+                    continue  # baseline = "no change"; already in horizontal pool
+                target_cpu_m = max(1, int(round(current_cpu_m * cpu_mult)))
+                target_memory_mi = max(1, int(round(current_memory_mi * mem_mult)))
+                alt = self._evaluate_alternative(
+                    target_replicas=current_replicas,
+                    target_cpu_m=target_cpu_m,
+                    target_memory_mi=target_memory_mi,
+                    current_replicas=current_replicas,
+                    min_replicas=min_replicas,
+                    max_replicas=max_replicas,
+                    current_cpu_m=current_cpu_m,
+                    current_memory_mi=current_memory_mi,
+                    cpu=cpu, mem=mem,
+                    peak_cpu=peak_cpu, peak_mem=peak_mem,
+                    cpu_forecast=cpu_forecast, mem_forecast=mem_forecast,
+                    cpu_trend=cpu_trend,
+                    scaling_type='vpa',
+                )
+                alternatives.append(alt)
+
+        return alternatives
+
+    def _evaluate_alternative(self, target_replicas: int,
+                               target_cpu_m: int,
+                               target_memory_mi: int,
+                               current_replicas: int,
                                min_replicas: int, max_replicas: int,
+                               current_cpu_m: Optional[int],
+                               current_memory_mi: Optional[int],
                                cpu: float, mem: float,
                                peak_cpu: float, peak_mem: float,
                                cpu_forecast: List[float],
                                mem_forecast: List[float],
-                               cpu_trend: str) -> ScalingAlternative:
+                               cpu_trend: str,
+                               scaling_type: str = 'hpa',
+                               ) -> ScalingAlternative:
         """
-        Evaluate a single candidate replica count across all criteria.
+        Evaluate a single candidate (horizontal or vertical) across all
+        criteria. Returns a ScalingAlternative with scores in [0, 1].
 
-        Returns a ScalingAlternative with all criteria scores normalized to [0, 1].
+        The Phase-I unified formulas reduce exactly to the Phase-H
+        horizontal-only behaviour when ``current_cpu_m`` is ``None`` and
+        ``target_cpu_m == -1`` (i.e. the caller did not supply resource
+        information). This keeps every existing eval reproducible.
         """
-        safe_target = max(target, 1)
+        safe_target = max(target_replicas, 1)
         safe_current = max(current_replicas, 1)
 
-        # --- Cost: normalised by max_replicas, then optionally compressed via
-        # MCDA_COST_EXPONENT < 1 (e.g. 0.5 = sqrt). Shrinking the dynamic
-        # range of cost across alternatives means the cost criterion contributes
-        # less to TOPSIS distances, so Performance/Forecast carry more weight
-        # at the threshold edge.
-        cost_raw = target / max(max_replicas, 1)
+        # Resolve effective per-pod resource fields. When resources are not
+        # supplied, fall back to a synthetic "unchanged" ratio of 1.0.
+        unified = current_cpu_m is not None and current_memory_mi is not None
+        eff_target_cpu_m = target_cpu_m if target_cpu_m > 0 else (
+            current_cpu_m if current_cpu_m is not None else 1
+        )
+        eff_target_mem_mi = target_memory_mi if target_memory_mi > 0 else (
+            current_memory_mi if current_memory_mi is not None else 1
+        )
+        eff_current_cpu_m = current_cpu_m if current_cpu_m is not None else 1
+        eff_current_mem_mi = current_memory_mi if current_memory_mi is not None else 1
+
+        # Capacity ratios: how much total CPU / memory capacity does this
+        # alternative provide relative to the current deployment?
+        cpu_ratio = (safe_target * eff_target_cpu_m) / max(safe_current * eff_current_cpu_m, 1)
+        mem_ratio = (safe_target * eff_target_mem_mi) / max(safe_current * eff_current_mem_mi, 1)
+        cpu_ratio = max(cpu_ratio, 1e-6)
+        mem_ratio = max(mem_ratio, 1e-6)
+
+        # --- Cost --------------------------------------------------------
+        # Phase-I unified: prices both pod count and pod size against the
+        # worst-case point of the grid (max_replicas × max-multiplier of
+        # current cpu request). Phase-H linear formula is restored when
+        # resources are unknown.
+        if unified:
+            max_grid_cpu_m = max(VPA_MULTIPLIER_GRID) * eff_current_cpu_m
+            cost_normalizer = max(max_replicas, 1) * max(max_grid_cpu_m, 1)
+            cost_raw = (safe_target * eff_target_cpu_m) / cost_normalizer
+        else:
+            cost_raw = target_replicas / max(max_replicas, 1)
+        cost_raw = max(0.0, min(1.0, cost_raw))
         cost = cost_raw ** MCDA_COST_EXPONENT
 
-        # --- Performance: how close estimated CPU will be to the 60-80% sweet spot ---
-        # Estimate CPU at this replica count (proportional redistribution)
-        estimated_cpu = cpu * (safe_current / safe_target)
+        # --- Performance: CPU pushed into the 70% sweet spot -------------
+        estimated_cpu = cpu / cpu_ratio
         estimated_cpu = max(0, min(100, estimated_cpu))
-        # Performance is 1.0 when CPU is exactly 70%, degrades toward 0% and 100%
         perf = 1.0 - abs(estimated_cpu - 70.0) / 70.0
         perf = max(0.0, min(1.0, perf))
 
-        # --- Stability: penalize large changes from current ---
-        change_magnitude = abs(target - current_replicas)
-        # Normalize by the replica range to make it relative
+        # --- Stability ---------------------------------------------------
+        change_magnitude = abs(target_replicas - current_replicas)
         replica_range = max(max_replicas - min_replicas, 1)
-        stability_risk = min(1.0, change_magnitude / replica_range)
+        stability_risk = change_magnitude / replica_range
 
-        # Extra penalty for frequent oscillation (scaling down then up)
-        if target < current_replicas and cpu_trend == 'increasing':
-            stability_risk = min(1.0, stability_risk + 0.2)
+        # Oscillation penalty (same as Phase H)
+        if target_replicas < current_replicas and cpu_trend == 'increasing':
+            stability_risk += 0.2
 
-        # --- Forecast alignment: how well this target handles predicted peak demand ---
-        estimated_peak_cpu = peak_cpu * (safe_current / safe_target)
+        # Phase-I restart penalty: any change to the per-pod resource
+        # request triggers a pod restart, which is a real disruption HPA
+        # never incurs. Apply the penalty whenever the resource fields
+        # actually differ from the current values.
+        if unified and (
+            (target_cpu_m > 0 and target_cpu_m != current_cpu_m) or
+            (target_memory_mi > 0 and target_memory_mi != current_memory_mi)
+        ):
+            stability_risk += MCDA_VPA_RESTART_PENALTY
+
+        stability_risk = max(0.0, min(1.0, stability_risk))
+
+        # --- Forecast alignment ------------------------------------------
+        estimated_peak_cpu = peak_cpu / cpu_ratio
         estimated_peak_cpu = max(0, min(100, estimated_peak_cpu))
-        # Alignment is best when estimated peak is in 50-75% range (comfortable headroom)
         if estimated_peak_cpu <= 75:
             alignment = 1.0 - max(0, (50 - estimated_peak_cpu)) / 50.0
         else:
             alignment = 1.0 - (estimated_peak_cpu - 75) / 25.0
         alignment = max(0.0, min(1.0, alignment))
 
-        # Also factor in memory forecast
-        estimated_peak_mem = peak_mem * (safe_current / safe_target)
+        estimated_peak_mem = peak_mem / mem_ratio
         estimated_peak_mem = max(0, min(100, estimated_peak_mem))
         if estimated_peak_mem <= 80:
             mem_alignment = 1.0 - max(0, (40 - estimated_peak_mem)) / 40.0
@@ -280,18 +439,27 @@ class MCDAAutoscalingOptimizer:
             mem_alignment = 1.0 - (estimated_peak_mem - 80) / 20.0
         mem_alignment = max(0.0, min(1.0, mem_alignment))
 
-        # Combined alignment (CPU weighted more heavily)
         alignment = 0.7 * alignment + 0.3 * mem_alignment
 
-        # --- Response time: higher CPU → higher latency (rough model) ---
+        # --- Response time -----------------------------------------------
         avg_forecast = float(np.mean(cpu_forecast)) if cpu_forecast else cpu
-        estimated_avg_cpu = avg_forecast * (safe_current / safe_target)
+        estimated_avg_cpu = avg_forecast / cpu_ratio
         estimated_avg_cpu = max(0, min(100, estimated_avg_cpu))
         response_time = estimated_avg_cpu / 100.0
 
+        # Naming: keeps the existing "scale_to_N" form for horizontal so
+        # the LLM-decision lookup in validate_llm_decision still works.
+        if scaling_type == 'vpa':
+            name = f"vpa_cpu{eff_target_cpu_m}m_mem{eff_target_mem_mi}Mi"
+        else:
+            name = f"scale_to_{target_replicas}"
+
         return ScalingAlternative(
-            name=f"scale_to_{target}",
-            target_replicas=target,
+            name=name,
+            target_replicas=target_replicas,
+            target_cpu_m=target_cpu_m,
+            target_memory_mi=target_memory_mi,
+            scaling_type=scaling_type,
             estimated_cost=float(cost),
             estimated_performance=float(perf),
             stability_risk=float(stability_risk),
@@ -365,7 +533,12 @@ class MCDAAutoscalingOptimizer:
         return ranked
 
     def optimize(self, current_replicas: int, min_replicas: int, max_replicas: int,
-                 metrics: Dict[str, Any], forecast: Dict[str, Any]) -> MCDAResult:
+                 metrics: Dict[str, Any], forecast: Dict[str, Any],
+                 current_cpu_m: Optional[int] = None,
+                 current_memory_mi: Optional[int] = None,
+                 enable_vpa: bool = True,
+                 extra_alternatives: Optional[List[ScalingAlternative]] = None,
+                 ) -> MCDAResult:
         """
         Main entry point: replaces threshold heuristics with MCDA optimization.
 
@@ -375,13 +548,36 @@ class MCDAAutoscalingOptimizer:
             max_replicas: Maximum allowed replicas
             metrics: Dict with 'cpu_percent' and 'memory_percent'
             forecast: Dict with 'predicted_cpu', 'predicted_memory', 'cpu_trend'
+            current_cpu_m: Per-pod CPU request in millicores. Optional;
+                required to generate any vertical alternatives.
+            current_memory_mi: Per-pod memory request in MiB. Optional;
+                required to generate any vertical alternatives.
+            enable_vpa: When True (default) and both resource fields are
+                supplied, the vertical alternative pool is included.
+            extra_alternatives: Optional extra alternatives to inject into
+                the TOPSIS pool. Used by validate_llm_decision() to include
+                the LLM's exact recommendation when it does not fall on the
+                multiplier grid.
 
         Returns:
-            MCDAResult with optimal action, score, ranking, and reasoning
+            MCDAResult with optimal action, score, ranking, and reasoning.
         """
-        alternatives = self.generate_alternatives(
-            current_replicas, min_replicas, max_replicas, metrics, forecast
+        horizontal = self.generate_alternatives(
+            current_replicas, min_replicas, max_replicas, metrics, forecast,
+            current_cpu_m=current_cpu_m, current_memory_mi=current_memory_mi,
         )
+        vertical: List[ScalingAlternative] = []
+        if enable_vpa and current_cpu_m is not None and current_memory_mi is not None:
+            vertical = self.generate_vpa_alternatives(
+                current_replicas=current_replicas,
+                min_replicas=min_replicas, max_replicas=max_replicas,
+                current_cpu_m=current_cpu_m,
+                current_memory_mi=current_memory_mi,
+                metrics=metrics, forecast=forecast,
+            )
+        alternatives = horizontal + vertical
+        if extra_alternatives:
+            alternatives = alternatives + list(extra_alternatives)
 
         ranked = self.topsis_rank(alternatives)
 
@@ -401,13 +597,26 @@ class MCDAAutoscalingOptimizer:
         best, best_score = ranked[0]
         runner_up, runner_up_score = ranked[1] if len(ranked) > 1 else (None, 0.0)
 
-        # Determine action
-        if best.target_replicas > current_replicas:
-            action = 'scale_up'
-        elif best.target_replicas < current_replicas:
-            action = 'scale_down'
+        # Determine action -- horizontal compares replicas; vertical labels
+        # by whichever per-pod dimension moved the most. A reshape (e.g.
+        # CPU down + memory up) counts as scale_up because at least one
+        # dimension is gaining capacity.
+        if best.scaling_type == 'vpa' and current_cpu_m and current_memory_mi:
+            cpu_delta = (best.target_cpu_m - current_cpu_m) / max(current_cpu_m, 1)
+            mem_delta = (best.target_memory_mi - current_memory_mi) / max(current_memory_mi, 1)
+            if max(cpu_delta, mem_delta) > 0.05:
+                action = 'scale_up'
+            elif max(cpu_delta, mem_delta) < -0.05:
+                action = 'scale_down'
+            else:
+                action = 'maintain'
         else:
-            action = 'maintain'
+            if best.target_replicas > current_replicas:
+                action = 'scale_up'
+            elif best.target_replicas < current_replicas:
+                action = 'scale_down'
+            else:
+                action = 'maintain'
 
         dominance_margin = best_score - runner_up_score if runner_up else 1.0
 
@@ -416,6 +625,7 @@ class MCDAAutoscalingOptimizer:
         for alt, score in ranked:
             criteria_scores[alt.name] = {
                 'score': round(score, 4),
+                'scaling_type': alt.scaling_type,
                 'cost': round(alt.estimated_cost, 3),
                 'performance': round(alt.estimated_performance, 3),
                 'stability_risk': round(alt.stability_risk, 3),
@@ -424,12 +634,17 @@ class MCDAAutoscalingOptimizer:
             }
 
         # Build reasoning string
+        n_horiz = len(horizontal)
+        n_vert = len(vertical)
         reasoning_parts = [
-            f"TOPSIS multi-criteria optimization evaluated {len(alternatives)} alternatives.",
-            f"Best: {best.name} (score={best_score:.4f})",
+            f"TOPSIS multi-criteria optimization evaluated {len(alternatives)} alternatives "
+            f"({n_horiz} horizontal, {n_vert} vertical).",
+            f"Best: {best.name} (score={best_score:.4f}, type={best.scaling_type})",
         ]
         if runner_up:
-            reasoning_parts.append(f"Runner-up: {runner_up.name} (score={runner_up_score:.4f})")
+            reasoning_parts.append(
+                f"Runner-up: {runner_up.name} (score={runner_up_score:.4f}, type={runner_up.scaling_type})"
+            )
         reasoning_parts.append(f"Dominance margin: {dominance_margin:.4f}")
         reasoning_parts.append(f"Weights: cost={self.weights['cost']:.2f}, perf={self.weights['performance']:.2f}, "
                                f"stability={self.weights['stability']:.2f}, forecast={self.weights['forecast_alignment']:.2f}, "
@@ -443,6 +658,9 @@ class MCDAAutoscalingOptimizer:
         return MCDAResult(
             best_alternative=best.name,
             target_replicas=best.target_replicas,
+            target_cpu_m=best.target_cpu_m,
+            target_memory_mi=best.target_memory_mi,
+            scaling_type=best.scaling_type,
             action=action,
             mcda_score=round(best_score, 4),
             dominance_margin=round(dominance_margin, 4),
@@ -456,74 +674,171 @@ class MCDAAutoscalingOptimizer:
     def validate_llm_decision(self, llm_action: str, llm_target: int,
                                current_replicas: int, min_replicas: int, max_replicas: int,
                                metrics: Dict[str, Any], forecast: Dict[str, Any],
-                               agreement_threshold: float = 0.15) -> Dict[str, Any]:
+                               agreement_threshold: float = 0.15,
+                               llm_scaling_type: str = 'hpa',
+                               llm_target_cpu_m: Optional[int] = None,
+                               llm_target_memory_mi: Optional[int] = None,
+                               current_cpu_m: Optional[int] = None,
+                               current_memory_mi: Optional[int] = None,
+                               ) -> Dict[str, Any]:
         """
         Validate an LLM scaling decision against MCDA optimization.
 
-        Compares the LLM's recommended target with the MCDA-optimal target.
-        If they disagree significantly, flags the discrepancy with reasoning.
+        Compares the LLM's recommended scaling action with the MCDA-optimal
+        choice across the unified horizontal-and-vertical alternative pool.
+        Phase-I addition: when ``llm_scaling_type='vpa'`` and the LLM's
+        exact (cpu, memory) target is not on the multiplier grid, it is
+        injected into the TOPSIS pool so the LLM gets a real score on the
+        same scale as MCDA's own picks.
 
         Args:
-            llm_action: LLM's recommended action ('scale_up', 'scale_down', 'maintain')
-            llm_target: LLM's recommended target replicas
-            current_replicas: Current number of replicas
-            min_replicas: Minimum replicas
-            max_replicas: Maximum replicas
-            metrics: Current metrics
-            forecast: Forecast data
-            agreement_threshold: Max score difference to consider "in agreement"
+            llm_action: LLM's recommended action ('scale_up', 'scale_down',
+                'maintain', 'at_max').
+            llm_target: For HPA, the LLM's recommended target replica count.
+                For VPA, this is the replicas value to hold (typically the
+                current count).
+            current_replicas / min_replicas / max_replicas: Replica bounds.
+            metrics: Current metrics dict.
+            forecast: Forecast dict.
+            agreement_threshold: Max score difference to keep the LLM decision.
+            llm_scaling_type: 'hpa' (default; preserves Phase H behaviour)
+                or 'vpa' (Phase I).
+            llm_target_cpu_m: For VPA, the LLM's recommended per-pod CPU
+                request in millicores.
+            llm_target_memory_mi: For VPA, the LLM's recommended per-pod
+                memory request in MiB.
+            current_cpu_m / current_memory_mi: Current per-pod resource
+                requests. Required when ``llm_scaling_type='vpa'`` and also
+                when the caller wants MCDA to consider vertical alternatives
+                even if the LLM picked HPA.
 
         Returns:
-            Dict with validation result, MCDA recommendation, and whether to override
+            Dict with validation result, MCDA recommendation, and whether to override.
         """
+        # If LLM picked VPA and its exact target is not on our multiplier
+        # grid, inject it explicitly so it appears in the ranking.
+        extra_alternatives: List[ScalingAlternative] = []
+        if (llm_scaling_type == 'vpa'
+                and llm_target_cpu_m is not None
+                and llm_target_memory_mi is not None
+                and current_cpu_m is not None
+                and current_memory_mi is not None):
+            cpu_pf = metrics.get('cpu_percent', 50.0)
+            mem_pf = metrics.get('memory_percent', 50.0)
+            cpu_forecast = forecast.get('predicted_cpu', [cpu_pf] * 6) or [cpu_pf] * 6
+            mem_forecast = forecast.get('predicted_memory', [mem_pf] * 6) or [mem_pf] * 6
+            peak_cpu = max(cpu_forecast)
+            peak_mem = max(mem_forecast)
+            llm_pick = self._evaluate_alternative(
+                target_replicas=current_replicas,
+                target_cpu_m=int(llm_target_cpu_m),
+                target_memory_mi=int(llm_target_memory_mi),
+                current_replicas=current_replicas,
+                min_replicas=min_replicas,
+                max_replicas=max_replicas,
+                current_cpu_m=current_cpu_m,
+                current_memory_mi=current_memory_mi,
+                cpu=cpu_pf, mem=mem_pf,
+                peak_cpu=peak_cpu, peak_mem=peak_mem,
+                cpu_forecast=cpu_forecast, mem_forecast=mem_forecast,
+                cpu_trend=forecast.get('cpu_trend', 'stable'),
+                scaling_type='vpa',
+            )
+            # Tag the name so it is unambiguously the LLM-injected entry
+            # even if it coincides numerically with a grid point.
+            llm_pick.name = (
+                f"llm_vpa_cpu{int(llm_target_cpu_m)}m_"
+                f"mem{int(llm_target_memory_mi)}Mi"
+            )
+            extra_alternatives.append(llm_pick)
+
         mcda_result = self.optimize(
-            current_replicas, min_replicas, max_replicas, metrics, forecast
+            current_replicas, min_replicas, max_replicas, metrics, forecast,
+            current_cpu_m=current_cpu_m, current_memory_mi=current_memory_mi,
+            extra_alternatives=extra_alternatives,
         )
 
-        # Find the score of the LLM's chosen alternative
-        llm_alt_name = f"scale_to_{llm_target}"
+        # Build the canonical name of the LLM's pick to look it up in the
+        # ranking. For VPA we used the "llm_vpa_..." synthetic name above.
+        if llm_scaling_type == 'vpa' and extra_alternatives:
+            llm_alt_name = extra_alternatives[0].name
+        else:
+            llm_alt_name = f"scale_to_{llm_target}"
+
         llm_score = 0.0
         for name, score in mcda_result.ranking:
             if name == llm_alt_name:
                 llm_score = score
                 break
 
-        # Check agreement
+        # Score gap on the same 0..1 TOPSIS scale
         score_difference = mcda_result.mcda_score - llm_score
+
+        # Agreement label -- direction first, then magnitude. For VPA the
+        # "magnitude" is whether the per-pod resource targets are close.
         direction_agrees = (
             (llm_action == mcda_result.action) or
             (llm_action in ('scale_up', 'at_max') and mcda_result.action == 'scale_up') or
-            (llm_target == mcda_result.target_replicas)
+            (
+                llm_scaling_type == 'hpa'
+                and llm_target == mcda_result.target_replicas
+            )
         )
 
-        if direction_agrees and abs(llm_target - mcda_result.target_replicas) <= 1:
+        if llm_scaling_type == 'vpa':
+            close_in_magnitude = (
+                mcda_result.scaling_type == 'vpa'
+                and llm_target_cpu_m is not None
+                and llm_target_memory_mi is not None
+                and mcda_result.target_cpu_m > 0
+                and mcda_result.target_memory_mi > 0
+                and abs(mcda_result.target_cpu_m - llm_target_cpu_m) / max(llm_target_cpu_m, 1) <= 0.15
+                and abs(mcda_result.target_memory_mi - llm_target_memory_mi) / max(llm_target_memory_mi, 1) <= 0.15
+            )
+        else:
+            close_in_magnitude = abs(llm_target - mcda_result.target_replicas) <= 1
+
+        if direction_agrees and close_in_magnitude:
             agreement = 'full'
             should_override = False
-            validation_note = (f"LLM and MCDA agree: {llm_action} to {llm_target} replicas. "
-                               f"MCDA score for LLM choice: {llm_score:.4f}, "
-                               f"MCDA optimal: {mcda_result.mcda_score:.4f}")
+            validation_note = (
+                f"LLM and MCDA agree: {llm_action} ({llm_scaling_type}). "
+                f"MCDA score for LLM choice: {llm_score:.4f}, "
+                f"MCDA optimal: {mcda_result.mcda_score:.4f}"
+            )
         elif direction_agrees:
             agreement = 'partial'
             should_override = score_difference > agreement_threshold
-            validation_note = (f"LLM direction agrees ({llm_action}) but magnitude differs: "
-                               f"LLM={llm_target}, MCDA={mcda_result.target_replicas}. "
-                               f"Score gap: {score_difference:.4f}")
+            validation_note = (
+                f"LLM direction agrees ({llm_action}) but magnitude differs. "
+                f"LLM={llm_scaling_type}:{llm_alt_name}, "
+                f"MCDA={mcda_result.scaling_type}:{mcda_result.best_alternative}. "
+                f"Score gap: {score_difference:.4f}"
+            )
         else:
             agreement = 'disagree'
             should_override = score_difference > agreement_threshold
-            validation_note = (f"LLM ({llm_action}→{llm_target}) disagrees with "
-                               f"MCDA ({mcda_result.action}→{mcda_result.target_replicas}). "
-                               f"Score gap: {score_difference:.4f}. "
-                               f"{'MCDA overrides LLM.' if should_override else 'Keeping LLM decision (within threshold).'}")
+            validation_note = (
+                f"LLM ({llm_scaling_type}:{llm_action}→{llm_alt_name}) disagrees with "
+                f"MCDA ({mcda_result.scaling_type}:{mcda_result.action}→{mcda_result.best_alternative}). "
+                f"Score gap: {score_difference:.4f}. "
+                f"{'MCDA overrides LLM.' if should_override else 'Keeping LLM decision (within threshold).'}"
+            )
 
         return {
             'agreement': agreement,
             'should_override': should_override,
             'llm_action': llm_action,
             'llm_target': llm_target,
+            'llm_scaling_type': llm_scaling_type,
+            'llm_target_cpu_m': llm_target_cpu_m,
+            'llm_target_memory_mi': llm_target_memory_mi,
             'llm_score': round(llm_score, 4),
             'mcda_action': mcda_result.action,
             'mcda_target': mcda_result.target_replicas,
+            'mcda_target_cpu_m': mcda_result.target_cpu_m,
+            'mcda_target_memory_mi': mcda_result.target_memory_mi,
+            'mcda_scaling_type': mcda_result.scaling_type,
             'mcda_score': mcda_result.mcda_score,
             'score_difference': round(score_difference, 4),
             'dominance_margin': mcda_result.dominance_margin,
