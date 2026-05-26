@@ -43,10 +43,40 @@ from vpa_engine import VerticalPodAutoscaler
 
 # ── Constants ────────────────────────────────────────────────────────────────
 NAMESPACE        = "default"
-DEPLOYMENT       = "ingest"        # entry-point for load and latency probes
-SERVICES         = ["ingest", "process", "analyze"]
+
+# Phase-I: workload configurations. Selected via --workload flag below.
+# Each entry holds everything that differs between the CPU-bound chain
+# (the original ingest→process→analyze workload) and a stateful workload
+# that exercises the LLM's VPA auto-route.
+WORKLOAD_CFGS = {
+    "cpu": {
+        "deployment":     "ingest",
+        "services":       ["ingest", "process", "analyze"],
+        "cpu_limits":     {"ingest": 500, "process": 500, "analyze": 300},
+        "wrk_path":       "/api/v1",
+        "svc_name":       "ingest",
+        "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests"),
+    },
+    "stateful": {
+        "deployment":     "session-cache",
+        "services":       ["session-cache"],
+        "cpu_limits":     {"session-cache": 300},
+        "wrk_path":       "/allocate",
+        "svc_name":       "session-cache",
+        "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-stateful"),
+    },
+}
+# Default is "cpu" for backward compatibility with every prior eval (v3-v8).
+# Argparse at the bottom of the file overrides this when --workload is passed.
+WORKLOAD         = os.environ.get("WORKLOAD", "cpu")
+_cfg             = WORKLOAD_CFGS[WORKLOAD]
+DEPLOYMENT       = _cfg["deployment"]
+SERVICES         = list(_cfg["services"])
 CPU_REQUEST_M    = 125             # millicores per pod (requests)
-CPU_LIMITS       = {"ingest": 500, "process": 500, "analyze": 300}
+CPU_LIMITS       = dict(_cfg["cpu_limits"])
+WRK_PATH         = _cfg["wrk_path"]
+SVC_NAME         = _cfg["svc_name"]
+MANIFEST_DIR     = _cfg["manifest_dir"]
 HPA_MIN          = 2
 HPA_MAX          = 4
 HPA_CPU_TARGET   = 70              # %
@@ -119,11 +149,15 @@ def delete_vpa_if_exists(name: str):
     kubectl("delete", "vpa", name, "-n", NAMESPACE, "--ignore-not-found", silent=True)
 
 # ── Load generator ────────────────────────────────────────────────────────────
-def start_wrk(ingest_ip: str):
-    """Launch wrk in background; return Popen handle and start timestamp."""
+def start_wrk(target_ip: str):
+    """Launch wrk in background; return Popen handle and start timestamp.
+
+    Uses WRK_PATH (workload-specific) so this works for both the CPU chain
+    (/api/v1 on ingest) and the stateful workload (/allocate on session-cache).
+    """
     proc = subprocess.Popen(
         ["/usr/bin/wrk", "-t", str(WRK_THREADS), "-c", str(WRK_CONNECTIONS),
-         "-d", WRK_DURATION, f"http://{ingest_ip}:8080/api/v1"],
+         "-d", WRK_DURATION, f"http://{target_ip}:8080{WRK_PATH}"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     return proc, time.time()
@@ -138,7 +172,7 @@ def probe_latency() -> dict:
     curl_loop = (
         f"for i in $(seq 1 {PROBE_REQUESTS}); do "
         f"curl -s -o /dev/null -w '%{{time_total}} %{{http_code}}\\n' "
-        f"http://ingest.{NAMESPACE}.svc.cluster.local:8080/api/v1 "
+        f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:8080{WRK_PATH} "
         f"|| echo '5.0000 0'; done"
     )
     cmd = [
@@ -546,7 +580,9 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
 # localhost/autoscaleai:v1 and imported into k3s containerd.
 # ══════════════════════════════════════════════════════════════════════════════
 AUTOSCALEAI_MANIFESTS_DIR = os.path.join(_ROOT, "baselines", "autoscaleai", "k8s-manifests")
-HPA_MANIFEST_PATH         = os.path.join(_ROOT, "mubench", "k8s-manifests", "hpa.yaml")
+# HPA manifest path follows the selected workload — restored after each
+# AutoScaleAI trial finishes so the cluster ends up back at native-HPA.
+HPA_MANIFEST_PATH         = os.path.join(MANIFEST_DIR, "hpa.yaml")
 
 def _wait_for_pod_ready(label: str, namespace: str = NAMESPACE, timeout_s: int = 90) -> bool:
     deadline = time.time() + timeout_s
@@ -723,6 +759,8 @@ def print_results_table(all_results: dict):
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     print_section("muBench HPA / VPA / AutoSage / AutoScaleAI Comparison Evaluation")
+    print(f"  Workload        : {WORKLOAD}  (deployment={DEPLOYMENT}, "
+          f"svc={SVC_NAME}, wrk_path={WRK_PATH})")
     print(f"  Runs per method : {N_RUNS}")
     print(f"  Warmup          : {WARMUP_S}s")
     print(f"  Load window     : {WINDOW_S}s  ({WRK_CONNECTIONS} connections)")
@@ -735,12 +773,12 @@ def main():
     vpa_manager = VerticalPodAutoscaler()
     advisor = LLMAutoscalingAdvisor()
 
-    ingest_ip = get_svc_cluster_ip("ingest")
+    ingest_ip = get_svc_cluster_ip(SVC_NAME)
     if not ingest_ip:
-        print("\n[FATAL] Could not resolve ClusterIP for 'ingest' service. "
-              "Is muBench deployed? Aborting.")
+        print(f"\n[FATAL] Could not resolve ClusterIP for '{SVC_NAME}' service. "
+              f"Is the '{WORKLOAD}' workload deployed? Aborting.")
         sys.exit(1)
-    print(f"\n  ingest ClusterIP: {ingest_ip}")
+    print(f"\n  {SVC_NAME} ClusterIP: {ingest_ip}")
 
     all_results = {}
 
@@ -893,5 +931,47 @@ def main():
 
     print("\n  Done.")
 
+def _apply_workload(name: str) -> None:
+    """Rebind module-level constants when --workload changes the selection.
+
+    Importing this script picks up the default workload (env var WORKLOAD
+    or "cpu"). When the user passes --workload from the CLI we rebind the
+    globals so every downstream reference (DEPLOYMENT, SERVICES, WRK_PATH,
+    SVC_NAME, MANIFEST_DIR, HPA_MANIFEST_PATH, CPU_LIMITS) sees the new
+    workload's values.
+    """
+    global WORKLOAD, DEPLOYMENT, SERVICES, CPU_LIMITS
+    global WRK_PATH, SVC_NAME, MANIFEST_DIR, HPA_MANIFEST_PATH
+    if name not in WORKLOAD_CFGS:
+        print(f"[FATAL] unknown workload '{name}'. "
+              f"Known: {sorted(WORKLOAD_CFGS.keys())}")
+        sys.exit(2)
+    cfg = WORKLOAD_CFGS[name]
+    WORKLOAD = name
+    DEPLOYMENT = cfg["deployment"]
+    SERVICES = list(cfg["services"])
+    CPU_LIMITS = dict(cfg["cpu_limits"])
+    WRK_PATH = cfg["wrk_path"]
+    SVC_NAME = cfg["svc_name"]
+    MANIFEST_DIR = cfg["manifest_dir"]
+    HPA_MANIFEST_PATH = os.path.join(MANIFEST_DIR, "hpa.yaml")
+
+
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(
+        description=(
+            "muBench autoscaler comparison eval. Pick --workload cpu for the "
+            "ingest→process→analyze CPU chain (default; reproduces v3-v8) or "
+            "--workload stateful for the Phase-I session-cache workload."
+        )
+    )
+    parser.add_argument(
+        "--workload",
+        choices=sorted(WORKLOAD_CFGS.keys()),
+        default=os.environ.get("WORKLOAD", "cpu"),
+        help="Workload selection. Default: cpu (or $WORKLOAD env var).",
+    )
+    args = parser.parse_args()
+    _apply_workload(args.workload)
     main()

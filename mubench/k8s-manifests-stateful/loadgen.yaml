@@ -1,0 +1,53 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# One-shot load generator for the stateful workload.
+# Targets GET /allocate on session-cache so every request grows that pod's
+# in-memory store by SESSION_BLOB_BYTES.
+#
+# Apply with: kubectl apply -f mubench/k8s-manifests-stateful/loadgen.yaml
+# Delete with: kubectl delete -f mubench/k8s-manifests-stateful/loadgen.yaml
+#
+# Phase breakdown matches the CPU-chain loadgen so timing comparisons hold:
+#   0–60s    warmup    2 conn
+#   60–360s  sustained 16 conn  — memory climbs, VPA should react
+#   360–480s burst     32 conn  — heavy allocation pressure
+#   480–600s cooldown  2 conn
+# ──────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: session-cache-loadgen
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench-stateful
+    role: loadgen
+spec:
+  restartPolicy: Never
+  containers:
+  - name: wrk
+    image: williamyeh/wrk
+    command:
+    - sh
+    - -c
+    - |
+      TARGET="http://session-cache:8080/allocate"
+      echo "=== warmup (60s, 2 conn) ==="
+      wrk -t2 -c2 -d60s "$TARGET"
+
+      echo "=== sustained load (300s, 16 conn) ==="
+      wrk -t4 -c16 -d300s "$TARGET"
+
+      echo "=== burst (120s, 32 conn) ==="
+      wrk -t8 -c32 -d120s "$TARGET"
+
+      echo "=== cooldown (120s, 2 conn) ==="
+      wrk -t2 -c2 -d120s "$TARGET"
+
+      echo "=== load generation complete ==="
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "128Mi"

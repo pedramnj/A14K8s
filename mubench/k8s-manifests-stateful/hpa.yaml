@@ -1,0 +1,27 @@
+---
+# HPA for session-cache. Same shape as the CPU chain (min=2, max=4,
+# cpu=70%) so the cost proxy comparison stays apples-to-apples.
+# Note: this is the *baseline* native-HPA configuration used by the
+# HPA method in run_comparison_eval.py. AutoSage trials disable this
+# HPA at trial start (same pattern as the CPU chain).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: session-cache
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench-stateful
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: session-cache
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

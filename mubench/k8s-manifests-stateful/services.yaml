@@ -1,0 +1,17 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-cache
+  namespace: default
+  labels:
+    app: session-cache
+    app.kubernetes.io/part-of: mubench-stateful
+spec:
+  type: ClusterIP
+  selector:
+    app: session-cache
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
