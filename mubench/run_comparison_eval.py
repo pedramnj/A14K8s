@@ -513,14 +513,28 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
           f"  gap={score_gap:.4f}"
           f"  override={mcda.get('should_override',False)}")
 
-    # Actuate: apply scaling if advisor says scale_up
+    # Actuate: apply the recommended scaling. Phase I adds the VPA branch
+    # -- for scaling_type=vpa we patch the deployment's resources via
+    # `kubectl set resources`, which triggers a rolling restart with the
+    # new cpu/memory requests. Phase-H behaviour (HPA actuation) is
+    # unchanged for scaling_type=hpa.
     t_actuate = time.time()
     actuated = False
-    if action == "scale_up" and target_replicas and target_replicas > initial_replicas:
-        kubectl("scale", "deployment", DEPLOYMENT,
-                f"--replicas={min(target_replicas, HPA_MAX)}", silent=True)
-        actuated = True
-        print(f"  [AutoSage] scaled deployment/{DEPLOYMENT} to {target_replicas} replicas")
+    if action == "scale_up":
+        if scaling_type in ("hpa", "both") and target_replicas and target_replicas > initial_replicas:
+            kubectl("scale", "deployment", DEPLOYMENT,
+                    f"--replicas={min(target_replicas, HPA_MAX)}", silent=True)
+            actuated = True
+            print(f"  [AutoSage] scaled deployment/{DEPLOYMENT} to {target_replicas} replicas")
+        if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
+            new_cpu = str(rec.get("target_cpu"))
+            new_mem = str(rec.get("target_memory"))
+            kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
+                    f"--requests=cpu={new_cpu},memory={new_mem}",
+                    "-n", NAMESPACE, silent=True)
+            actuated = True
+            print(f"  [AutoSage] set resources on deployment/{DEPLOYMENT}: "
+                  f"cpu={new_cpu}, mem={new_mem}")
     actuation_s = round(time.time() - t_actuate, 3)
 
     # Probe latency at T+90s (we've already spent ~30s + recommendation_latency_s)
@@ -551,6 +565,10 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
         "action": action,
         "scaling_type": scaling_type,
         "target_replicas": target_replicas,
+        # Phase I: capture the LLM's resource targets so downstream
+        # analysis can compare LLM vs MCDA picks across both axes.
+        "target_cpu": rec.get("target_cpu"),
+        "target_memory": rec.get("target_memory"),
         "confidence": round(confidence, 3),
         "actuated": actuated,
         "mcda_agreement": mcda.get("agreement", "N/A"),
@@ -558,6 +576,16 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
             mcda.get("score_difference", mcda.get("score_gap", 0)), 4
         ),
         "mcda_override": mcda.get("should_override", False),
+        # Phase I: persist MCDA's per-axis pick from the unified pool.
+        # mcda_target stays for the replica count; the new fields cover
+        # the vertical axis. mcda_scaling_type tells you which axis won.
+        "mcda_target": mcda.get("mcda_target"),
+        "mcda_target_cpu_m": mcda.get("mcda_target_cpu_m"),
+        "mcda_target_memory_mi": mcda.get("mcda_target_memory_mi"),
+        "mcda_scaling_type": mcda.get("mcda_scaling_type"),
+        "mcda_llm_score": mcda.get("llm_score"),
+        "mcda_mcda_score": mcda.get("mcda_score"),
+        "mcda_dominance_margin": mcda.get("dominance_margin"),
         "first_scale_latency_s": first_scale,
         "peak_replicas": watch.get("peak_replicas"),
         "p95_latency_s": probe.get("p95_s"),
