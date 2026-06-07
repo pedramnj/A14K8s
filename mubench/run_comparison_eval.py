@@ -65,6 +65,20 @@ WORKLOAD_CFGS = {
         "svc_name":       "session-cache",
         "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-stateful"),
     },
+    "multiclass": {
+        # Phase J: AWARE-style multi-class workload. Currently ships with
+        # `compute` (CPU-bound, parametric NxN eigendecomposition).
+        # Designed to break threshold-calibrated HPA via the payload-shift
+        # loadgen (size=50 baseline → size=150 mid-trial, ~30x more work).
+        # The `text` service is deferred to Phase-J v2; `session-cache`
+        # remains reusable via --workload stateful.
+        "deployment":     "compute",
+        "services":       ["compute"],
+        "cpu_limits":     {"compute": 300},
+        "wrk_path":       "/compute?size=50",
+        "svc_name":       "compute",
+        "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-multiclass"),
+    },
 }
 # Default is "cpu" for backward compatibility with every prior eval (v3-v8).
 # Argparse at the bottom of the file overrides this when --workload is passed.
@@ -90,7 +104,10 @@ COOLDOWN_S       = 30
 VPA_POLL_WINDOW  = 300          # VPA Recommender needs multiple observation windows
 N_RUNS           = 3
 PROBE_REQUESTS   = 20
-SLA_THRESHOLD_S  = 2.0
+# Phase J: SLA threshold is env-configurable so the multiclass workload
+# can run at 500ms (matching DeathStarBench / AWARE practice) while the
+# CPU chain stays at 2.0s for v3-v8 reproducibility.
+SLA_THRESHOLD_S  = float(os.environ.get("SLA_THRESHOLD_S", "2.0"))
 RESULTS_PATH     = os.environ.get("RESULTS_PATH", "/tmp/comparison_results.json")
 PROBE_IMAGE      = "curlimages/curl:8.9.1"
 

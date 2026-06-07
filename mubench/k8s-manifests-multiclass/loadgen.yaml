@@ -1,0 +1,59 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Phase-J payload-shift load generator for the `compute` workload.
+#
+# Implements the AWARE input-size shift pattern (USENIX ATC '23, §2.3):
+# steady-state at small payload, then a hard transition to 3x payload
+# mid-trial. An HPA threshold tuned at the small payload's steady CPU
+# becomes wrong when the per-request work jumps. The transition is
+# what makes traditional autoscaling visibly fail.
+#
+# Phases:
+#   0–30s    warmup       2 conn   size=50    let pods initialise
+#   30–180s  sustained    16 conn  size=50    calibrate baseline
+#   180–300s SHIFT        16 conn  size=150   per-request work ~3x O(n^4)
+#   300–360s cooldown     2 conn   size=50    verify recovery
+#
+# Apply with:  kubectl apply -f mubench/k8s-manifests-multiclass/loadgen.yaml
+# Delete with: kubectl delete -f mubench/k8s-manifests-multiclass/loadgen.yaml
+# ──────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: compute-loadgen
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench-multiclass
+    role: loadgen
+spec:
+  restartPolicy: Never
+  containers:
+  - name: wrk
+    image: williamyeh/wrk
+    command:
+    - sh
+    - -c
+    - |
+      SMALL_URL="http://compute:8080/compute?size=50"
+      LARGE_URL="http://compute:8080/compute?size=150"
+
+      echo "=== warmup (30s, 2 conn, size=50) ==="
+      wrk -t2 -c2 -d30s "$SMALL_URL"
+
+      echo "=== sustained baseline (150s, 16 conn, size=50) ==="
+      wrk -t4 -c16 -d150s "$SMALL_URL"
+
+      echo "=== PAYLOAD SHIFT (120s, 16 conn, size=150) ==="
+      wrk -t4 -c16 -d120s "$LARGE_URL"
+
+      echo "=== cooldown (60s, 2 conn, size=50) ==="
+      wrk -t2 -c2 -d60s "$SMALL_URL"
+
+      echo "=== load generation complete ==="
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "64Mi"
+      limits:
+        cpu: "500m"
+        memory: "128Mi"

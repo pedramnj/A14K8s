@@ -1,0 +1,27 @@
+---
+# HPA for compute. Same shape as the other workload HPAs (min=2, max=4,
+# cpu=70%). Per AWARE's calibration trick, the threshold is set to a
+# value that's correct for the small-payload steady state but visibly
+# breaks during the payload shift. AutoSage trials disable this HPA
+# at trial start (same pattern as the CPU chain + session-cache).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: compute
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench-multiclass
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: compute
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

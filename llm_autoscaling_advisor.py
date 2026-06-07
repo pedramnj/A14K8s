@@ -799,10 +799,54 @@ class LLMAutoscalingAdvisor:
                 
                 no_state_info_provided = not state_note or 'no explicit state' in state_note.lower() or 'not provided' in state_note.lower() or 'no state management information detected' in state_note.lower()
             
+            # Phase J: workload-aware sizing heuristic. Classify the
+            # observed bottleneck from current metrics before letting the
+            # state-based force-VPA fire. Even if the workload is annotated
+            # stateful, when neither CPU nor memory is saturated the
+            # bottleneck is almost certainly thread/concurrency-bound, and
+            # horizontal scaling helps more than vertical (Phase-I
+            # session-cache is the textbook case: 65% CPU + 70% memory +
+            # high request rate = HPA's regime, not VPA's). Env-gated for
+            # backwards compatibility with v3-v8 evals.
+            cpu_now = float(current_metrics.get('cpu_usage', 0) if current_metrics else 0)
+            mem_now = float(current_metrics.get('memory_usage', 0) if current_metrics else 0)
+            workload_aware_enabled = os.getenv(
+                'WORKLOAD_AWARE_SIZING_ENABLED', '0').strip().lower() in {'1', 'true', 'yes'}
+
+            def _classify_bottleneck(cpu_pct, mem_pct):
+                if cpu_pct >= 80:
+                    return 'cpu-bound'
+                if mem_pct >= 80:
+                    return 'memory-bound'
+                if cpu_pct < 70 and mem_pct < 75:
+                    # Neither resource saturated under load → likely
+                    # concurrency-bound (GIL, threads, connection pool).
+                    return 'thread-bound'
+                return 'mixed'
+
+            bottleneck_class = _classify_bottleneck(cpu_now, mem_now)
+            thread_bound_stateful_override = (
+                workload_aware_enabled
+                and bottleneck_class == 'thread-bound'
+                and has_state_inside
+                and not has_state_externalized
+            )
+            if thread_bound_stateful_override:
+                logger.warning(
+                    f"⚠️ Phase-J workload-aware heuristic: workload is stateful but "
+                    f"bottleneck looks thread-bound (CPU={cpu_now:.1f}%, "
+                    f"Mem={mem_now:.1f}%). Skipping the state-based VPA force and "
+                    f"keeping scaling_type={scaling_type} so MCDA's unified pool "
+                    f"can pick the right axis."
+                )
+
             # CRITICAL: If no state info provided and LLM chose HPA, correct to VPA for safety
             # BUT: Respect user's explicit stateless selection (don't override)
-            if (has_state_inside and not has_state_externalized and scaling_type == 'hpa' and not user_explicitly_stateless) or \
-               (no_state_info_provided and scaling_type == 'hpa' and not has_state_externalized and not user_explicitly_stateless):
+            # Phase J: also skip the force-VPA when the workload-aware heuristic
+            # classifies the bottleneck as thread-bound.
+            if not thread_bound_stateful_override and (
+                (has_state_inside and not has_state_externalized and scaling_type == 'hpa' and not user_explicitly_stateless) or \
+               (no_state_info_provided and scaling_type == 'hpa' and not has_state_externalized and not user_explicitly_stateless)):
                 logger.warning(f"⚠️ LLM recommended HPA but state is uncertain or inside pod. Correcting to VPA.")
                 recommendation['scaling_type'] = 'vpa'
                 # Clear target_replicas for VPA

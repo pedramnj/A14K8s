@@ -1,0 +1,126 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# compute service code mounted into the container via ConfigMap.
+# Keep in sync with mubench/multiclass/compute_service.py.
+# ──────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compute-code
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: mubench-multiclass
+    managed-by: ai4k8s
+data:
+  compute_service.py: |
+    #!/usr/bin/env python3
+    """Phase-J `compute` service --- CPU-bound matrix workload."""
+
+    import json
+    import os
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    import numpy as np
+
+    PORT = int(os.environ.get("COMPUTE_SERVICE_PORT", "8080"))
+    DEFAULT_SIZE = int(os.environ.get("COMPUTE_DEFAULT_SIZE", "50"))
+    MAX_SIZE = int(os.environ.get("COMPUTE_MAX_SIZE", "256"))
+    WORK_MULTIPLIER = max(1, int(os.environ.get("COMPUTE_WORK_MULTIPLIER", "1")))
+    START_TS = time.time()
+
+    _LOCK = threading.Lock()
+    _STATS = {"requests": 0, "total_compute_ms": 0.0}
+
+
+    def _do_multiply(n):
+        n = max(1, min(int(n), MAX_SIZE))
+        a = np.random.random((n, n))
+        sym = a + a.T
+        total = 0.0
+        iters = max(1, (n // 10) * WORK_MULTIPLIER)
+        for _i in range(iters):
+            eigs, _ = np.linalg.eigh(sym)
+            total += float(eigs.sum())
+        return total
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args, **kwargs):
+            return
+
+        def _send(self, code, body=b"", headers=None):
+            self.send_response(code)
+            if headers:
+                for k, v in headers.items():
+                    self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query or "")
+
+            if path == "/":
+                self._send(200,
+                           b"compute OK -- GET /compute?size=N for NxN matmul\n",
+                           {"Content-Type": "text/plain"})
+                return
+            if path == "/healthz":
+                self._send(200, b"ok\n", {"Content-Type": "text/plain"})
+                return
+            if path == "/metrics":
+                with _LOCK:
+                    payload = json.dumps({
+                        "requests": _STATS["requests"],
+                        "total_compute_ms": round(_STATS["total_compute_ms"], 3),
+                        "uptime_s": int(time.time() - START_TS),
+                        "default_size": DEFAULT_SIZE,
+                        "max_size": MAX_SIZE,
+                        "work_multiplier": WORK_MULTIPLIER,
+                    }).encode()
+                self._send(200, payload, {"Content-Type": "application/json"})
+                return
+            if path == "/compute":
+                try:
+                    size = int(query.get("size", [DEFAULT_SIZE])[0])
+                except (TypeError, ValueError):
+                    size = DEFAULT_SIZE
+                t0 = time.perf_counter()
+                checksum = _do_multiply(size)
+                dt_ms = (time.perf_counter() - t0) * 1000.0
+                with _LOCK:
+                    _STATS["requests"] += 1
+                    _STATS["total_compute_ms"] += dt_ms
+                body = json.dumps({
+                    "size": size,
+                    "checksum": checksum,
+                    "elapsed_ms": round(dt_ms, 3),
+                }).encode()
+                self._send(200, body, {"Content-Type": "application/json"})
+                return
+            self._send(404, b"unknown path\n", {"Content-Type": "text/plain"})
+
+
+    def main():
+        print(f"compute listening on :{PORT} "
+              f"(default_size={DEFAULT_SIZE}, max_size={MAX_SIZE}, "
+              f"work_multiplier={WORK_MULTIPLIER})",
+              flush=True)
+        server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            server.server_close()
+
+
+    if __name__ == "__main__":
+        main()
