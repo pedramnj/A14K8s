@@ -68,14 +68,22 @@ WORKLOAD_CFGS = {
     "multiclass": {
         # Phase J: AWARE-style multi-class workload. Currently ships with
         # `compute` (CPU-bound, parametric NxN eigendecomposition).
-        # Designed to break threshold-calibrated HPA via the payload-shift
-        # loadgen (size=50 baseline → size=150 mid-trial, ~30x more work).
-        # The `text` service is deferred to Phase-J v2; `session-cache`
-        # remains reusable via --workload stateful.
+        #
+        # The harness uses a single-URL wrk for the trial window, so we
+        # aim it at size=100 (the post-shift heavy payload) for the
+        # whole 120s window. That puts the system in the regime an
+        # AWARE-style payload shift would create: heavy enough that an
+        # HPA calibrated at "size=50 looks fine" cannot keep the
+        # workload under the 500ms SLA even after scaling to max=4
+        # replicas (Python ThreadingHTTPServer is GIL-bound, so more
+        # pods help proportionally less than the math would suggest).
+        # The 4-phase payload-shift loadgen YAML (k8s-manifests-multiclass/
+        # loadgen.yaml) is kept for ad-hoc out-of-band stress tests but
+        # is not what the eval harness drives.
         "deployment":     "compute",
         "services":       ["compute"],
         "cpu_limits":     {"compute": 300},
-        "wrk_path":       "/compute?size=50",
+        "wrk_path":       "/compute?size=100",
         "svc_name":       "compute",
         "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-multiclass"),
     },
