@@ -460,11 +460,18 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
             f"--requests=cpu={CPU_REQUEST_M}m,memory=128Mi",
             "-n", NAMESPACE, silent=True)
-    # Pin maxReplicas=2 to freeze HPA reaction so AutoSage captures pre-HPA state
+    # Phase-J task 1: DELETE the HPA for the duration of the AutoSage
+    # trial instead of pinning maxReplicas=2. The original pinning
+    # silently reconciled AutoSage's kubectl scale calls back to 2
+    # within ~15s, so AutoSage's decisions never actuated in the cluster
+    # state and peak_replicas was always 2 regardless of what it chose
+    # (Phase-I caveat sec:caveat, and Phase-J v11 sec:phasej-v11 saw it
+    # again). Deletion matches the AutoScaleAI trial pattern and lets
+    # AutoSage's kubectl scale lands stick. HPA is reapplied from
+    # manifest at trial end.
     for svc in SERVICES:
-        kubectl("patch", "hpa", svc, "-n", NAMESPACE,
-                "--type=merge", f'--patch={{"spec":{{"maxReplicas":2}}}}', silent=True)
-    print(f"  [AutoSage] HPA frozen at maxReplicas=2  — warmup {WARMUP_S}s …")
+        delete_hpa_if_exists(svc)
+    print(f"  [AutoSage] HPA deleted for trial window  — warmup {WARMUP_S}s …")
     time.sleep(WARMUP_S)
 
     initial_replicas = get_replica_count(DEPLOYMENT)
@@ -585,11 +592,10 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     watcher.join(timeout=WINDOW_S - 30 - recommendation_latency_s - probe_wait + 10)
     wrk.wait(timeout=30)
 
-    # Restore maxReplicas=4 on all HPAs
-    for svc in SERVICES:
-        kubectl("patch", "hpa", svc, "-n", NAMESPACE,
-                "--type=merge", f'--patch={{"spec":{{"maxReplicas":{HPA_MAX}}}}}', silent=True)
-    print(f"  [AutoSage] maxReplicas restored to {HPA_MAX}")
+    # Phase-J task 1: re-apply HPA manifest (was deleted at trial start).
+    # Restores the workload's HPA cleanly for the next method's trial.
+    kubectl("apply", "-f", HPA_MANIFEST_PATH, silent=True)
+    print(f"  [AutoSage] HPA re-applied from {os.path.basename(HPA_MANIFEST_PATH)}")
 
     watch = watcher_results[0] if watcher_results else {}
     first_scale = watch.get("first_scale_latency_s")
