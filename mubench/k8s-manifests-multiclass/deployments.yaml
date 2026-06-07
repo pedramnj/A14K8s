@@ -66,8 +66,13 @@ spec:
           value: "50"
         - name: COMPUTE_MAX_SIZE
           value: "256"
+        # Calibrated on the CrownLabs 4-vCPU x86 VM. With multiplier=1
+        # the per-request timing is ~75ms for size=50 and ~350ms for
+        # size=100 (isolated). Under wrk c=16 contention the small
+        # payload stays under the 500ms SLA; the large payload (after
+        # the loadgen's payload-shift phase) crosses it.
         - name: COMPUTE_WORK_MULTIPLIER
-          value: "4"
+          value: "1"
         - name: PYTHONPATH
           value: "/extra-pkgs"
         resources:
