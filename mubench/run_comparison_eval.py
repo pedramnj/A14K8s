@@ -109,7 +109,20 @@ WARMUP_S         = 15
 WINDOW_S         = 120
 PROBE_AT_S       = 90              # seconds into load window to probe latency
 COOLDOWN_S       = 30
-VPA_POLL_WINDOW  = 300          # VPA Recommender needs multiple observation windows
+# Phase K: env-gated so v13 can run with VPA_POLL_WINDOW=120 to match the
+# other methods' trial window. Default 300 preserves v3-v12 reproducibility.
+VPA_POLL_WINDOW  = int(os.environ.get("VPA_POLL_WINDOW", "300"))
+
+# Phase K: multi-tick AutoSage. When enabled, the harness fires the advisor
+# on AUTOSAGE_TICK_INTERVAL_S cadence inside the trial window. The first
+# tick does a full LLM+MCDA call; subsequent ticks reuse the cached LLM
+# recommendation and re-run MCDA validation against fresh metrics so the
+# decision can adapt without paying a 90-second LLM call per tick.
+# Default OFF for v3-v12 reproducibility.
+AUTOSAGE_MULTI_TICK_ENABLED = os.environ.get(
+    "AUTOSAGE_MULTI_TICK_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+AUTOSAGE_TICK_INTERVAL_S = int(os.environ.get("AUTOSAGE_TICK_INTERVAL_S", "30"))
+AUTOSAGE_MAX_TICKS = int(os.environ.get("AUTOSAGE_MAX_TICKS", "5"))
 N_RUNS           = 3
 PROBE_REQUESTS   = 20
 # Phase J: SLA threshold is env-configurable so the multiclass workload
@@ -450,6 +463,161 @@ def run_vpa_trial(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
 # ══════════════════════════════════════════════════════════════════════════════
 # METHOD 3 — AutoSage (LLM + MCDA)
 # ══════════════════════════════════════════════════════════════════════════════
+def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
+    """Apply the recommendation against the cluster.
+
+    Phase-K extraction: single source of truth for the actuation logic
+    so single-tick and multi-tick paths cannot diverge. Returns True iff
+    something was actuated.
+    """
+    action = rec.get("action", "maintain")
+    if action != "scale_up":
+        return False
+    scaling_type = rec.get("scaling_type", "hpa").lower()
+    target_replicas = rec.get("target_replicas")
+    actuated = False
+    if scaling_type in ("hpa", "both") and target_replicas and target_replicas > initial_replicas:
+        kubectl("scale", "deployment", DEPLOYMENT,
+                f"--replicas={min(target_replicas, HPA_MAX)}", silent=True)
+        print(f"  [AutoSage] scaled deployment/{DEPLOYMENT} to {target_replicas} replicas")
+        actuated = True
+    if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
+        new_cpu = str(rec.get("target_cpu"))
+        new_mem = str(rec.get("target_memory"))
+        kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
+                f"--requests=cpu={new_cpu},memory={new_mem}",
+                "-n", NAMESPACE, silent=True)
+        print(f"  [AutoSage] set resources on deployment/{DEPLOYMENT}: "
+              f"cpu={new_cpu}, mem={new_mem}")
+        actuated = True
+    return actuated
+
+
+def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
+                   initial_replicas: int, cached_rec: dict, tick_idx: int) -> dict:
+    """Run one advisor tick: collect metrics, get recommendation, actuate.
+
+    Phase K (multi-tick AutoSage). If ``cached_rec`` is None, this is the
+    first tick of the trial -- do a full LLM+MCDA call (~90s on Qwen,
+    ~1s on Groq). If ``cached_rec`` is set, this is a subsequent tick --
+    re-use the cached LLM recommendation but re-run MCDA validation
+    against fresh metrics so the per-tick decision can adapt without
+    paying another LLM call.
+    """
+    t_metrics = time.time()
+    current_metrics, forecast = collect_live_metrics(
+        DEPLOYMENT, CPU_LIMITS[DEPLOYMENT], force_rising=True)
+    metrics_s = round(time.time() - t_metrics, 3)
+    cpu_pct = current_metrics.get("cpu_usage", 0.0)
+
+    if cached_rec is None:
+        # First tick: full LLM + MCDA call.
+        print(f"  [AutoSage] tick {tick_idx}: CPU={cpu_pct:.1f}%  firing LLM+MCDA …")
+        t_rec = time.time()
+        rec_result = advisor.get_intelligent_recommendation(
+            deployment_name=DEPLOYMENT,
+            namespace=NAMESPACE,
+            current_metrics=current_metrics,
+            forecast=forecast,
+            hpa_status={
+                "exists": False,
+                "current_replicas": get_replica_count(DEPLOYMENT) or initial_replicas,
+                "desired_replicas": initial_replicas,
+                "target_cpu": HPA_CPU_TARGET,
+                "target_memory": 80,
+                "scaling_status": "absent",
+            },
+            vpa_status={"exists": False},
+            current_resources={
+                "cpu_request": f"{CPU_REQUEST_M}m",
+                "cpu_limit": f"{CPU_LIMITS[DEPLOYMENT]}m",
+                "memory_request": "128Mi",
+                "memory_limit": "256Mi",
+            },
+            current_replicas=get_replica_count(DEPLOYMENT) or initial_replicas,
+            min_replicas=HPA_MIN,
+            max_replicas=HPA_MAX,
+            hpa_manager=hpa_manager,
+        )
+        rec_latency = round(time.time() - t_rec, 2)
+        rec = rec_result.get("recommendation", {})
+        llm_model = rec_result.get("llm_model", "?")
+    else:
+        # Subsequent tick: keep the LLM's pick, re-validate via MCDA with fresh metrics.
+        rec = dict(cached_rec)
+        rec_latency = 0.0
+        llm_model = "(cached)"
+        try:
+            mcda = getattr(advisor, "mcda_optimizer", None)
+            if mcda is not None:
+                current_reps_now = get_replica_count(DEPLOYMENT) or initial_replicas
+                validation = mcda.validate_llm_decision(
+                    llm_action=rec.get("action", "maintain"),
+                    llm_target=rec.get("target_replicas") or current_reps_now,
+                    current_replicas=current_reps_now,
+                    min_replicas=HPA_MIN,
+                    max_replicas=HPA_MAX,
+                    metrics={
+                        "cpu_percent": cpu_pct,
+                        "memory_percent": current_metrics.get("memory_usage", 0),
+                    },
+                    forecast={
+                        "predicted_cpu": forecast.get("cpu", {}).get("predictions", [cpu_pct] * 6) if isinstance(forecast, dict) else [cpu_pct] * 6,
+                        "predicted_memory": forecast.get("memory", {}).get("predictions", [current_metrics.get("memory_usage", 0)] * 6) if isinstance(forecast, dict) else [current_metrics.get("memory_usage", 0)] * 6,
+                        "cpu_trend": "stable",
+                    },
+                    agreement_threshold=getattr(advisor, "mcda_agreement_threshold", 0.20),
+                )
+                rec["mcda_validation"] = {
+                    "agreement": validation.get("agreement"),
+                    "llm_score": validation.get("llm_score"),
+                    "mcda_score": validation.get("mcda_score"),
+                    "mcda_target": validation.get("mcda_target"),
+                    "score_difference": validation.get("score_difference"),
+                    "should_override": validation.get("should_override"),
+                    "validation_note": validation.get("validation_note"),
+                }
+                # If MCDA overrides, swap the action to its preferred choice.
+                if validation.get("should_override"):
+                    rec["target_replicas"] = validation.get("mcda_target")
+                    rec["action"] = validation.get("mcda_action", rec.get("action", "maintain"))
+                    rec["scaling_type"] = validation.get("mcda_scaling_type", rec.get("scaling_type", "hpa"))
+        except Exception as e:  # noqa: BLE001
+            print(f"  [AutoSage] tick {tick_idx}: MCDA re-validation failed (non-fatal): {e}")
+
+    mcda = rec.get("mcda_validation", {}) or {}
+    print(f"  [AutoSage] tick {tick_idx}: action={rec.get('action')} "
+          f"type={rec.get('scaling_type')} target_reps={rec.get('target_replicas')} "
+          f"cpu={rec.get('target_cpu')} mem={rec.get('target_memory')} "
+          f"gap={mcda.get('score_difference', 0):.4f} "
+          f"override={mcda.get('should_override', False)} "
+          f"({rec_latency:.2f}s, {llm_model})")
+
+    t_actuate = time.time()
+    actuated = _autosage_actuate(rec, initial_replicas)
+    actuation_s = round(time.time() - t_actuate, 3)
+
+    return {
+        "tick_idx": tick_idx,
+        "cpu_pct": cpu_pct,
+        "action": rec.get("action", "maintain"),
+        "scaling_type": rec.get("scaling_type", "hpa"),
+        "target_replicas": rec.get("target_replicas"),
+        "target_cpu": rec.get("target_cpu"),
+        "target_memory": rec.get("target_memory"),
+        "confidence": rec.get("confidence", 0.0),
+        "actuated": actuated,
+        "mcda_agreement": mcda.get("agreement", "N/A"),
+        "mcda_score_gap": round(mcda.get("score_difference", 0) or 0, 4),
+        "mcda_override": mcda.get("should_override", False),
+        "rec_latency_s": rec_latency,
+        "metrics_s": metrics_s,
+        "actuation_s": actuation_s,
+        "llm_model": llm_model,
+        "_raw_rec": rec,  # cached for subsequent ticks
+    }
+
+
 def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
                        hpa_manager: HorizontalPodAutoscaler, run_idx: int) -> dict:
     print(f"\n  [AutoSage run {run_idx+1}/{N_RUNS}] resetting replicas → {HPA_MIN} …")
@@ -493,95 +661,57 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     # Wait 30s so there's real CPU signal before calling the advisor
     time.sleep(30)
 
-    # Collect live metrics for each service
-    t_metrics = time.time()
-    # force_rising=True: test AutoSage in predictive mode (rising forecast)
-    current_metrics, forecast = collect_live_metrics(DEPLOYMENT, CPU_LIMITS[DEPLOYMENT],
-                                                      force_rising=True)
-    metrics_collection_s = round(time.time() - t_metrics, 3)
+    # Phase-K: optional multi-tick path. Tick 1 is the same single-fire
+    # advisor call we have always done; subsequent ticks (only when
+    # AUTOSAGE_MULTI_TICK_ENABLED) re-evaluate MCDA against fresh metrics
+    # using the cached LLM recommendation, so the decision adapts during
+    # the trial without paying another 90s LLM call per tick.
+    tick_history = []
+    cached_rec = None
+    first_tick = _autosage_tick(advisor, hpa_manager, initial_replicas,
+                                 cached_rec=None, tick_idx=1)
+    tick_history.append(first_tick)
+    cached_rec = first_tick["_raw_rec"]
 
-    cpu_pct = current_metrics["cpu_usage"]
-    print(f"  [AutoSage] ingest CPU={cpu_pct:.1f}%  firing LLM+MCDA …")
+    # Trial-end deadline: leave 30s of headroom before the probe so the
+    # rollout from any actuation has a chance to land.
+    trial_deadline = t_load + WINDOW_S - 30
 
-    # Fire LLM+MCDA recommendation
-    t_rec = time.time()
-    rec_result = advisor.get_intelligent_recommendation(
-        deployment_name=DEPLOYMENT,
-        namespace=NAMESPACE,
-        current_metrics=current_metrics,
-        forecast=forecast,
-        hpa_status={
-            "exists": False,
-            "current_replicas": initial_replicas,
-            "desired_replicas": initial_replicas,
-            "target_cpu": HPA_CPU_TARGET,
-            "target_memory": 80,
-            "scaling_status": "absent",
-        },
-        vpa_status={"exists": False},
-        current_resources={
-            "cpu_request": f"{CPU_REQUEST_M}m",
-            "cpu_limit": f"{CPU_LIMITS[DEPLOYMENT]}m",
-            "memory_request": "128Mi",
-            "memory_limit": "256Mi",
-        },
-        current_replicas=initial_replicas,
-        min_replicas=HPA_MIN,
-        max_replicas=HPA_MAX,
-        hpa_manager=hpa_manager,
-    )
-    recommendation_latency_s = round(time.time() - t_rec, 2)
+    if AUTOSAGE_MULTI_TICK_ENABLED:
+        next_tick_at = time.time() + AUTOSAGE_TICK_INTERVAL_S
+        while (time.time() < trial_deadline
+               and len(tick_history) < AUTOSAGE_MAX_TICKS):
+            wait = next_tick_at - time.time()
+            if wait > 0:
+                time.sleep(wait)
+            tick = _autosage_tick(advisor, hpa_manager, initial_replicas,
+                                   cached_rec=cached_rec,
+                                   tick_idx=len(tick_history) + 1)
+            tick_history.append(tick)
+            # Use the latest decision as the cache base, so an MCDA override
+            # propagates forward instead of being lost on the next tick.
+            cached_rec = tick["_raw_rec"]
+            next_tick_at = time.time() + AUTOSAGE_TICK_INTERVAL_S
 
-    rec = rec_result.get("recommendation", {})
-    action = rec.get("action", "maintain")
-    scaling_type = rec.get("scaling_type", "hpa")
-    target_replicas = rec.get("target_replicas", initial_replicas)
-    confidence = rec.get("confidence", 0.0)
-    mcda = rec.get("mcda_validation", {})
-    timings = rec_result.get("timings", {})
+    # The "final" trial-level decision is whatever the last tick produced.
+    last_tick = tick_history[-1]
+    action = last_tick["action"]
+    scaling_type = last_tick["scaling_type"]
+    target_replicas = last_tick["target_replicas"]
+    confidence = last_tick.get("confidence", 0.0) or 0.0
+    actuated = any(t["actuated"] for t in tick_history)
+    metrics_collection_s = sum(t["metrics_s"] for t in tick_history)
+    actuation_s = sum(t["actuation_s"] for t in tick_history)
+    recommendation_latency_s = sum(t["rec_latency_s"] for t in tick_history)
+    mcda = (last_tick["_raw_rec"] or {}).get("mcda_validation", {}) or {}
+    rec = last_tick["_raw_rec"] or {}
 
-    print(f"  [AutoSage] action={action}  scaling_type={scaling_type}"
-          f"  target_replicas={target_replicas}  conf={confidence:.2f}"
-          f"  ({recommendation_latency_s:.1f}s)")
-    # The advisor writes the field as `score_difference` (not `score_gap`);
-    # the older key is kept as a fallback for backward-compatibility with
-    # any historical JSON snapshots that may have used the old name.
-    score_gap = mcda.get('score_difference', mcda.get('score_gap', 0))
-    print(f"  [AutoSage] MCDA: agreement={mcda.get('agreement','?')}"
-          f"  gap={score_gap:.4f}"
-          f"  override={mcda.get('should_override',False)}")
-
-    # Actuate: apply the recommended scaling. Phase I adds the VPA branch
-    # -- for scaling_type=vpa we patch the deployment's resources via
-    # `kubectl set resources`, which triggers a rolling restart with the
-    # new cpu/memory requests. Phase-H behaviour (HPA actuation) is
-    # unchanged for scaling_type=hpa.
-    t_actuate = time.time()
-    actuated = False
-    if action == "scale_up":
-        if scaling_type in ("hpa", "both") and target_replicas and target_replicas > initial_replicas:
-            kubectl("scale", "deployment", DEPLOYMENT,
-                    f"--replicas={min(target_replicas, HPA_MAX)}", silent=True)
-            actuated = True
-            print(f"  [AutoSage] scaled deployment/{DEPLOYMENT} to {target_replicas} replicas")
-        if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
-            new_cpu = str(rec.get("target_cpu"))
-            new_mem = str(rec.get("target_memory"))
-            kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
-                    f"--requests=cpu={new_cpu},memory={new_mem}",
-                    "-n", NAMESPACE, silent=True)
-            actuated = True
-            print(f"  [AutoSage] set resources on deployment/{DEPLOYMENT}: "
-                  f"cpu={new_cpu}, mem={new_mem}")
-    actuation_s = round(time.time() - t_actuate, 3)
-
-    # Probe latency at T+90s (we've already spent ~30s + recommendation_latency_s).
-    # Phase I: if we just actuated a VPA change the deployment is rolling
-    # — wait for the new pods to be Ready before probing, otherwise the
-    # probe hits half-restarted pods and records timeouts.
-    probe_wait = max(0, PROBE_AT_S - 30 - recommendation_latency_s)
-    if probe_wait > 0:
-        time.sleep(probe_wait)
+    # Probe latency. Reserve enough time for any final VPA rollout.
+    probe_wait_target = max(0, PROBE_AT_S - 30 - recommendation_latency_s)
+    if probe_wait_target > 0 and time.time() - t_load < PROBE_AT_S:
+        gap = PROBE_AT_S - (time.time() - t_load)
+        if gap > 0:
+            time.sleep(min(gap, probe_wait_target))
     if actuated and scaling_type in ("vpa", "both"):
         print(f"  [AutoSage] waiting for VPA rollout to finish …")
         kubectl("rollout", "status", f"deployment/{DEPLOYMENT}",
@@ -589,7 +719,7 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     print(f"  [AutoSage] running latency probe …")
     probe = probe_latency()
 
-    watcher.join(timeout=WINDOW_S - 30 - recommendation_latency_s - probe_wait + 10)
+    watcher.join(timeout=max(5, WINDOW_S - (time.time() - t_load) + 10))
     wrk.wait(timeout=30)
 
     # Phase-J task 1: re-apply HPA manifest (was deleted at trial start).
@@ -641,7 +771,29 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
             "recommendation_s": recommendation_latency_s,
             "actuation_s": actuation_s,
         },
-        "llm_model": rec_result.get("llm_model", "?"),
+        "llm_model": last_tick.get("llm_model", "?"),
+        # Phase-K: multi-tick history. n_ticks=1 when AUTOSAGE_MULTI_TICK_ENABLED
+        # is off (back-compat with v3-v12); the per-tick records let the eval
+        # show mid-trial decision changes.
+        "n_ticks": len(tick_history),
+        "tick_history": [
+            {
+                "tick_idx": t["tick_idx"],
+                "cpu_pct": t["cpu_pct"],
+                "action": t["action"],
+                "scaling_type": t["scaling_type"],
+                "target_replicas": t["target_replicas"],
+                "target_cpu": t["target_cpu"],
+                "target_memory": t["target_memory"],
+                "actuated": t["actuated"],
+                "mcda_agreement": t["mcda_agreement"],
+                "mcda_score_gap": t["mcda_score_gap"],
+                "mcda_override": t["mcda_override"],
+                "rec_latency_s": t["rec_latency_s"],
+                "llm_model": t["llm_model"],
+            }
+            for t in tick_history
+        ],
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
