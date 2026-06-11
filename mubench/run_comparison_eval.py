@@ -123,7 +123,12 @@ AUTOSAGE_MULTI_TICK_ENABLED = os.environ.get(
     "AUTOSAGE_MULTI_TICK_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
 AUTOSAGE_TICK_INTERVAL_S = int(os.environ.get("AUTOSAGE_TICK_INTERVAL_S", "30"))
 AUTOSAGE_MAX_TICKS = int(os.environ.get("AUTOSAGE_MAX_TICKS", "5"))
-N_RUNS           = 3
+# Phase K post-mortem: with N=3 the per-method CIs are ±14-26 pp,
+# so individual trial outliers swing the means by 15+ pp (e.g. HPA's
+# v12→v13 mean changed 20 pp mostly because trial 1 went from 55% to
+# 15% SLA). Env-gate so v14+ can run N=10 to tighten the picture
+# without editing the file.
+N_RUNS           = int(os.environ.get("N_RUNS", "3"))
 PROBE_REQUESTS   = 20
 # Phase J: SLA threshold is env-configurable so the multiclass workload
 # can run at 500ms (matching DeathStarBench / AWARE practice) while the
