@@ -135,6 +135,30 @@ AUTOSAGE_MAX_TICKS = int(os.environ.get("AUTOSAGE_MAX_TICKS", "5"))
 # 15% SLA). Env-gate so v14+ can run N=10 to tighten the picture
 # without editing the file.
 N_RUNS           = int(os.environ.get("N_RUNS", "3"))
+
+# Phase-L: three small fixes for the v17 failure modes (see Trial 10).
+# All env-gated, default OFF for v3-v17 reproducibility.
+#
+# Fix 1 — MCDA grace period: at tick 1, if the trial is still in the
+# first MCDA_GRACE_PERIOD_S seconds since wrk started, undo any MCDA
+# override (restore LLM's original action/target). Default 0 = no
+# grace, MCDA can override from tick 1.
+MCDA_GRACE_PERIOD_S = int(os.environ.get("MCDA_GRACE_PERIOD_S", "0"))
+#
+# Fix 2 — Rolling-p75 CPU smoothing: instead of the point-in-time CPU
+# sample at the moment of the advisor call, use the p75 over the last
+# METRICS_SMOOTHING_WINDOW_S seconds of samples collected during the
+# trial. Default OFF.
+METRICS_SMOOTHING_ENABLED = os.environ.get(
+    "METRICS_SMOOTHING_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+METRICS_SMOOTHING_WINDOW_S = int(os.environ.get("METRICS_SMOOTHING_WINDOW_S", "60"))
+#
+# Fix 3 — Async warm-start: kick off the LLM call as a background
+# thread; tick 1 actuates a fast heuristic. Tick 2+ checks the thread
+# and uses the LLM result once available. Default OFF.
+AUTOSAGE_ASYNC_WARM_START_ENABLED = os.environ.get(
+    "AUTOSAGE_ASYNC_WARM_START_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+
 PROBE_REQUESTS   = 20
 # Phase J: SLA threshold is env-configurable so the multiclass workload
 # can run at 500ms (matching DeathStarBench / AWARE practice) while the
@@ -474,6 +498,79 @@ def run_vpa_trial(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
 # ══════════════════════════════════════════════════════════════════════════════
 # METHOD 3 — AutoSage (LLM + MCDA)
 # ══════════════════════════════════════════════════════════════════════════════
+def _autosage_heuristic_decision(metrics: dict, current_replicas: int,
+                                  current_resources: dict,
+                                  state_info: dict | None = None) -> dict:
+    """Phase-L Fix 3: cheap rule-based decision used as a warm-start.
+
+    Runs in milliseconds. Returns a recommendation dict matching the
+    LLM's schema so the rest of the pipeline (MCDA, actuation) works
+    unchanged. The point is to give the cluster a sensible action at
+    T+31s without paying the LLM's ~90s call latency.
+    """
+    cpu = float(metrics.get("cpu_usage", 0) or 0)
+    mem = float(metrics.get("memory_usage", 0) or 0)
+    stype = (state_info or {}).get("type", "stateless")
+    rec = {
+        "action": "maintain",
+        "scaling_type": "hpa",
+        "target_replicas": current_replicas,
+        "target_cpu": None,
+        "target_memory": None,
+        "confidence": 0.6,
+        "reasoning": "Phase-L heuristic warm-start",
+        "mcda_validation": {},
+    }
+    if cpu > 70 and current_replicas < HPA_MAX:
+        rec["action"] = "scale_up"
+        rec["target_replicas"] = current_replicas + 1
+        rec["reasoning"] = f"heuristic: cpu={cpu:.0f}% > 70%, scale +1"
+    elif mem > 80 and stype == "stateful":
+        # Defer to existing VPA enforcement: bump cpu_request + memory_request by 1.5x
+        try:
+            cur_cpu_str = (current_resources or {}).get("cpu_request", "100m")
+            cur_mem_str = (current_resources or {}).get("memory_request", "128Mi")
+            cur_cpu_m = int(cur_cpu_str.rstrip("m") or "100")
+            cur_mem_mi = int(cur_mem_str.rstrip("Mi") or "128")
+            rec["scaling_type"] = "vpa"
+            rec["action"] = "scale_up"
+            rec["target_replicas"] = None
+            rec["target_cpu"] = f"{int(cur_cpu_m * 1.5)}m"
+            rec["target_memory"] = f"{int(cur_mem_mi * 1.5)}Mi"
+            rec["reasoning"] = f"heuristic: stateful mem={mem:.0f}% > 80%, VPA bump 1.5x"
+        except (ValueError, AttributeError):
+            pass  # fall through to maintain
+    elif cpu < 35 and current_replicas > HPA_MIN:
+        rec["action"] = "scale_down"
+        rec["target_replicas"] = current_replicas - 1
+        rec["reasoning"] = f"heuristic: cpu={cpu:.0f}% < 35%, scale -1"
+    return rec
+
+
+def _metric_smoothed(buffer: "list", window_s: float) -> dict:
+    """Phase-L Fix 2: compute rolling p75 over (t, cpu, mem) samples.
+
+    ``buffer`` is a list of ``(timestamp, cpu_pct, mem_pct)`` tuples
+    appended each tick. Returns a dict with ``cpu_usage`` and
+    ``memory_usage`` keys carrying the p75 over the last ``window_s``
+    seconds, or the most recent sample if too few samples exist.
+    """
+    if not buffer:
+        return {"cpu_usage": 0.0, "memory_usage": 0.0}
+    now = buffer[-1][0]
+    recent = [(c, m) for (t, c, m) in buffer if (now - t) <= window_s]
+    if len(recent) < 2:
+        # Not enough history; fall back to most recent point sample.
+        return {"cpu_usage": float(buffer[-1][1] or 0),
+                "memory_usage": float(buffer[-1][2] or 0)}
+    cpus = sorted(c for c, _ in recent)
+    mems = sorted(m for _, m in recent)
+    # p75 = value at the 75th percentile index
+    idx = max(0, int(round(len(cpus) * 0.75)) - 1)
+    return {"cpu_usage": float(cpus[idx]),
+            "memory_usage": float(mems[idx])}
+
+
 def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
     """Apply the recommendation against the cluster.
 
@@ -505,7 +602,13 @@ def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
 
 
 def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
-                   initial_replicas: int, cached_rec: dict, tick_idx: int) -> dict:
+                   initial_replicas: int, cached_rec: dict, tick_idx: int,
+                   metric_buffer: list | None = None,
+                   t_load_start: float | None = None,
+                   precomputed_rec: dict | None = None,
+                   precomputed_rec_latency: float | None = None,
+                   precomputed_llm_model: str | None = None,
+                   force_heuristic: bool = False) -> dict:
     """Run one advisor tick: collect metrics, get recommendation, actuate.
 
     Phase K (multi-tick AutoSage). If ``cached_rec`` is None, this is the
@@ -514,14 +617,75 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
     re-use the cached LLM recommendation but re-run MCDA validation
     against fresh metrics so the per-tick decision can adapt without
     paying another LLM call.
+
+    Phase L (June 2026): three new optional behaviours, all env-gated.
+    - ``metric_buffer``: shared list of (t, cpu, mem) samples across
+      ticks; when METRICS_SMOOTHING_ENABLED is set, the rolling p75
+      replaces the point-in-time CPU/memory passed to the advisor.
+    - ``t_load_start``: timestamp of wrk start, used by the MCDA
+      grace period to decide whether tick 1's override should
+      actuate or be undone.
+    - ``precomputed_rec``: a recommendation produced by an async
+      background LLM thread (Fix 3). When present and ``force_heuristic``
+      is False, this is used in place of running the advisor inline.
+    - ``force_heuristic``: when True, skip the LLM call entirely and
+      use the rule-based warm-start (Fix 3 tick-1 path).
     """
     t_metrics = time.time()
     current_metrics, forecast = collect_live_metrics(
         DEPLOYMENT, CPU_LIMITS[DEPLOYMENT], force_rising=True)
     metrics_s = round(time.time() - t_metrics, 3)
-    cpu_pct = current_metrics.get("cpu_usage", 0.0)
+    cpu_pct_raw = current_metrics.get("cpu_usage", 0.0)
+    mem_pct_raw = current_metrics.get("memory_usage", 0.0)
 
-    if cached_rec is None:
+    # Phase-L Fix 2: append raw sample to the rolling buffer; replace the
+    # values we pass to the advisor with the smoothed p75 over the last
+    # METRICS_SMOOTHING_WINDOW_S seconds.
+    cpu_pct = cpu_pct_raw
+    smoothed_active = False
+    if metric_buffer is not None:
+        metric_buffer.append((time.time(), cpu_pct_raw, mem_pct_raw))
+        if METRICS_SMOOTHING_ENABLED:
+            smoothed = _metric_smoothed(metric_buffer, METRICS_SMOOTHING_WINDOW_S)
+            current_metrics = dict(current_metrics)
+            current_metrics["cpu_usage"] = smoothed["cpu_usage"]
+            current_metrics["memory_usage"] = smoothed["memory_usage"]
+            cpu_pct = smoothed["cpu_usage"]
+            smoothed_active = True
+
+    decision_source = "llm"
+    current_resources_dict = {
+        "cpu_request": f"{CPU_REQUEST_M}m",
+        "cpu_limit": f"{CPU_LIMITS[DEPLOYMENT]}m",
+        "memory_request": "128Mi",
+        "memory_limit": "256Mi",
+    }
+
+    if force_heuristic:
+        # Phase-L Fix 3: tick-1 warm-start. Skip the LLM entirely;
+        # decide via the cheap rule. LLM may still be running on a
+        # background thread (run_autosage_trial spawns it). Subsequent
+        # ticks will pick up the LLM result via precomputed_rec.
+        print(f"  [AutoSage] tick {tick_idx}: heuristic warm-start (LLM still running)")
+        rec = _autosage_heuristic_decision(
+            current_metrics,
+            get_replica_count(DEPLOYMENT) or initial_replicas,
+            current_resources_dict,
+            state_info=None,
+        )
+        rec_latency = 0.0
+        llm_model = "(heuristic)"
+        decision_source = "heuristic"
+    elif precomputed_rec is not None:
+        # Phase-L Fix 3: the background LLM thread finished and produced
+        # a recommendation. Use it; let the harness's later MCDA grace /
+        # cached-rec logic handle subsequent ticks.
+        print(f"  [AutoSage] tick {tick_idx}: using precomputed LLM rec from async thread")
+        rec = dict(precomputed_rec)
+        rec_latency = precomputed_rec_latency or 0.0
+        llm_model = precomputed_llm_model or "(async)"
+        decision_source = "llm-async"
+    elif cached_rec is None:
         # First tick: full LLM + MCDA call.
         print(f"  [AutoSage] tick {tick_idx}: CPU={cpu_pct:.1f}%  firing LLM+MCDA …")
         t_rec = time.time()
@@ -539,12 +703,7 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
                 "scaling_status": "absent",
             },
             vpa_status={"exists": False},
-            current_resources={
-                "cpu_request": f"{CPU_REQUEST_M}m",
-                "cpu_limit": f"{CPU_LIMITS[DEPLOYMENT]}m",
-                "memory_request": "128Mi",
-                "memory_limit": "256Mi",
-            },
+            current_resources=current_resources_dict,
             current_replicas=get_replica_count(DEPLOYMENT) or initial_replicas,
             min_replicas=HPA_MIN,
             max_replicas=HPA_MAX,
@@ -558,6 +717,7 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         rec = dict(cached_rec)
         rec_latency = 0.0
         llm_model = "(cached)"
+        decision_source = "cached"
         try:
             mcda = getattr(advisor, "mcda_optimizer", None)
             if mcda is not None:
@@ -597,12 +757,38 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
             print(f"  [AutoSage] tick {tick_idx}: MCDA re-validation failed (non-fatal): {e}")
 
     mcda = rec.get("mcda_validation", {}) or {}
+
+    # Phase-L Fix 1: MCDA grace period at tick 1. If MCDA overrode the
+    # LLM during the grace window (first MCDA_GRACE_PERIOD_S seconds of
+    # the trial), undo the override by restoring LLM's original action
+    # and target. The mcda_validation dict still records the gap and
+    # should_override flag for analysis.
+    grace_undid_override = False
+    if (tick_idx == 1
+            and MCDA_GRACE_PERIOD_S > 0
+            and t_load_start is not None
+            and mcda.get("should_override")):
+        elapsed = time.time() - t_load_start
+        if elapsed < MCDA_GRACE_PERIOD_S:
+            llm_action = mcda.get("llm_action")
+            llm_target = mcda.get("llm_target")
+            if llm_action is not None and llm_target is not None:
+                rec["action"] = llm_action
+                rec["target_replicas"] = llm_target
+                grace_undid_override = True
+                print(f"  [AutoSage] tick {tick_idx}: Phase-L grace period "
+                      f"({elapsed:.0f}s < {MCDA_GRACE_PERIOD_S}s) — "
+                      f"restored LLM's {llm_action}→{llm_target}")
+
     print(f"  [AutoSage] tick {tick_idx}: action={rec.get('action')} "
           f"type={rec.get('scaling_type')} target_reps={rec.get('target_replicas')} "
           f"cpu={rec.get('target_cpu')} mem={rec.get('target_memory')} "
           f"gap={mcda.get('score_difference', 0):.4f} "
-          f"override={mcda.get('should_override', False)} "
-          f"({rec_latency:.2f}s, {llm_model})")
+          f"override={mcda.get('should_override', False)}"
+          f"{' [GRACE-UNDONE]' if grace_undid_override else ''} "
+          f"({rec_latency:.2f}s, {llm_model})"
+          f"{' [smoothed]' if smoothed_active else ''}"
+          f"{f' [{decision_source}]' if decision_source != 'llm' else ''}")
 
     t_actuate = time.time()
     actuated = _autosage_actuate(rec, initial_replicas)
@@ -611,6 +797,7 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
     return {
         "tick_idx": tick_idx,
         "cpu_pct": cpu_pct,
+        "cpu_pct_raw": cpu_pct_raw,
         "action": rec.get("action", "maintain"),
         "scaling_type": rec.get("scaling_type", "hpa"),
         "target_replicas": rec.get("target_replicas"),
@@ -625,6 +812,12 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         "metrics_s": metrics_s,
         "actuation_s": actuation_s,
         "llm_model": llm_model,
+        # Phase-L: which path produced this rec (llm, llm-async, heuristic, cached)
+        # plus whether the grace period undid an MCDA override at tick 1, and
+        # whether p75 smoothing was active for the advisor inputs.
+        "decision_source": decision_source,
+        "grace_undid_override": grace_undid_override,
+        "smoothed": smoothed_active,
         "_raw_rec": rec,  # cached for subsequent ticks
     }
 
@@ -672,6 +865,63 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     # Wait 30s so there's real CPU signal before calling the advisor
     time.sleep(30)
 
+    # Phase-L: shared rolling-metric buffer (Fix 2). One per trial; the
+    # smoothing path reads the p75 over the last METRICS_SMOOTHING_WINDOW_S
+    # whenever METRICS_SMOOTHING_ENABLED is set.
+    metric_buffer: list = []
+
+    # Phase-L Fix 3: optionally spawn the LLM call on a background thread
+    # so tick 1 can actuate a heuristic warm-start immediately instead of
+    # waiting for the ~90s LLM response. The thread snapshot uses the
+    # metrics collected here; later ticks see fresh metrics through the
+    # normal _autosage_tick collection.
+    async_result_holder = {"rec_result": None, "latency_s": None}
+    async_thread = None
+    if AUTOSAGE_ASYNC_WARM_START_ENABLED:
+        async_metrics, async_forecast = collect_live_metrics(
+            DEPLOYMENT, CPU_LIMITS[DEPLOYMENT], force_rising=True)
+        # Seed the smoothing buffer so tick 1's p75 has at least one sample.
+        metric_buffer.append((time.time(),
+                              async_metrics.get("cpu_usage", 0.0),
+                              async_metrics.get("memory_usage", 0.0)))
+
+        def _run_async_llm():
+            t0 = time.time()
+            try:
+                result = advisor.get_intelligent_recommendation(
+                    deployment_name=DEPLOYMENT,
+                    namespace=NAMESPACE,
+                    current_metrics=async_metrics,
+                    forecast=async_forecast,
+                    hpa_status={
+                        "exists": False,
+                        "current_replicas": get_replica_count(DEPLOYMENT) or initial_replicas,
+                        "desired_replicas": initial_replicas,
+                        "target_cpu": HPA_CPU_TARGET,
+                        "target_memory": 80,
+                        "scaling_status": "absent",
+                    },
+                    vpa_status={"exists": False},
+                    current_resources={
+                        "cpu_request": f"{CPU_REQUEST_M}m",
+                        "cpu_limit": f"{CPU_LIMITS[DEPLOYMENT]}m",
+                        "memory_request": "128Mi",
+                        "memory_limit": "256Mi",
+                    },
+                    current_replicas=get_replica_count(DEPLOYMENT) or initial_replicas,
+                    min_replicas=HPA_MIN,
+                    max_replicas=HPA_MAX,
+                    hpa_manager=hpa_manager,
+                )
+                async_result_holder["rec_result"] = result
+                async_result_holder["latency_s"] = round(time.time() - t0, 2)
+            except Exception as e:  # noqa: BLE001
+                print(f"  [AutoSage] async LLM thread failed: {e}")
+
+        async_thread = threading.Thread(target=_run_async_llm, daemon=True)
+        async_thread.start()
+        print(f"  [AutoSage] Phase-L async warm-start: LLM thread spawned at T+30s")
+
     # Phase-K: optional multi-tick path. Tick 1 is the same single-fire
     # advisor call we have always done; subsequent ticks (only when
     # AUTOSAGE_MULTI_TICK_ENABLED) re-evaluate MCDA against fresh metrics
@@ -680,9 +930,18 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     tick_history = []
     cached_rec = None
     first_tick = _autosage_tick(advisor, hpa_manager, initial_replicas,
-                                 cached_rec=None, tick_idx=1)
+                                 cached_rec=None, tick_idx=1,
+                                 metric_buffer=metric_buffer,
+                                 t_load_start=t_load,
+                                 force_heuristic=AUTOSAGE_ASYNC_WARM_START_ENABLED)
     tick_history.append(first_tick)
-    cached_rec = first_tick["_raw_rec"]
+    # In async warm-start mode, tick 1 is the heuristic; keep cached_rec
+    # at None so the multi-tick loop picks up the LLM result as soon as
+    # the background thread finishes.
+    if first_tick.get("decision_source") == "heuristic":
+        cached_rec = None
+    else:
+        cached_rec = first_tick["_raw_rec"]
 
     # Trial-end deadline: leave 30s of headroom before the probe so the
     # rollout from any actuation has a chance to land.
@@ -695,13 +954,38 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
             wait = next_tick_at - time.time()
             if wait > 0:
                 time.sleep(wait)
+
+            # Phase-L Fix 3: in async mode, ticks 2+ start by asking
+            # whether the LLM thread is done. If yes, this tick uses
+            # the LLM result via precomputed_rec; if not, we keep
+            # running the heuristic until it lands.
+            precomputed_rec = None
+            precomputed_rec_latency = None
+            precomputed_llm_model = None
+            force_heuristic = False
+            if cached_rec is None and async_thread is not None:
+                if not async_thread.is_alive() and async_result_holder["rec_result"] is not None:
+                    result = async_result_holder["rec_result"]
+                    precomputed_rec = result.get("recommendation", {})
+                    precomputed_rec_latency = async_result_holder["latency_s"]
+                    precomputed_llm_model = result.get("llm_model", "?")
+                else:
+                    force_heuristic = True
+
             tick = _autosage_tick(advisor, hpa_manager, initial_replicas,
                                    cached_rec=cached_rec,
-                                   tick_idx=len(tick_history) + 1)
+                                   tick_idx=len(tick_history) + 1,
+                                   metric_buffer=metric_buffer,
+                                   t_load_start=t_load,
+                                   precomputed_rec=precomputed_rec,
+                                   precomputed_rec_latency=precomputed_rec_latency,
+                                   precomputed_llm_model=precomputed_llm_model,
+                                   force_heuristic=force_heuristic)
             tick_history.append(tick)
-            # Use the latest decision as the cache base, so an MCDA override
-            # propagates forward instead of being lost on the next tick.
-            cached_rec = tick["_raw_rec"]
+            # Heuristic ticks don't seed the LLM cache; everything else does.
+            ds = tick.get("decision_source", "llm")
+            if ds != "heuristic":
+                cached_rec = tick["_raw_rec"]
             next_tick_at = time.time() + AUTOSAGE_TICK_INTERVAL_S
 
     # The "final" trial-level decision is whatever the last tick produced.
@@ -791,6 +1075,7 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
             {
                 "tick_idx": t["tick_idx"],
                 "cpu_pct": t["cpu_pct"],
+                "cpu_pct_raw": t.get("cpu_pct_raw"),
                 "action": t["action"],
                 "scaling_type": t["scaling_type"],
                 "target_replicas": t["target_replicas"],
@@ -802,6 +1087,10 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
                 "mcda_override": t["mcda_override"],
                 "rec_latency_s": t["rec_latency_s"],
                 "llm_model": t["llm_model"],
+                # Phase-L provenance
+                "decision_source": t.get("decision_source", "llm"),
+                "grace_undid_override": t.get("grace_undid_override", False),
+                "smoothed": t.get("smoothed", False),
             }
             for t in tick_history
         ],
