@@ -96,7 +96,13 @@ DEPLOYMENT       = _cfg["deployment"]
 SERVICES         = list(_cfg["services"])
 CPU_REQUEST_M    = 125             # millicores per pod (requests)
 CPU_LIMITS       = dict(_cfg["cpu_limits"])
-WRK_PATH         = _cfg["wrk_path"]
+# Phase-K v15 post-mortem: c=24 didn't break VPA because the bottleneck
+# was queueing, which VPA handles. To attack VPA's per-pod CPU ceiling
+# we need to override the per-request work, which lives in the ?size=N
+# query string on the multiclass workload. Env-gate so v16+ can run with
+# WRK_PATH=/compute?size=130 without editing this file. Default still
+# comes from the WORKLOAD_CFGS entry for v3-v15 reproducibility.
+WRK_PATH         = os.environ.get("WRK_PATH", _cfg["wrk_path"])
 SVC_NAME         = _cfg["svc_name"]
 MANIFEST_DIR     = _cfg["manifest_dir"]
 HPA_MIN          = 2
@@ -1192,7 +1198,9 @@ def _apply_workload(name: str) -> None:
     DEPLOYMENT = cfg["deployment"]
     SERVICES = list(cfg["services"])
     CPU_LIMITS = dict(cfg["cpu_limits"])
-    WRK_PATH = cfg["wrk_path"]
+    # Phase-K v16: respect the WRK_PATH env var even after --workload
+    # rebinding so v16 can run with WRK_PATH=/compute?size=130.
+    WRK_PATH = os.environ.get("WRK_PATH", cfg["wrk_path"])
     SVC_NAME = cfg["svc_name"]
     MANIFEST_DIR = cfg["manifest_dir"]
     HPA_MANIFEST_PATH = os.path.join(MANIFEST_DIR, "hpa.yaml")
