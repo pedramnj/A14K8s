@@ -953,7 +953,26 @@ class LLMAutoscalingAdvisor:
                 logger.warning(f"✅✅✅ STATELESS DETECTED! (detected={is_stateless_detected}, in_note={is_stateless_in_note}, uppercase={is_stateless_uppercase}) LLM recommended: {scaling_type}")
                 logger.warning(f"🔍🔍🔍 ENFORCEMENT: Checking if correction needed. scaling_type={scaling_type}, is_stateless_detected={is_stateless_detected}")
                 
-                if scaling_type in ['vpa', 'both']:
+                # Phase-M: env-gated escape that lets stateless CPU-bound
+                # workloads receive VPA/both when HPA is exhausted
+                # (replicas at or above max) AND CPU is high. Default OFF
+                # so v3-v19 reproduce unchanged.
+                cpu_usage_now = current_metrics.get('cpu_usage', 0) if current_metrics else 0
+                current_reps_now = context.get('deployment', {}).get('current_replicas', 1) if context else 1
+                phase_m_stateless_vpa = (
+                    os.environ.get('AUTOSAGE_STATELESS_VPA_ENABLED', '0').strip().lower() in {'1', 'true', 'yes'}
+                    and cpu_usage_now > float(os.environ.get('STATELESS_VPA_CPU_THRESHOLD', '70'))
+                    and (current_reps_now >= max_replicas
+                         or scaling_type == 'both')  # "both" path uses HPA headroom + VPA together
+                )
+                if scaling_type in ['vpa', 'both'] and phase_m_stateless_vpa:
+                    logger.warning(
+                        f"✅ Phase-M: passing stateless {scaling_type.upper()} through "
+                        f"(cpu={cpu_usage_now:.1f}%, replicas={current_reps_now}/{max_replicas}, "
+                        f"target_cpu={recommendation.get('target_cpu')}, "
+                        f"target_memory={recommendation.get('target_memory')})"
+                    )
+                elif scaling_type in ['vpa', 'both']:
                     logger.warning(f"⚠️⚠️⚠️ FORCING HPA: User selected/detected STATELESS but LLM recommended {scaling_type.upper()}. Correcting to HPA.")
                     logger.warning(f"🔍🔍🔍 ENFORCEMENT: BEFORE correction - scaling_type={recommendation.get('scaling_type')}, target_cpu={recommendation.get('target_cpu')}, target_memory={recommendation.get('target_memory')}")
                     recommendation['scaling_type'] = 'hpa'

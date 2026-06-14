@@ -159,6 +159,18 @@ METRICS_SMOOTHING_WINDOW_S = int(os.environ.get("METRICS_SMOOTHING_WINDOW_S", "6
 AUTOSAGE_ASYNC_WARM_START_ENABLED = os.environ.get(
     "AUTOSAGE_ASYNC_WARM_START_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
 
+# Phase-M: give AutoSage a vertical-scaling path on stateless CPU-bound
+# workloads so it can compete with native VPA in the regime where joint
+# axes matter (size=105-110, between v14 easy and v17 hard). Default
+# OFF; v3-v19 reproduce unchanged.
+AUTOSAGE_STATELESS_VPA_ENABLED = os.environ.get(
+    "AUTOSAGE_STATELESS_VPA_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+STATELESS_VPA_CPU_THRESHOLD   = float(os.environ.get("STATELESS_VPA_CPU_THRESHOLD",   "70"))
+STATELESS_BOTH_CPU_THRESHOLD  = float(os.environ.get("STATELESS_BOTH_CPU_THRESHOLD",  "80"))
+STATELESS_VPA_CPU_MULTIPLIER  = float(os.environ.get("STATELESS_VPA_CPU_MULTIPLIER",  "1.5"))
+STATELESS_BOTH_CPU_MULTIPLIER = float(os.environ.get("STATELESS_BOTH_CPU_MULTIPLIER", "1.3"))
+STATELESS_VPA_HEADROOM_FRAC   = float(os.environ.get("STATELESS_VPA_HEADROOM_FRAC",   "0.15"))
+
 PROBE_REQUESTS   = 20
 # Phase J: SLA threshold is env-configurable so the multiclass workload
 # can run at 500ms (matching DeathStarBench / AWARE practice) while the
@@ -521,25 +533,78 @@ def _autosage_heuristic_decision(metrics: dict, current_replicas: int,
         "reasoning": "Phase-L heuristic warm-start",
         "mcda_validation": {},
     }
-    if cpu > 70 and current_replicas < HPA_MAX:
+
+    # Parse current CPU request once (used by Phase-M paths). Default to
+    # the manifest baseline if the field is missing or malformed.
+    try:
+        cur_cpu_str = (current_resources or {}).get("cpu_request", "100m")
+        cur_mem_str = (current_resources or {}).get("memory_request", "128Mi")
+        cpu_lim_str = (current_resources or {}).get("cpu_limit",     "300m")
+        cur_cpu_m  = int(cur_cpu_str.rstrip("m") or "100")
+        cur_mem_mi = int(cur_mem_str.rstrip("Mi") or "128")
+        cpu_lim_m  = int(cpu_lim_str.rstrip("m")  or "300")
+    except (ValueError, AttributeError):
+        cur_cpu_m, cur_mem_mi, cpu_lim_m = 100, 128, 300
+
+    # Phase-M: stateless CPU-bound paths. Fire only when the env knob is
+    # on AND the workload looks stateless. Two paths in priority order:
+    #   (a) "both" --- when HPA still has headroom AND vertical has
+    #       headroom, scale both axes at once. This is what neither pure
+    #       HPA nor pure VPA can do.
+    #   (b) "vpa"  --- when HPA is exhausted (already at HPA_MAX) but
+    #       vertical still has headroom, bump CPU per pod.
+    # Falls through to the existing HPA / stateful-VPA / scale-down
+    # branches when conditions don't match (Phase-L behaviour preserved).
+    phase_m_active = AUTOSAGE_STATELESS_VPA_ENABLED and stype == "stateless"
+    cpu_headroom_frac = max(0.0, (cpu_lim_m - cur_cpu_m) / cpu_lim_m) if cpu_lim_m > 0 else 0.0
+    has_cpu_headroom = cpu_headroom_frac > STATELESS_VPA_HEADROOM_FRAC
+
+    if (phase_m_active
+            and cpu > STATELESS_BOTH_CPU_THRESHOLD
+            and current_replicas < HPA_MAX
+            and has_cpu_headroom):
+        # Both-axes path: more pods AND bigger pods.
+        new_cpu_m = min(cpu_lim_m, int(cur_cpu_m * STATELESS_BOTH_CPU_MULTIPLIER))
+        rec["action"] = "scale_up"
+        rec["scaling_type"] = "both"
+        rec["target_replicas"] = current_replicas + 1
+        rec["target_cpu"] = f"{new_cpu_m}m"
+        rec["target_memory"] = f"{int(cur_mem_mi * STATELESS_BOTH_CPU_MULTIPLIER)}Mi"
+        rec["reasoning"] = (
+            f"Phase-M heuristic: stateless cpu={cpu:.0f}% > {STATELESS_BOTH_CPU_THRESHOLD:.0f}%, "
+            f"replicas {current_replicas}/{HPA_MAX} (headroom), "
+            f"vertical headroom={cpu_headroom_frac*100:.0f}% -> scale BOTH (+1 replica, "
+            f"cpu {cur_cpu_m}m->{new_cpu_m}m)"
+        )
+    elif (phase_m_active
+            and cpu > STATELESS_VPA_CPU_THRESHOLD
+            and current_replicas >= HPA_MAX
+            and has_cpu_headroom):
+        # Vertical-only path: HPA is exhausted, vertical still has headroom.
+        new_cpu_m = min(cpu_lim_m, int(cur_cpu_m * STATELESS_VPA_CPU_MULTIPLIER))
+        rec["action"] = "scale_up"
+        rec["scaling_type"] = "vpa"
+        rec["target_replicas"] = None
+        rec["target_cpu"] = f"{new_cpu_m}m"
+        rec["target_memory"] = f"{int(cur_mem_mi * STATELESS_VPA_CPU_MULTIPLIER)}Mi"
+        rec["reasoning"] = (
+            f"Phase-M heuristic: stateless cpu={cpu:.0f}% > {STATELESS_VPA_CPU_THRESHOLD:.0f}%, "
+            f"HPA exhausted at {current_replicas}/{HPA_MAX}, "
+            f"vertical headroom={cpu_headroom_frac*100:.0f}% -> VPA bump cpu "
+            f"{cur_cpu_m}m->{new_cpu_m}m"
+        )
+    elif cpu > 70 and current_replicas < HPA_MAX:
         rec["action"] = "scale_up"
         rec["target_replicas"] = current_replicas + 1
         rec["reasoning"] = f"heuristic: cpu={cpu:.0f}% > 70%, scale +1"
     elif mem > 80 and stype == "stateful":
-        # Defer to existing VPA enforcement: bump cpu_request + memory_request by 1.5x
-        try:
-            cur_cpu_str = (current_resources or {}).get("cpu_request", "100m")
-            cur_mem_str = (current_resources or {}).get("memory_request", "128Mi")
-            cur_cpu_m = int(cur_cpu_str.rstrip("m") or "100")
-            cur_mem_mi = int(cur_mem_str.rstrip("Mi") or "128")
-            rec["scaling_type"] = "vpa"
-            rec["action"] = "scale_up"
-            rec["target_replicas"] = None
-            rec["target_cpu"] = f"{int(cur_cpu_m * 1.5)}m"
-            rec["target_memory"] = f"{int(cur_mem_mi * 1.5)}Mi"
-            rec["reasoning"] = f"heuristic: stateful mem={mem:.0f}% > 80%, VPA bump 1.5x"
-        except (ValueError, AttributeError):
-            pass  # fall through to maintain
+        # Existing stateful-VPA path: bump cpu_request + memory_request by 1.5x.
+        rec["scaling_type"] = "vpa"
+        rec["action"] = "scale_up"
+        rec["target_replicas"] = None
+        rec["target_cpu"] = f"{int(cur_cpu_m * 1.5)}m"
+        rec["target_memory"] = f"{int(cur_mem_mi * 1.5)}Mi"
+        rec["reasoning"] = f"heuristic: stateful mem={mem:.0f}% > 80%, VPA bump 1.5x"
     elif cpu < 35 and current_replicas > HPA_MIN:
         rec["action"] = "scale_down"
         rec["target_replicas"] = current_replicas - 1
