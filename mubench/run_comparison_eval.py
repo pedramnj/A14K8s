@@ -601,6 +601,59 @@ def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
     return actuated
 
 
+def _mcda_revalidate_against_fresh(rec: dict, advisor, current_metrics: dict,
+                                    forecast: dict, cpu_pct: float,
+                                    initial_replicas: int, tick_idx: int) -> None:
+    """Re-run MCDA against fresh metrics and mutate ``rec`` in place.
+
+    Phase-L.1: shared between the cached_rec branch (Phase K) and the
+    precomputed_rec branch (Phase L Fix 3). The async-warm-start path
+    used to trust the LLM's pick verbatim, even though the LLM was
+    fed a snapshot from T+30s; if real CPU spiked by the time the
+    result lands, the trial gets stuck on a stale ``maintain``. Running
+    the same MCDA re-validation the cached path does corrects this.
+    """
+    try:
+        mcda = getattr(advisor, "mcda_optimizer", None)
+        if mcda is None:
+            return
+        current_reps_now = get_replica_count(DEPLOYMENT) or initial_replicas
+        validation = mcda.validate_llm_decision(
+            llm_action=rec.get("action", "maintain"),
+            llm_target=rec.get("target_replicas") or current_reps_now,
+            current_replicas=current_reps_now,
+            min_replicas=HPA_MIN,
+            max_replicas=HPA_MAX,
+            metrics={
+                "cpu_percent": cpu_pct,
+                "memory_percent": current_metrics.get("memory_usage", 0),
+            },
+            forecast={
+                "predicted_cpu": forecast.get("cpu", {}).get("predictions", [cpu_pct] * 6) if isinstance(forecast, dict) else [cpu_pct] * 6,
+                "predicted_memory": forecast.get("memory", {}).get("predictions", [current_metrics.get("memory_usage", 0)] * 6) if isinstance(forecast, dict) else [current_metrics.get("memory_usage", 0)] * 6,
+                "cpu_trend": "stable",
+            },
+            agreement_threshold=getattr(advisor, "mcda_agreement_threshold", 0.20),
+        )
+        rec["mcda_validation"] = {
+            "agreement": validation.get("agreement"),
+            "llm_action": validation.get("llm_action", rec.get("action")),
+            "llm_target": validation.get("llm_target", rec.get("target_replicas")),
+            "llm_score": validation.get("llm_score"),
+            "mcda_score": validation.get("mcda_score"),
+            "mcda_target": validation.get("mcda_target"),
+            "score_difference": validation.get("score_difference"),
+            "should_override": validation.get("should_override"),
+            "validation_note": validation.get("validation_note"),
+        }
+        if validation.get("should_override"):
+            rec["target_replicas"] = validation.get("mcda_target")
+            rec["action"] = validation.get("mcda_action", rec.get("action", "maintain"))
+            rec["scaling_type"] = validation.get("mcda_scaling_type", rec.get("scaling_type", "hpa"))
+    except Exception as e:  # noqa: BLE001
+        print(f"  [AutoSage] tick {tick_idx}: MCDA re-validation failed (non-fatal): {e}")
+
+
 def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
                    initial_replicas: int, cached_rec: dict, tick_idx: int,
                    metric_buffer: list | None = None,
@@ -678,13 +731,18 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         decision_source = "heuristic"
     elif precomputed_rec is not None:
         # Phase-L Fix 3: the background LLM thread finished and produced
-        # a recommendation. Use it; let the harness's later MCDA grace /
-        # cached-rec logic handle subsequent ticks.
+        # a recommendation. The LLM saw a snapshot from when the thread
+        # was spawned (~T+30s); by the time we use it real CPU may have
+        # spiked. Phase-L.1: re-run MCDA against fresh metrics so a
+        # stale-snapshot "maintain" gets overridden if the cluster
+        # actually needs more capacity now (v18 Trial 3 root cause).
         print(f"  [AutoSage] tick {tick_idx}: using precomputed LLM rec from async thread")
         rec = dict(precomputed_rec)
         rec_latency = precomputed_rec_latency or 0.0
         llm_model = precomputed_llm_model or "(async)"
         decision_source = "llm-async"
+        _mcda_revalidate_against_fresh(rec, advisor, current_metrics, forecast,
+                                       cpu_pct, initial_replicas, tick_idx)
     elif cached_rec is None:
         # First tick: full LLM + MCDA call.
         print(f"  [AutoSage] tick {tick_idx}: CPU={cpu_pct:.1f}%  firing LLM+MCDA …")
@@ -718,43 +776,8 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         rec_latency = 0.0
         llm_model = "(cached)"
         decision_source = "cached"
-        try:
-            mcda = getattr(advisor, "mcda_optimizer", None)
-            if mcda is not None:
-                current_reps_now = get_replica_count(DEPLOYMENT) or initial_replicas
-                validation = mcda.validate_llm_decision(
-                    llm_action=rec.get("action", "maintain"),
-                    llm_target=rec.get("target_replicas") or current_reps_now,
-                    current_replicas=current_reps_now,
-                    min_replicas=HPA_MIN,
-                    max_replicas=HPA_MAX,
-                    metrics={
-                        "cpu_percent": cpu_pct,
-                        "memory_percent": current_metrics.get("memory_usage", 0),
-                    },
-                    forecast={
-                        "predicted_cpu": forecast.get("cpu", {}).get("predictions", [cpu_pct] * 6) if isinstance(forecast, dict) else [cpu_pct] * 6,
-                        "predicted_memory": forecast.get("memory", {}).get("predictions", [current_metrics.get("memory_usage", 0)] * 6) if isinstance(forecast, dict) else [current_metrics.get("memory_usage", 0)] * 6,
-                        "cpu_trend": "stable",
-                    },
-                    agreement_threshold=getattr(advisor, "mcda_agreement_threshold", 0.20),
-                )
-                rec["mcda_validation"] = {
-                    "agreement": validation.get("agreement"),
-                    "llm_score": validation.get("llm_score"),
-                    "mcda_score": validation.get("mcda_score"),
-                    "mcda_target": validation.get("mcda_target"),
-                    "score_difference": validation.get("score_difference"),
-                    "should_override": validation.get("should_override"),
-                    "validation_note": validation.get("validation_note"),
-                }
-                # If MCDA overrides, swap the action to its preferred choice.
-                if validation.get("should_override"):
-                    rec["target_replicas"] = validation.get("mcda_target")
-                    rec["action"] = validation.get("mcda_action", rec.get("action", "maintain"))
-                    rec["scaling_type"] = validation.get("mcda_scaling_type", rec.get("scaling_type", "hpa"))
-        except Exception as e:  # noqa: BLE001
-            print(f"  [AutoSage] tick {tick_idx}: MCDA re-validation failed (non-fatal): {e}")
+        _mcda_revalidate_against_fresh(rec, advisor, current_metrics, forecast,
+                                       cpu_pct, initial_replicas, tick_idx)
 
     mcda = rec.get("mcda_validation", {}) or {}
 
