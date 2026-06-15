@@ -1767,13 +1767,26 @@ class LLMAutoscalingAdvisor:
                 
                 details_str = ', '.join(str(d) for d in details if d) if details else 'No specific details'
                 
+                # Phase M (env-gated): soften the "MUST HPA" language so
+                # the LLM can emit VPA/both when HPA is exhausted but
+                # vertical headroom exists. Outside the saturation case
+                # the original instruction is preserved verbatim.
+                phase_m_on = os.environ.get('AUTOSAGE_STATELESS_VPA_ENABLED', '0').strip().lower() in {'1', 'true', 'yes'}
+                hpa_clause = (
+                    "**Prefer HPA (horizontal scaling). EXCEPTION: if current_replicas == max_replicas "
+                    "AND CPU > 70% AND cpu_request < cpu_limit, recommend VPA. "
+                    "If current_replicas < max_replicas AND CPU > 80% AND cpu_request < cpu_limit, "
+                    "recommend \"both\" (one more replica AND bump cpu_request/memory_request).**"
+                ) if phase_m_on else (
+                    "**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                )
                 if has_evidence:
                     # Stateless detected from actual evidence (Redis, DB, etc.)
                     state_note = (
                         f"✅✅✅ CRITICAL: State Management Detected ({state_info['source']}, confidence: {state_info['confidence']}): "
                         f"Application is STATELESS - state is externalized (Redis, DB, external cache, etc.) as detected from deployment configuration. "
                         f"Details: {details_str}. "
-                        f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                        f"{hpa_clause}"
                     )
                 else:
                     # Stateless detected from annotation only (no evidence of Redis/DB)
@@ -1782,7 +1795,7 @@ class LLMAutoscalingAdvisor:
                         f"Application is marked as STATELESS (from user annotation or auto-detection). "
                         f"**DO NOT assume** Redis, DB, or external cache exists unless explicitly mentioned in deployment details. "
                         f"Details: {details_str}. "
-                        f"**YOU MUST RECOMMEND HPA (horizontal scaling) - DO NOT recommend VPA for stateless applications.**"
+                        f"{hpa_clause}"
                     )
             elif state_info['type'] == 'stateful':
                 details_str = ', '.join(str(d) for d in details if d) if details else 'No specific details'
@@ -1831,7 +1844,51 @@ class LLMAutoscalingAdvisor:
         return context
     
     def _create_system_prompt(self) -> str:
-        """Create system prompt for LLM"""
+        """Create system prompt for LLM.
+
+        Phase M (env-gated): when AUTOSAGE_STATELESS_VPA_ENABLED=1, append
+        a clause that permits VPA/both on stateless workloads when HPA is
+        exhausted (replicas at max) AND vertical headroom exists
+        (cpu_request below cpu_limit). The base prompt's HPA-for-stateless
+        rule still holds in the unsaturated case; this is a tightly
+        scoped exception, not a blanket override.
+        """
+        base = self._create_system_prompt_base()
+        if os.environ.get('AUTOSAGE_STATELESS_VPA_ENABLED', '0').strip().lower() in {'1', 'true', 'yes'}:
+            return base + self._phase_m_system_clause()
+        return base
+
+    def _phase_m_system_clause(self) -> str:
+        """Phase M append: scoped exception to the stateless->HPA rule."""
+        return """
+
+**PHASE M EXCEPTION (stateless saturation handling):**
+The "stateless -> HPA" rule above has ONE important exception. For
+stateless CPU-bound applications:
+
+- If `current_replicas == max_replicas` (HPA is exhausted, cannot add more pods)
+  AND CPU usage is high (>70%)
+  AND `cpu_request` is below `cpu_limit` (vertical headroom available),
+  THEN you SHOULD recommend `"scaling_type": "vpa"` to bump `cpu_request` and
+  `memory_request` toward the limit. Adding replicas is no longer possible;
+  giving each existing pod more CPU is the only remaining axis.
+
+- If `current_replicas < max_replicas` AND CPU usage is very high (>80%)
+  AND `cpu_request` is below `cpu_limit`,
+  THEN you SHOULD recommend `"scaling_type": "both"` -- add one replica
+  AND bump `cpu_request` and `memory_request`. This joint move is unique
+  to AutoSage; HPA alone and VPA alone cannot do it. Use it on stateless
+  CPU-bound workloads when a single axis is not enough.
+
+When the Phase M exception triggers, set `target_replicas` (for the
+`both` case), `target_cpu` (e.g., "200m"), and `target_memory` (e.g.,
+"192Mi") in the response.
+
+Outside these saturation conditions the original rule holds:
+stateless -> HPA, scale by replicas only."""
+
+    def _create_system_prompt_base(self) -> str:
+        """Base system prompt for LLM (Phase M append handled separately)."""
         return """You are an expert Kubernetes autoscaling advisor with deep knowledge of:
 - Resource optimization and cost management
 - Performance requirements and SLA considerations
@@ -1932,7 +1989,7 @@ Respond in JSON format with:
 {context.get('state_management_note', 'No explicit state management information available. DO NOT assume external state (Redis, DB) unless explicitly mentioned.')}
 
 **State Decision:**
-- STATELESS/externalized state → HPA
+- STATELESS/externalized state → HPA (EXCEPT when saturated; see Phase M exception in system prompt if enabled)
 - STATEFUL/internal state → VPA
 - Unknown → VPA (safer)
 
