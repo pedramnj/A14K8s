@@ -45,9 +45,14 @@ spec:
         ai4k8s.io/state-management: "stateful"
     spec:
       initContainers:
+      # Idempotent: numpy lives on a node hostPath that persists across pod
+      # recreations, so a VPA actuation (which recreates pods) does NOT pay
+      # a fresh ~30-60s pip install — only the very first pod installs it.
+      # Without this, every VPA rollout stalled past the rollout-status
+      # budget and crashed the eval (Phase-O.1 first run).
       - name: install-numpy
         image: python:3.11-slim
-        command: ["pip", "install", "--quiet", "--target", "/extra-pkgs", "numpy"]
+        command: ["sh", "-c", "test -d /extra-pkgs/numpy || pip install --quiet --target /extra-pkgs numpy"]
         volumeMounts:
         - name: extra-pkgs
           mountPath: /extra-pkgs
@@ -91,7 +96,7 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 30
+          initialDelaySeconds: 20
           periodSeconds: 20
           timeoutSeconds: 5
           failureThreshold: 3
@@ -99,8 +104,8 @@ spec:
           httpGet:
             path: /healthz
             port: 8080
-          initialDelaySeconds: 15
-          periodSeconds: 10
+          initialDelaySeconds: 5
+          periodSeconds: 5
           timeoutSeconds: 5
       volumes:
       - name: code
@@ -109,5 +114,8 @@ spec:
           items:
           - key: stateful_compute_service.py
             path: stateful_compute_service.py
+      # hostPath so numpy persists across pod recreations (see initContainer).
       - name: extra-pkgs
-        emptyDir: {}
+        hostPath:
+          path: /opt/session-compute-pkgs
+          type: DirectoryOrCreate

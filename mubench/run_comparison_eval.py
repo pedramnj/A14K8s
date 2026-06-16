@@ -1227,8 +1227,14 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
             time.sleep(min(gap, probe_wait_target))
     if actuated and scaling_type in ("vpa", "both"):
         print(f"  [AutoSage] waiting for VPA rollout to finish …")
-        kubectl("rollout", "status", f"deployment/{DEPLOYMENT}",
-                "-n", NAMESPACE, "--timeout=60s", silent=True)
+        # Phase-O.1: never let a slow rollout crash the whole eval. A VPA
+        # resource change recreates pods; if readiness lags the timeout we
+        # proceed to probe the partially-rolled state rather than abort.
+        try:
+            kubectl("rollout", "status", f"deployment/{DEPLOYMENT}",
+                    "-n", NAMESPACE, "--timeout=90s", silent=True, timeout=100)
+        except subprocess.TimeoutExpired:
+            print(f"  [AutoSage] rollout status wait exceeded budget — proceeding to probe")
     print(f"  [AutoSage] running latency probe …")
     probe = probe_latency()
 
