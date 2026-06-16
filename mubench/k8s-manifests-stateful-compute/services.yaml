@@ -1,0 +1,20 @@
+# ClusterIP service for the Phase-O session-compute workload.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: session-compute
+  namespace: default
+  labels:
+    app: session-compute
+    app.kubernetes.io/part-of: mubench-stateful-compute
+    managed-by: ai4k8s
+spec:
+  type: ClusterIP
+  selector:
+    app: session-compute
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+    protocol: TCP

@@ -1,0 +1,28 @@
+# Native HPA for session-compute. min=2, max=4 (capped to preserve VM RAM
+# for Qwen + the other muBench workloads), CPU target 70% — the same
+# calibration as the CPU-chain / multiclass HPAs, so HPA's reconcile lag
+# during the AWARE payload shift is comparable across phases.
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: session-compute
+  namespace: default
+  labels:
+    app: session-compute
+    app.kubernetes.io/part-of: mubench-stateful-compute
+    managed-by: ai4k8s
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: session-compute
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

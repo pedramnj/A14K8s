@@ -87,6 +87,20 @@ WORKLOAD_CFGS = {
         "svc_name":       "compute",
         "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-multiclass"),
     },
+    "stateful_compute": {
+        # Phase O: stateful (in-pod session STORE → LLM emits VPA, like v23)
+        # AND CPU-bound (numpy eigh payload → CPU>=80% so the advisor's
+        # force-VPA path fires). wrk_path is the BASELINE small payload; the
+        # env-gated mid-trial shift (WRK_SHIFT_*) jumps it to the heavy
+        # payload partway through the window, the AWARE input-size stress
+        # that a 30s-window histogram VPA cannot track in time.
+        "deployment":     "session-compute",
+        "services":       ["session-compute"],
+        "cpu_limits":     {"session-compute": 300},
+        "wrk_path":       "/compute?size=50",
+        "svc_name":       "session-compute",
+        "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-stateful-compute"),
+    },
 }
 # Default is "cpu" for backward compatibility with every prior eval (v3-v8).
 # Argparse at the bottom of the file overrides this when --workload is passed.
@@ -105,6 +119,18 @@ CPU_LIMITS       = dict(_cfg["cpu_limits"])
 WRK_PATH         = os.environ.get("WRK_PATH", _cfg["wrk_path"])
 SVC_NAME         = _cfg["svc_name"]
 MANIFEST_DIR     = _cfg["manifest_dir"]
+# Phase-O: env-gated mid-trial AWARE payload shift. When enabled, wrk runs
+# the baseline small payload (WRK_BASE_PATH, defaults to WRK_PATH) for
+# WRK_SHIFT_AT_S seconds, then switches to the heavy payload (WRK_SHIFT_PATH)
+# for the rest of the window. Set PROBE_AT_S AFTER the shift so the latency
+# probe measures the heavy payload while a histogram/threshold autoscaler
+# calibrated on the small payload is still catching up. The probe and the
+# AutoScaleAI/all-method probes all use WRK_SHIFT_PATH when the shift is on,
+# so every method is measured in the same post-shift regime. Default OFF →
+# v3-v23 reproduce byte-identically.
+WRK_SHIFT_ENABLED = os.environ.get(
+    "WRK_SHIFT_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+WRK_SHIFT_AT_S    = int(os.environ.get("WRK_SHIFT_AT_S", "60"))
 HPA_MIN          = 2
 HPA_MAX          = 4
 HPA_CPU_TARGET   = 70              # %
@@ -113,7 +139,7 @@ WRK_CONNECTIONS  = int(os.environ.get("WRK_CONNECTIONS", "48"))
 WRK_DURATION     = os.environ.get("WRK_DURATION", "120s")
 WARMUP_S         = 15
 WINDOW_S         = 120
-PROBE_AT_S       = 90              # seconds into load window to probe latency
+PROBE_AT_S       = int(os.environ.get("PROBE_AT_S", "90"))  # seconds into load window to probe latency
 COOLDOWN_S       = 30
 # Phase K: env-gated so v13 can run with VPA_POLL_WINDOW=120 to match the
 # other methods' trial window. Default 300 preserves v3-v12 reproducibility.
@@ -234,12 +260,61 @@ def delete_vpa_if_exists(name: str):
     kubectl("delete", "vpa", name, "-n", NAMESPACE, "--ignore-not-found", silent=True)
 
 # ── Load generator ────────────────────────────────────────────────────────────
+def _parse_duration_s(d: str) -> int:
+    """Parse a wrk-style duration ('120s', '2m', '90') into seconds."""
+    d = str(d).strip().lower()
+    try:
+        if d.endswith("ms"):
+            return max(1, int(float(d[:-2]) / 1000))
+        if d.endswith("s"):
+            return int(float(d[:-1]))
+        if d.endswith("m"):
+            return int(float(d[:-1]) * 60)
+        return int(float(d))
+    except ValueError:
+        return WINDOW_S
+
+
+def _probe_path() -> str:
+    """The URL path the latency probe measures. Under the Phase-O shift the
+    probe targets the heavy (post-shift) payload so it captures the regime
+    the shift creates; otherwise the normal WRK_PATH."""
+    if WRK_SHIFT_ENABLED:
+        return os.environ.get("WRK_SHIFT_PATH", WRK_PATH)
+    return WRK_PATH
+
+
 def start_wrk(target_ip: str):
     """Launch wrk in background; return Popen handle and start timestamp.
 
-    Uses WRK_PATH (workload-specific) so this works for both the CPU chain
-    (/api/v1 on ingest) and the stateful workload (/allocate on session-cache).
+    Uses WRK_PATH (workload-specific) so this works for the CPU chain
+    (/api/v1 on ingest), the stateful workload (/allocate on session-cache),
+    and the multiclass compute service.
+
+    Phase-O: when WRK_SHIFT_ENABLED, wrk runs in two phases under a single
+    'sh -c' wrapper — the baseline small payload for WRK_SHIFT_AT_S seconds,
+    then the heavy payload for the remainder of WRK_DURATION. Each inner wrk
+    self-terminates on its own -d, so the wrapper exits without explicit
+    cleanup, matching the single-phase contract (callers use .pid/.wait()).
     """
+    if WRK_SHIFT_ENABLED:
+        base_path  = os.environ.get("WRK_BASE_PATH", WRK_PATH)
+        shift_path = os.environ.get("WRK_SHIFT_PATH", WRK_PATH)
+        total_s = _parse_duration_s(WRK_DURATION)
+        base_s  = max(1, min(WRK_SHIFT_AT_S, total_s - 1))
+        shift_s = max(1, total_s - base_s)
+        wrk_base  = (f"/usr/bin/wrk -t {WRK_THREADS} -c {WRK_CONNECTIONS} "
+                     f"-d {base_s}s http://{target_ip}:8080{base_path}")
+        wrk_shift = (f"/usr/bin/wrk -t {WRK_THREADS} -c {WRK_CONNECTIONS} "
+                     f"-d {shift_s}s http://{target_ip}:8080{shift_path}")
+        proc = subprocess.Popen(
+            ["sh", "-c", f"{wrk_base}; {wrk_shift}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(f"  [wrk] Phase-O shift: {base_path} for {base_s}s "
+              f"→ {shift_path} for {shift_s}s")
+        return proc, time.time()
+
     proc = subprocess.Popen(
         ["/usr/bin/wrk", "-t", str(WRK_THREADS), "-c", str(WRK_CONNECTIONS),
          "-d", WRK_DURATION, f"http://{target_ip}:8080{WRK_PATH}"],
@@ -257,7 +332,7 @@ def probe_latency() -> dict:
     curl_loop = (
         f"for i in $(seq 1 {PROBE_REQUESTS}); do "
         f"curl -s -o /dev/null -w '%{{time_total}} %{{http_code}}\\n' "
-        f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:8080{WRK_PATH} "
+        f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:8080{_probe_path()} "
         f"|| echo '5.0000 0'; done"
     )
     cmd = [

@@ -1,0 +1,113 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# session-compute Deployment for the Phase-O stateful + CPU-bound workload.
+#
+# Annotations:
+#   ai4k8s.io/state-management = stateful
+#     → advisor's state detector classifies this stateful; combined with
+#       the cpu-bound payload (CPU >= 80%) the force-VPA path at
+#       llm_autoscaling_advisor.py:847 fires → LLM emits VPA, same as v23.
+#   ai4k8s.io/predictive-autoscaling-enabled = true  → AutoSage-eligible.
+#   autosage.ai4k8s/monitor = true                   → monitoring loop watches it.
+#
+# Container: python:3.11-slim with numpy via initContainer (the muBench
+# CPU-chain pattern). Script mounted from the ConfigMap; no image build.
+#
+# cpu_limit=300m is deliberate: a GIL-bound eigh request throttled to a
+# third of a core means bumping cpu_request/limit (VPA) genuinely speeds
+# each request — so VPA is the correct axis here, and the LLM's VPA pick
+# is a good decision, not just a convention default.
+# ──────────────────────────────────────────────────────────────────────────────
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: session-compute
+  namespace: default
+  labels:
+    app: session-compute
+    app.kubernetes.io/part-of: mubench-stateful-compute
+    managed-by: ai4k8s
+  annotations:
+    ai4k8s.io/state-management: "stateful"
+    ai4k8s.io/predictive-autoscaling-enabled: "true"
+    autosage.ai4k8s/monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: session-compute
+  template:
+    metadata:
+      labels:
+        app: session-compute
+        app.kubernetes.io/part-of: mubench-stateful-compute
+      annotations:
+        ai4k8s.io/state-management: "stateful"
+    spec:
+      initContainers:
+      - name: install-numpy
+        image: python:3.11-slim
+        command: ["pip", "install", "--quiet", "--target", "/extra-pkgs", "numpy"]
+        volumeMounts:
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+      containers:
+      - name: session-compute
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        command: ["python3", "/app/stateful_compute_service.py"]
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SESSION_COMPUTE_PORT
+          value: "8080"
+        - name: COMPUTE_DEFAULT_SIZE
+          value: "50"
+        - name: COMPUTE_MAX_SIZE
+          value: "256"
+        - name: COMPUTE_WORK_MULTIPLIER
+          value: "1"
+        - name: SESSION_BLOB_BYTES
+          value: "8192"
+        - name: SESSION_MAX_HELD
+          value: "4096"
+        - name: PYTHONPATH
+          value: "/extra-pkgs"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: code
+          mountPath: /app/stateful_compute_service.py
+          subPath: stateful_compute_service.py
+        - name: extra-pkgs
+          mountPath: /extra-pkgs
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+      volumes:
+      - name: code
+        configMap:
+          name: session-compute-code
+          items:
+          - key: stateful_compute_service.py
+            path: stateful_compute_service.py
+      - name: extra-pkgs
+        emptyDir: {}
