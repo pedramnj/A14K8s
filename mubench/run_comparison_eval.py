@@ -362,6 +362,9 @@ def probe_latency() -> dict:
             "p95_s": round(p95, 4),
             "sla_violation_rate": round(violations / len(latencies), 4),
             "n_probes": len(latencies),
+            # Phase-O.1: keep the raw probe latencies so SLA can be
+            # re-scored at any threshold without re-running the eval.
+            "latencies": [round(l, 4) for l in latencies],
         }
     except subprocess.TimeoutExpired:
         kubectl("delete", "pod", probe_name, "--ignore-not-found",
@@ -514,6 +517,7 @@ def run_hpa_trial(ingest_ip: str, hpa_manager: HorizontalPodAutoscaler,
         "sla_violation_rate": probe.get("sla_violation_rate"),
         "cost_proxy": cost_proxy,
         "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -580,6 +584,7 @@ def run_vpa_trial(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
         "p95_latency_s": probe.get("p95_s"),
         "sla_violation_rate": probe.get("sla_violation_rate"),
         "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
     }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -711,6 +716,41 @@ def _metric_smoothed(buffer: "list", window_s: float) -> dict:
             "memory_usage": float(mems[idx])}
 
 
+# Phase-O.1: AutoSage VPA actuation used to set --requests only, leaving
+# cpu_limit pinned at the manifest value (300m). On a throttled compute
+# workload the pod was already burstable to its limit, so a request-only
+# bump barely raised actual CPU — unlike native k8s VPA, which raises the
+# limit too (up to max_cpu=1000m). That asymmetry made every stateful VPA
+# comparison (Phase I/N/O) unfair to AutoSage. When AUTOSAGE_VPA_SET_LIMITS
+# is on, AutoSage also raises --limits, proportional to the baseline
+# request:limit ratio and capped at native VPA's bounds. Default OFF →
+# v3-Phase-O reproduce byte-identically.
+AUTOSAGE_VPA_SET_LIMITS = os.environ.get(
+    "AUTOSAGE_VPA_SET_LIMITS", "0").strip().lower() in {"1", "true", "yes"}
+AUTOSAGE_VPA_CPU_LIMIT_RATIO = float(os.environ.get("AUTOSAGE_VPA_CPU_LIMIT_RATIO", "3.0"))
+AUTOSAGE_VPA_MEM_LIMIT_RATIO = float(os.environ.get("AUTOSAGE_VPA_MEM_LIMIT_RATIO", "2.0"))
+AUTOSAGE_VPA_MAX_CPU_M  = int(os.environ.get("AUTOSAGE_VPA_MAX_CPU_M",  "1000"))
+AUTOSAGE_VPA_MAX_MEM_MI = int(os.environ.get("AUTOSAGE_VPA_MAX_MEM_MI", "512"))
+
+
+def _parse_cpu_m(s: str) -> int:
+    s = str(s).strip()
+    if s.endswith("m"):
+        return int(float(s[:-1]))
+    return int(float(s) * 1000)
+
+
+def _parse_mem_mi(s: str) -> int:
+    s = str(s).strip()
+    if s.endswith("Mi"):
+        return int(float(s[:-2]))
+    if s.endswith("Gi"):
+        return int(float(s[:-2]) * 1024)
+    if s.endswith("Ki"):
+        return int(float(s[:-2]) / 1024)
+    return int(float(s))
+
+
 def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
     """Apply the recommendation against the cluster.
 
@@ -732,11 +772,21 @@ def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
     if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
         new_cpu = str(rec.get("target_cpu"))
         new_mem = str(rec.get("target_memory"))
+        set_args = [f"--requests=cpu={new_cpu},memory={new_mem}"]
+        if AUTOSAGE_VPA_SET_LIMITS:
+            # Raise the ceiling too, proportional to the baseline ratio,
+            # capped at native VPA's bounds. Limit is never below request.
+            req_cpu_m = _parse_cpu_m(new_cpu)
+            req_mem_mi = _parse_mem_mi(new_mem)
+            lim_cpu_m = max(req_cpu_m,
+                            min(int(req_cpu_m * AUTOSAGE_VPA_CPU_LIMIT_RATIO), AUTOSAGE_VPA_MAX_CPU_M))
+            lim_mem_mi = max(req_mem_mi,
+                             min(int(req_mem_mi * AUTOSAGE_VPA_MEM_LIMIT_RATIO), AUTOSAGE_VPA_MAX_MEM_MI))
+            set_args.append(f"--limits=cpu={lim_cpu_m}m,memory={lim_mem_mi}Mi")
         kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
-                f"--requests=cpu={new_cpu},memory={new_mem}",
-                "-n", NAMESPACE, silent=True)
+                *set_args, "-n", NAMESPACE, silent=True)
         print(f"  [AutoSage] set resources on deployment/{DEPLOYMENT}: "
-              f"cpu={new_cpu}, mem={new_mem}")
+              f"{' '.join(set_args)}")
         actuated = True
     return actuated
 
@@ -992,9 +1042,14 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     # Phase I: reset per-pod resources to the manifest baseline between
     # trials so each AutoSage run starts from the same point. Otherwise
     # a VPA actuation from trial N drifts the resource floor for trial N+1.
+    # Phase-O.1: when AutoSage also raises --limits, the reset must clear
+    # the limit too, else trial N's bumped ceiling leaks into trial N+1.
+    _reset_args = [f"--requests=cpu={CPU_REQUEST_M}m,memory=128Mi"]
+    if AUTOSAGE_VPA_SET_LIMITS:
+        _base_cpu_lim = CPU_LIMITS.get(DEPLOYMENT, 300)
+        _reset_args.append(f"--limits=cpu={_base_cpu_lim}m,memory=256Mi")
     kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
-            f"--requests=cpu={CPU_REQUEST_M}m,memory=128Mi",
-            "-n", NAMESPACE, silent=True)
+            *_reset_args, "-n", NAMESPACE, silent=True)
     # Phase-J task 1: DELETE the HPA for the duration of the AutoSage
     # trial instead of pinning maxReplicas=2. The original pinning
     # silently reconciled AutoSage's kubectl scale calls back to 2
@@ -1224,6 +1279,7 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
         "sla_violation_rate": probe.get("sla_violation_rate"),
         "cost_proxy": cost_proxy,
         "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
         "timing_breakdown": {
             "metrics_collection_s": metrics_collection_s,
             "recommendation_s": recommendation_latency_s,
@@ -1357,6 +1413,7 @@ def run_autoscaleai_trial(ingest_ip: str, run_idx: int) -> dict:
         "sla_violation_rate": probe.get("sla_violation_rate"),
         "cost_proxy": cost_proxy,
         "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
     }
 
 # ── Results aggregation ───────────────────────────────────────────────────────
