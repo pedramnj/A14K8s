@@ -197,6 +197,27 @@ STATELESS_VPA_CPU_MULTIPLIER  = float(os.environ.get("STATELESS_VPA_CPU_MULTIPLI
 STATELESS_BOTH_CPU_MULTIPLIER = float(os.environ.get("STATELESS_BOTH_CPU_MULTIPLIER", "1.3"))
 STATELESS_VPA_HEADROOM_FRAC   = float(os.environ.get("STATELESS_VPA_HEADROOM_FRAC",   "0.15"))
 
+# Phase P: continuous-loop AutoSage daemon. When enabled, the advisor
+# runs in a daemon thread for the full duration of the AutoSage method
+# block (all N_RUNS trials), making a fresh LLM+MCDA decision every
+# AUTOSAGE_DAEMON_TICK_S seconds. Cluster state and decision cache
+# carry over between trials -- closer to how native VPA actually
+# operates (long-running controller, not per-trial reset). Each trial
+# becomes a probe-only window. Default OFF; v3-v23 reproduce unchanged.
+AUTOSAGE_CONTINUOUS_DAEMON_ENABLED = os.environ.get(
+    "AUTOSAGE_CONTINUOUS_DAEMON_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+AUTOSAGE_DAEMON_TICK_S = int(os.environ.get("AUTOSAGE_DAEMON_TICK_S", "30"))
+AUTOSAGE_DAEMON_FIRST_TICK_DELAY_S = int(os.environ.get("AUTOSAGE_DAEMON_FIRST_TICK_DELAY_S", "0"))
+# When the daemon ticks, use cached_rec + MCDA-on-fresh-metrics (cheap)
+# vs. fresh LLM call every tick (expensive, more reactive). Default 0 =
+# fresh LLM each tick (the design that actually competes with VPA's
+# continuous histogram approach). Set to 1 to fall back to the cached
+# behaviour.
+AUTOSAGE_DAEMON_USE_CACHED_REC = os.environ.get(
+    "AUTOSAGE_DAEMON_USE_CACHED_REC", "0").strip().lower() in {"1", "true", "yes"}
+AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S = int(
+    os.environ.get("AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S", "0"))
+
 PROBE_REQUESTS   = 20
 # Phase J: SLA threshold is env-configurable so the multiclass workload
 # can run at 500ms (matching DeathStarBench / AWARE practice) while the
@@ -1031,6 +1052,9 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         "decision_source": decision_source,
         "grace_undid_override": grace_undid_override,
         "smoothed": smoothed_active,
+        # Phase-P: wall_time stamp so the continuous-daemon path can
+        # subset tick history by per-trial probe window.
+        "wall_time": time.time(),
         "_raw_rec": rec,  # cached for subsequent ticks
     }
 
@@ -1321,6 +1345,266 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
         ],
     }
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PHASE P — continuous-loop AutoSage daemon
+# ══════════════════════════════════════════════════════════════════════════════
+class _AutoSageDaemon:
+    """Phase-P controller. Runs the advisor in a daemon thread for the
+    full duration of the AutoSage method block (all N_RUNS trials),
+    ticking every AUTOSAGE_DAEMON_TICK_S. Cluster state and decision
+    cache persist across trial boundaries -- closer to how native VPA
+    actually operates (long-running controller, not per-trial reset).
+
+    Per-trial functions in continuous mode become probe-only: load,
+    wait, measure. The daemon's decisions drive cluster state
+    independently of trial boundaries.
+    """
+
+    def __init__(self, advisor: 'LLMAutoscalingAdvisor', hpa_manager):
+        self.advisor = advisor
+        self.hpa_manager = hpa_manager
+        self.metric_buffer: list = []
+        self.tick_history: list = []
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.t_start = None
+        self.initial_replicas = None
+
+    def start(self):
+        print(f"\n  [AutoSage-daemon] starting continuous controller for the full block …")
+        reset_replicas(DEPLOYMENT)
+        _reset_args = [f"--requests=cpu={CPU_REQUEST_M}m,memory=128Mi"]
+        if AUTOSAGE_VPA_SET_LIMITS:
+            _base_cpu_lim = CPU_LIMITS.get(DEPLOYMENT, 300)
+            _reset_args.append(f"--limits=cpu={_base_cpu_lim}m,memory=256Mi")
+        kubectl("set", "resources", f"deployment/{DEPLOYMENT}",
+                *_reset_args, "-n", NAMESPACE, silent=True)
+        for svc in SERVICES:
+            delete_hpa_if_exists(svc)
+        print(f"  [AutoSage-daemon] HPA deleted; cluster warmup {WARMUP_S}s …")
+        time.sleep(WARMUP_S)
+        self.t_start = time.time()
+        self.initial_replicas = get_replica_count(DEPLOYMENT) or HPA_MIN
+        self.thread = threading.Thread(
+            target=self._loop, daemon=True, name="autosage-daemon")
+        self.thread.start()
+        print(f"  [AutoSage-daemon] daemon thread started, tick interval "
+              f"{AUTOSAGE_DAEMON_TICK_S}s, first-tick delay "
+              f"{AUTOSAGE_DAEMON_FIRST_TICK_DELAY_S}s, "
+              f"use_cached_rec={AUTOSAGE_DAEMON_USE_CACHED_REC}")
+
+    def stop(self):
+        print(f"\n  [AutoSage-daemon] signalling stop after {len(self.tick_history)} ticks …")
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=AUTOSAGE_DAEMON_TICK_S + 10)
+        try:
+            kubectl("apply", "-f", HPA_MANIFEST_PATH, silent=True)
+            print(f"  [AutoSage-daemon] HPA re-applied from "
+                  f"{os.path.basename(HPA_MANIFEST_PATH)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [AutoSage-daemon] HPA re-apply failed (non-fatal): {e}")
+
+    def _loop(self):
+        # Optional initial delay so the cluster has some CPU signal
+        # before the first decision (wrk in trial 1 may not have started
+        # yet at this point).
+        if AUTOSAGE_DAEMON_FIRST_TICK_DELAY_S > 0:
+            if self.stop_event.wait(AUTOSAGE_DAEMON_FIRST_TICK_DELAY_S):
+                return
+        tick_idx = 0
+        cached_rec = None
+        while not self.stop_event.is_set():
+            tick_idx += 1
+            try:
+                tick = _autosage_tick(
+                    self.advisor, self.hpa_manager,
+                    self.initial_replicas,
+                    cached_rec=cached_rec,
+                    tick_idx=tick_idx,
+                    metric_buffer=self.metric_buffer,
+                    t_load_start=self.t_start,
+                )
+                self.tick_history.append(tick)
+                if AUTOSAGE_DAEMON_USE_CACHED_REC:
+                    # Phase-L behaviour: cache LLM result, re-validate
+                    # via MCDA against fresh metrics on subsequent ticks.
+                    ds = tick.get("decision_source", "llm")
+                    if ds != "heuristic":
+                        cached_rec = tick["_raw_rec"]
+                # else: leave cached_rec=None so every tick re-runs a
+                # fresh LLM+MCDA call (true continuous control). At
+                # 1.5s per Groq call this is affordable and matches
+                # native VPA's continuous-decision cadence.
+            except Exception as e:  # noqa: BLE001
+                print(f"  [AutoSage-daemon] tick {tick_idx} failed (non-fatal): {e}")
+
+            # Sleep until next tick (wait() returns True if stop_event
+            # got set during the sleep -- exit promptly in that case).
+            if self.stop_event.wait(AUTOSAGE_DAEMON_TICK_S):
+                return
+
+
+def run_autosage_trial_continuous(ingest_ip: str, daemon: '_AutoSageDaemon',
+                                   run_idx: int) -> dict:
+    """Probe-only trial for Phase-P continuous-daemon mode.
+
+    The daemon runs across all N trials and drives cluster state
+    independently. This function: optionally cools down, then loads
+    wrk, waits for the probe window, measures latency, and records
+    whatever daemon ticks landed in the trial window.
+    """
+    if run_idx > 0 and AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S > 0:
+        cd = AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S
+        print(f"\n  [AutoSage continuous trial {run_idx+1}/{N_RUNS}] "
+              f"inter-trial cooldown {cd}s …")
+        time.sleep(cd)
+    else:
+        print(f"\n  [AutoSage continuous trial {run_idx+1}/{N_RUNS}] "
+              f"daemon running (ticks so far: {len(daemon.tick_history)}) …")
+
+    initial_replicas = get_replica_count(DEPLOYMENT) or HPA_MIN
+
+    # Watcher thread for replicas during this trial's window.
+    scale_event = threading.Event()
+    watcher_results: list = []
+    watcher = threading.Thread(
+        target=watch_replicas,
+        args=(DEPLOYMENT, initial_replicas, WINDOW_S, scale_event, watcher_results),
+        daemon=True,
+    )
+    watcher.start()
+
+    # Start load. The daemon is already deciding/actuating; we just
+    # load + measure.
+    wrk, t_load = start_wrk(ingest_ip)
+    print(f"  [AutoSage] wrk PID={wrk.pid}  — probe in {PROBE_AT_S}s")
+
+    # Wait until probe time
+    probe_at = t_load + PROBE_AT_S
+    sleep_until = probe_at - time.time()
+    if sleep_until > 0:
+        time.sleep(sleep_until)
+
+    print(f"  [AutoSage] running latency probe …")
+    probe = probe_latency()
+
+    watcher.join(timeout=max(5, WINDOW_S - (time.time() - t_load) + 10))
+    try:
+        wrk.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        wrk.kill()
+
+    watch = watcher_results[0] if watcher_results else {}
+    cost_proxy = round(
+        watch.get("avg_replicas", initial_replicas) * CPU_REQUEST_M / 1000, 4
+    )
+
+    # Slice the daemon's tick_history to just the ticks that landed in
+    # this trial's measurement window. If none landed in-window, fall
+    # back to the most recent tick before the window for the "final
+    # decision" fields (this can happen if trial windows are shorter
+    # than the daemon tick interval).
+    trial_start = t_load
+    trial_end = time.time()
+    trial_ticks = [tk for tk in daemon.tick_history
+                   if trial_start <= tk.get("wall_time", 0) <= trial_end]
+    if trial_ticks:
+        last = trial_ticks[-1]
+    elif daemon.tick_history:
+        last = daemon.tick_history[-1]
+    else:
+        last = None
+
+    if last is not None:
+        rec = last.get("_raw_rec") or {}
+        mcda = (rec.get("mcda_validation") or {})
+        action = last.get("action", "maintain")
+        scaling_type = last.get("scaling_type", "hpa")
+        target_replicas = last.get("target_replicas")
+        target_cpu = last.get("target_cpu")
+        target_memory = last.get("target_memory")
+        confidence = last.get("confidence", 0.0) or 0.0
+        llm_model = last.get("llm_model", "?")
+        actuated = any(t.get("actuated") for t in trial_ticks)
+        recommendation_latency_s = round(
+            sum(t.get("rec_latency_s", 0) or 0 for t in trial_ticks), 2)
+    else:
+        rec, mcda = {}, {}
+        action, scaling_type = "maintain", "hpa"
+        target_replicas, target_cpu, target_memory = None, None, None
+        confidence = 0.0
+        llm_model = "?"
+        actuated = False
+        recommendation_latency_s = 0.0
+
+    return {
+        "recommendation_latency_s": recommendation_latency_s,
+        "action": action,
+        "scaling_type": scaling_type,
+        "target_replicas": target_replicas,
+        "target_cpu": target_cpu,
+        "target_memory": target_memory,
+        "confidence": round(confidence, 3),
+        "actuated": actuated,
+        "mcda_agreement": mcda.get("agreement", "N/A"),
+        "mcda_score_gap": round(
+            mcda.get("score_difference", mcda.get("score_gap", 0)) or 0, 4
+        ),
+        "mcda_override": mcda.get("should_override", False),
+        "mcda_target": mcda.get("mcda_target"),
+        "mcda_target_cpu_m": mcda.get("mcda_target_cpu_m"),
+        "mcda_target_memory_mi": mcda.get("mcda_target_memory_mi"),
+        "mcda_scaling_type": mcda.get("mcda_scaling_type"),
+        "mcda_llm_score": mcda.get("llm_score"),
+        "mcda_mcda_score": mcda.get("mcda_score"),
+        "mcda_dominance_margin": mcda.get("dominance_margin"),
+        "first_scale_latency_s": watch.get("first_scale_latency_s"),
+        "peak_replicas": watch.get("peak_replicas"),
+        "p95_latency_s": probe.get("p95_s"),
+        "sla_violation_rate": probe.get("sla_violation_rate"),
+        "cost_proxy": cost_proxy,
+        "n_probes": probe.get("n_probes"),
+        "timing_breakdown": {
+            "metrics_collection_s": round(
+                sum(t.get("metrics_s", 0) or 0 for t in trial_ticks), 3),
+            "recommendation_s": recommendation_latency_s,
+            "actuation_s": round(
+                sum(t.get("actuation_s", 0) or 0 for t in trial_ticks), 3),
+        },
+        "llm_model": llm_model,
+        "n_ticks": len(trial_ticks),
+        "tick_history": [
+            {
+                "tick_idx": t["tick_idx"],
+                "cpu_pct": t["cpu_pct"],
+                "cpu_pct_raw": t.get("cpu_pct_raw"),
+                "action": t["action"],
+                "scaling_type": t["scaling_type"],
+                "target_replicas": t["target_replicas"],
+                "target_cpu": t["target_cpu"],
+                "target_memory": t["target_memory"],
+                "actuated": t["actuated"],
+                "mcda_agreement": t["mcda_agreement"],
+                "mcda_score_gap": t["mcda_score_gap"],
+                "mcda_override": t["mcda_override"],
+                "rec_latency_s": t["rec_latency_s"],
+                "llm_model": t["llm_model"],
+                "decision_source": t.get("decision_source", "llm"),
+                "grace_undid_override": t.get("grace_undid_override", False),
+                "smoothed": t.get("smoothed", False),
+                "wall_time": t.get("wall_time"),
+            }
+            for t in trial_ticks
+        ],
+        # Phase-P provenance fields so analysis can distinguish daemon
+        # trials from per-trial-reset trials in the same JSON layout.
+        "phase_p_continuous": True,
+        "daemon_total_ticks_at_trial_end": len(daemon.tick_history),
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # METHOD 4 — AutoScaleAI (PPO RL baseline)
 # Vendored at baselines/autoscaleai with two upstream bug fixes and a
@@ -1590,12 +1874,30 @@ def main():
     # ── Method 3: AutoSage ───────────────────────────────────────────────────
     print_section("METHOD 3 — AutoSage (LLM + MCDA)")
     autosage_trials = []
-    for i in range(N_RUNS):
-        trial = run_autosage_trial(ingest_ip, advisor, hpa_manager, i)
-        autosage_trials.append(trial)
-        if i < N_RUNS - 1:
-            print(f"  cooldown {COOLDOWN_S}s …")
-            time.sleep(COOLDOWN_S)
+    if AUTOSAGE_CONTINUOUS_DAEMON_ENABLED:
+        # Phase P: long-running controller. Start the daemon once before
+        # trial 1 and stop it after trial N. Each trial becomes a probe-
+        # only window over the daemon-driven cluster state.
+        print_section("  PHASE P — continuous-loop AutoSage daemon")
+        daemon = _AutoSageDaemon(advisor, hpa_manager)
+        daemon.start()
+        try:
+            for i in range(N_RUNS):
+                trial = run_autosage_trial_continuous(ingest_ip, daemon, i)
+                autosage_trials.append(trial)
+                # No inter-trial cooldown by default in continuous mode --
+                # the daemon keeps deciding through trial boundaries, so
+                # back-to-back trials are by design. AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S
+                # opt-in for tests that want explicit gaps.
+        finally:
+            daemon.stop()
+    else:
+        for i in range(N_RUNS):
+            trial = run_autosage_trial(ingest_ip, advisor, hpa_manager, i)
+            autosage_trials.append(trial)
+            if i < N_RUNS - 1:
+                print(f"  cooldown {COOLDOWN_S}s …")
+                time.sleep(COOLDOWN_S)
 
     autosage_agg = aggregate(
         autosage_trials,
