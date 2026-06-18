@@ -28,6 +28,12 @@ import hashlib
 import re
 from logging_utils import get_app_logger
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.expanduser("~/ai4k8s/.env"), override=False)
+except ImportError:
+    pass
+
 logger = get_app_logger(
     __name__,
     level=logging.WARNING,
@@ -122,34 +128,53 @@ class LLMAutoscalingAdvisor:
         self.last_llm_call_time: Dict[str, datetime] = {}
         self.min_llm_interval = 30  # Minimum 30 seconds between LLM calls for same deployment
         
-        # Initialize GPT OSS client (preferred for better reasoning)
+        # Pre-initialize Groq client whenever GROQ_API_KEY is set, regardless
+        # of GPT_OSS state. The runtime fallback in analyze_scaling_decision
+        # (when GPT_OSS becomes unreachable mid-call) reuses this pre-built
+        # client instead of trying to lazy-construct under exception pressure.
+        self.groq_client = None
+        self.groq_model = "llama-3.1-8b-instant"
+        self.fallback_model = "llama-3.1-70b-versatile"
+        if GROQ_AVAILABLE and self.groq_api_key and self.groq_api_key.strip():
+            try:
+                self.groq_client = groq.Groq(api_key=self.groq_api_key)
+                logger.info(f"✅ Groq client pre-initialized for runtime fallback (model: {self.groq_model})")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to pre-initialize Groq client: {e}")
+                self.groq_client = None
+
+        # Initialize GPT OSS client (preferred for better reasoning).
+        # If GPT_OSS is configured but the endpoint is unreachable, demote to
+        # Groq as the primary provider so the FIRST call also benefits from
+        # the fallback — without this check, OpenAI(base_url=...) succeeds
+        # lazily and only fails at call time, which buries the fallback.
         if OPENAI_AVAILABLE and self.gpt_oss_api_base:
-            try:
-                self.client = OpenAI(
-                    api_key=self.gpt_oss_api_key if self.gpt_oss_api_key != 'not-needed' else 'not-needed',
-                    base_url=self.gpt_oss_api_base,
-                    timeout=240.0,  # 240 second timeout (Qwen takes 80-120s typically, up to 182s max observed, large buffer to 240s)
-                    max_retries=0  # Disable retries to fail fast - no automatic retries
-                )
-                self.provider = 'gpt_oss'
-                self.model = self.gpt_oss_model
-                logger.info(f"✅ LLM Autoscaling Advisor initialized with GPT OSS: {self.gpt_oss_api_base}, model: {self.model}")
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to initialize GPT OSS client: {e}, trying Groq fallback...")
+            gpt_oss_reachable = self._probe_gpt_oss_reachable(self.gpt_oss_api_base)
+            if gpt_oss_reachable:
+                try:
+                    self.client = OpenAI(
+                        api_key=self.gpt_oss_api_key if self.gpt_oss_api_key != 'not-needed' else 'not-needed',
+                        base_url=self.gpt_oss_api_base,
+                        timeout=240.0,
+                        max_retries=0,
+                    )
+                    self.provider = 'gpt_oss'
+                    self.model = self.gpt_oss_model
+                    logger.info(f"✅ LLM Autoscaling Advisor initialized with GPT OSS: {self.gpt_oss_api_base}, model: {self.model}")
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to initialize GPT OSS client: {e}, demoting to Groq")
+                    self.client = None
+            else:
+                logger.warning(f"⚠️ GPT OSS endpoint {self.gpt_oss_api_base} unreachable, demoting to Groq")
                 self.client = None
-        
-        # Fallback to Groq if GPT OSS not available
-        if not self.client and GROQ_AVAILABLE and self.groq_api_key:
-            try:
-                self.client = groq.Groq(api_key=self.groq_api_key)
-                self.provider = 'groq'
-                self.model = "llama-3.1-8b-instant"  # Groq model
-                self.fallback_model = "llama-3.1-70b-versatile"
-                logger.info("✅ LLM Autoscaling Advisor initialized with Groq (fallback)")
-            except Exception as e:
-                logger.error(f"Failed to initialize Groq client: {e}")
-                self.client = None
-        
+
+        # Promote Groq to primary when GPT_OSS isn't configured or reachable.
+        if not self.client and self.groq_client is not None:
+            self.client = self.groq_client
+            self.provider = 'groq'
+            self.model = self.groq_model
+            logger.info("✅ LLM Autoscaling Advisor promoted Groq to primary")
+
         if not self.client:
             logger.warning("⚠️  No LLM provider available. Set GPT_OSS_API_BASE or GROQ_API_KEY environment variable.")
 
@@ -168,7 +193,25 @@ class LLMAutoscalingAdvisor:
         elif not self.enable_mcda_validation:
             logger.info("MCDA validation disabled via AUTOSAGE_ENABLE_MCDA_VALIDATION")
 
-    def _get_cache_key(self, deployment_name: str, namespace: str, 
+    @staticmethod
+    def _probe_gpt_oss_reachable(api_base: str, timeout_s: float = 2.0) -> bool:
+        """Probe the GPT OSS /v1/models endpoint at init time.
+
+        Returns True only if the server responds 2xx within timeout_s. This
+        prevents OpenAI(base_url=...) from succeeding lazily on a broken URL
+        and burying the Groq fallback path.
+        """
+        try:
+            import requests
+            from urllib.parse import urlparse
+            parsed = urlparse(api_base)
+            base = f"{parsed.scheme}://{parsed.netloc}"
+            r = requests.get(f"{base}/v1/models", timeout=timeout_s)
+            return 200 <= r.status_code < 300
+        except Exception:
+            return False
+
+    def _get_cache_key(self, deployment_name: str, namespace: str,
                       current_metrics: Dict[str, Any], forecast: Dict[str, Any],
                       current_replicas: int, state_management: Optional[str] = None) -> str:
         """Generate cache key from input parameters
@@ -540,18 +583,19 @@ class LLMAutoscalingAdvisor:
                 logger.warning(f"⚠️  GPT OSS API call failed: {error_type}: {e}")
                 print(f"⚠️  GPT OSS API call failed: {error_type}: {e}")
                 
-                # Fallback to Groq if GPT OSS fails (especially on timeout)
-                # Check if Groq is available and API key is set
-                groq_available = GROQ_AVAILABLE and self.groq_api_key and self.groq_api_key.strip()
-                
+                # Fallback to Groq if GPT OSS fails (especially on timeout).
+                # The Groq client was pre-initialized in __init__ whenever
+                # GROQ_API_KEY was set, so we just promote it here.
+                groq_available = self.groq_client is not None
+
                 if self.provider == 'gpt_oss' and groq_available:
                     logger.warning(f"🔄 GPT OSS failed ({'timeout' if is_timeout else 'error'}), falling back to Groq...")
                     print(f"🔄🔄🔄 FALLING BACK TO GROQ due to GPT OSS {'timeout' if is_timeout else 'failure'}")
                     try:
-                        # Initialize Groq client (Groq doesn't support timeout in constructor)
-                        self.client = groq.Groq(api_key=self.groq_api_key)
+                        # Reuse the pre-built Groq client
+                        self.client = self.groq_client
                         self.provider = 'groq'
-                        self.model = "llama-3.1-8b-instant"  # Fast Groq model
+                        self.model = self.groq_model
                         
                         logger.info(f"✅ Groq client initialized, making API call...")
                         print(f"✅ Groq client initialized, making API call...")
