@@ -753,6 +753,18 @@ AUTOSAGE_VPA_MEM_LIMIT_RATIO = float(os.environ.get("AUTOSAGE_VPA_MEM_LIMIT_RATI
 AUTOSAGE_VPA_MAX_CPU_M  = int(os.environ.get("AUTOSAGE_VPA_MAX_CPU_M",  "1000"))
 AUTOSAGE_VPA_MAX_MEM_MI = int(os.environ.get("AUTOSAGE_VPA_MAX_MEM_MI", "512"))
 
+# Phase-P.1: bias the LLM's conservative target_cpu / target_memory
+# picks toward VPA-recommender-style aggressive sizing. v25 showed the
+# LLM picks 200-300m even when native VPA picks 600-900m on the same
+# workload (target sizing is the remaining gap after Phase P closed
+# the cadence gap). When AUTOSAGE_VPA_REQUEST_MULTIPLIER > 1.0,
+# requests are scaled up by this factor before actuation; limits are
+# then computed via AUTOSAGE_VPA_CPU_LIMIT_RATIO on the scaled
+# request, with both capped at the MAX_* ceilings. Default 1.0
+# preserves v3-v25 behaviour byte-identical.
+AUTOSAGE_VPA_REQUEST_MULTIPLIER = float(os.environ.get(
+    "AUTOSAGE_VPA_REQUEST_MULTIPLIER", "1.0"))
+
 
 def _parse_cpu_m(s: str) -> int:
     s = str(s).strip()
@@ -791,12 +803,29 @@ def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
         print(f"  [AutoSage] scaled deployment/{DEPLOYMENT} to {target_replicas} replicas")
         actuated = True
     if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
-        new_cpu = str(rec.get("target_cpu"))
-        new_mem = str(rec.get("target_memory"))
+        llm_cpu = str(rec.get("target_cpu"))
+        llm_mem = str(rec.get("target_memory"))
+        # Phase-P.1: bias toward aggressive request targets. Default
+        # multiplier is 1.0 (LLM's pick stands). With multiplier > 1,
+        # the LLM's request gets scaled up, then capped at MAX_* so
+        # we don't exceed native VPA's bounds.
+        if AUTOSAGE_VPA_REQUEST_MULTIPLIER > 1.0:
+            req_cpu_m = min(int(_parse_cpu_m(llm_cpu) * AUTOSAGE_VPA_REQUEST_MULTIPLIER),
+                            AUTOSAGE_VPA_MAX_CPU_M)
+            req_mem_mi = min(int(_parse_mem_mi(llm_mem) * AUTOSAGE_VPA_REQUEST_MULTIPLIER),
+                             AUTOSAGE_VPA_MAX_MEM_MI)
+            new_cpu = f"{req_cpu_m}m"
+            new_mem = f"{req_mem_mi}Mi"
+            print(f"  [AutoSage] Phase-P.1: LLM picked cpu={llm_cpu} mem={llm_mem}, "
+                  f"multiplier={AUTOSAGE_VPA_REQUEST_MULTIPLIER} -> "
+                  f"actuating cpu={new_cpu} mem={new_mem}")
+        else:
+            new_cpu, new_mem = llm_cpu, llm_mem
         set_args = [f"--requests=cpu={new_cpu},memory={new_mem}"]
         if AUTOSAGE_VPA_SET_LIMITS:
-            # Raise the ceiling too, proportional to the baseline ratio,
-            # capped at native VPA's bounds. Limit is never below request.
+            # Raise the ceiling too, proportional to the (possibly
+            # multiplied) baseline ratio, capped at native VPA's
+            # bounds. Limit is never below request.
             req_cpu_m = _parse_cpu_m(new_cpu)
             req_mem_mi = _parse_mem_mi(new_mem)
             lim_cpu_m = max(req_cpu_m,
