@@ -1752,7 +1752,14 @@ class LLMAutoscalingAdvisor:
                 'cpu_usage_percent': current_metrics.get('cpu_usage', 0),
                 'memory_usage_percent': current_metrics.get('memory_usage', 0),
                 'pod_count': current_metrics.get('pod_count', 0),
-                'running_pods': current_metrics.get('running_pod_count', 0)
+                'running_pods': current_metrics.get('running_pod_count', 0),
+                # Phase-Q.1: histogram features over the rolling 60s window.
+                # When present, the user prompt surfaces them so the LLM can
+                # size targets from the distribution shape rather than a
+                # single smoothed point sample.
+                'cpu_p50': current_metrics.get('cpu_p50'),
+                'cpu_p95': current_metrics.get('cpu_p95'),
+                'cpu_p99': current_metrics.get('cpu_p99'),
             },
             'forecast': {
                 'cpu': {
@@ -2015,7 +2022,9 @@ Respond in JSON format with:
 **Current Resource Usage:**
 - CPU: {context['current_metrics']['cpu_usage_percent']:.1f}%
 - Memory: {context['current_metrics']['memory_usage_percent']:.1f}%
-- Running Pods: {context['current_metrics']['running_pods']}/{context['current_metrics']['pod_count']}
+- Running Pods: {context['current_metrics']['running_pods']}/{context['current_metrics']['pod_count']}{(
+    chr(10) + f"- CPU histogram over last 60s: P50={context['current_metrics']['cpu_p50']:.1f}%, P95={context['current_metrics']['cpu_p95']:.1f}%, P99={context['current_metrics']['cpu_p99']:.1f}%  (size target_cpu to cover P95 with a safety margin, like a VPA recommender would)"
+) if context['current_metrics'].get('cpu_p95') is not None else ''}
 
 **Forecast Data:**
 - CPU Current: {context['forecast']['cpu']['current']:.1f}%, Peak: {context['forecast']['cpu']['peak']:.1f}%, Trend: {context['forecast']['cpu']['trend']}

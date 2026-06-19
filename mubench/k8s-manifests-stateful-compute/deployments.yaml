@@ -33,6 +33,20 @@ metadata:
     autosage.ai4k8s/monitor: "true"
 spec:
   replicas: 2
+  # Phase-Q.3: zero-disruption rollout for stateful workloads. With
+  # the default maxUnavailable=25% rolling strategy on a 2-replica
+  # deployment, every kubectl-set-resources triggers a window where 1
+  # of 2 pods is down → the surviving pod's traffic doubles → p95
+  # spikes by 1.5-2x during the rollout. With maxUnavailable=0 and
+  # maxSurge=1, k8s creates the new pod first, waits for it to be
+  # Ready, then terminates the old one. No pod-down window. This
+  # matches native VPA Updater's behaviour (one-pod-at-a-time
+  # recreation) without rewriting AutoSage's actuation path.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: session-compute

@@ -178,6 +178,17 @@ MCDA_GRACE_PERIOD_S = int(os.environ.get("MCDA_GRACE_PERIOD_S", "0"))
 METRICS_SMOOTHING_ENABLED = os.environ.get(
     "METRICS_SMOOTHING_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
 METRICS_SMOOTHING_WINDOW_S = int(os.environ.get("METRICS_SMOOTHING_WINDOW_S", "60"))
+# Phase-Q.1: which percentile of the smoothing window to feed the LLM.
+# Phase L used p75 ("smoothed"); native VPA's recommender uses p95 with a
+# 1.15x safety margin. Setting METRICS_SMOOTHING_PERCENTILE=95 makes the
+# LLM see VPA-style upper-tail demand instead of conservative midline.
+METRICS_SMOOTHING_PERCENTILE = int(os.environ.get(
+    "METRICS_SMOOTHING_PERCENTILE", "75"))
+# Phase-Q.1: also expose P50/P95/P99 percentile fields to the advisor so
+# the LLM sees the histogram shape, not just a single smoothed value.
+# When enabled, _autosage_tick adds cpu_p50/p95/p99 to current_metrics.
+METRICS_EXPOSE_HISTOGRAM = os.environ.get(
+    "METRICS_EXPOSE_HISTOGRAM", "0").strip().lower() in {"1", "true", "yes"}
 #
 # Fix 3 — Async warm-start: kick off the LLM call as a background
 # thread; tick 1 actuates a fast heuristic. Tick 2+ checks the thread
@@ -713,28 +724,48 @@ def _autosage_heuristic_decision(metrics: dict, current_replicas: int,
     return rec
 
 
-def _metric_smoothed(buffer: "list", window_s: float) -> dict:
-    """Phase-L Fix 2: compute rolling p75 over (t, cpu, mem) samples.
+def _metric_smoothed(buffer: "list", window_s: float,
+                     percentile: int = 75) -> dict:
+    """Phase-L Fix 2 / Phase-Q.1: rolling percentile over (t, cpu, mem).
 
     ``buffer`` is a list of ``(timestamp, cpu_pct, mem_pct)`` tuples
     appended each tick. Returns a dict with ``cpu_usage`` and
-    ``memory_usage`` keys carrying the p75 over the last ``window_s``
-    seconds, or the most recent sample if too few samples exist.
+    ``memory_usage`` keys carrying the chosen ``percentile`` over the
+    last ``window_s`` seconds, or the most recent sample if too few
+    samples exist. Default p75 = Phase L behaviour; p95 = Phase Q.1.
     """
     if not buffer:
         return {"cpu_usage": 0.0, "memory_usage": 0.0}
     now = buffer[-1][0]
     recent = [(c, m) for (t, c, m) in buffer if (now - t) <= window_s]
     if len(recent) < 2:
-        # Not enough history; fall back to most recent point sample.
         return {"cpu_usage": float(buffer[-1][1] or 0),
                 "memory_usage": float(buffer[-1][2] or 0)}
     cpus = sorted(c for c, _ in recent)
     mems = sorted(m for _, m in recent)
-    # p75 = value at the 75th percentile index
-    idx = max(0, int(round(len(cpus) * 0.75)) - 1)
+    pct = max(1, min(99, percentile))
+    idx = max(0, int(round(len(cpus) * pct / 100.0)) - 1)
     return {"cpu_usage": float(cpus[idx]),
             "memory_usage": float(mems[idx])}
+
+
+def _metric_histogram(buffer: "list", window_s: float) -> dict:
+    """Phase-Q.1: full CPU histogram features (P50, P95, P99) over the
+    rolling window. Returned dict has cpu_p50, cpu_p95, cpu_p99 keys,
+    intended to be merged into ``current_metrics`` so the advisor's
+    prompt sees the distribution shape, not just a smoothed point.
+    """
+    if not buffer:
+        return {"cpu_p50": 0.0, "cpu_p95": 0.0, "cpu_p99": 0.0}
+    now = buffer[-1][0]
+    cpus = sorted(c for (t, c, _) in buffer if (now - t) <= window_s)
+    if len(cpus) < 2:
+        last = float(buffer[-1][1] or 0)
+        return {"cpu_p50": last, "cpu_p95": last, "cpu_p99": last}
+    def at(p):
+        idx = max(0, int(round(len(cpus) * p / 100.0)) - 1)
+        return float(cpus[idx])
+    return {"cpu_p50": at(50), "cpu_p95": at(95), "cpu_p99": at(99)}
 
 
 # Phase-O.1: AutoSage VPA actuation used to set --requests only, leaving
@@ -764,6 +795,21 @@ AUTOSAGE_VPA_MAX_MEM_MI = int(os.environ.get("AUTOSAGE_VPA_MAX_MEM_MI", "512"))
 # preserves v3-v25 behaviour byte-identical.
 AUTOSAGE_VPA_REQUEST_MULTIPLIER = float(os.environ.get(
     "AUTOSAGE_VPA_REQUEST_MULTIPLIER", "1.0"))
+
+# Phase-Q.4: shift anticipation. When CPU is rising fast (the AWARE
+# shift just hit, or a load burst is starting), apply a larger
+# multiplier on the next actuation so the pod is right-sized BEFORE
+# the demand peaks instead of one tick after. The advisor's normal
+# multiplier (AUTOSAGE_VPA_REQUEST_MULTIPLIER) is used for steady
+# state; the burst multiplier kicks in only when the rolling CPU delta
+# crosses AUTOSAGE_SHIFT_TREND_PP percentage points per tick. Default
+# disabled (multiplier always = REQUEST_MULTIPLIER) so v3-v28 reproduce
+# byte-identically.
+AUTOSAGE_SHIFT_ANTICIPATION_ENABLED = os.environ.get(
+    "AUTOSAGE_SHIFT_ANTICIPATION_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+AUTOSAGE_SHIFT_TREND_PP = float(os.environ.get("AUTOSAGE_SHIFT_TREND_PP", "15"))
+AUTOSAGE_SHIFT_BURST_MULTIPLIER = float(os.environ.get(
+    "AUTOSAGE_SHIFT_BURST_MULTIPLIER", "3.5"))
 
 
 def _parse_cpu_m(s: str) -> int:
@@ -805,19 +851,23 @@ def _autosage_actuate(rec: dict, initial_replicas: int) -> bool:
     if scaling_type in ("vpa", "both") and rec.get("target_cpu") and rec.get("target_memory"):
         llm_cpu = str(rec.get("target_cpu"))
         llm_mem = str(rec.get("target_memory"))
-        # Phase-P.1: bias toward aggressive request targets. Default
-        # multiplier is 1.0 (LLM's pick stands). With multiplier > 1,
-        # the LLM's request gets scaled up, then capped at MAX_* so
-        # we don't exceed native VPA's bounds.
-        if AUTOSAGE_VPA_REQUEST_MULTIPLIER > 1.0:
-            req_cpu_m = min(int(_parse_cpu_m(llm_cpu) * AUTOSAGE_VPA_REQUEST_MULTIPLIER),
+        # Phase-P.1 + Q.4: bias toward aggressive request targets.
+        # Steady multiplier is AUTOSAGE_VPA_REQUEST_MULTIPLIER. When
+        # _autosage_tick detects a shift in progress it sets
+        # rec["_q4_burst_multiplier"] for this tick only, which overrides
+        # the steady multiplier so the pod is right-sized BEFORE peak,
+        # not one tick after.
+        effective_mult = float(rec.get("_q4_burst_multiplier") or AUTOSAGE_VPA_REQUEST_MULTIPLIER)
+        if effective_mult > 1.0:
+            req_cpu_m = min(int(_parse_cpu_m(llm_cpu) * effective_mult),
                             AUTOSAGE_VPA_MAX_CPU_M)
-            req_mem_mi = min(int(_parse_mem_mi(llm_mem) * AUTOSAGE_VPA_REQUEST_MULTIPLIER),
+            req_mem_mi = min(int(_parse_mem_mi(llm_mem) * effective_mult),
                              AUTOSAGE_VPA_MAX_MEM_MI)
             new_cpu = f"{req_cpu_m}m"
             new_mem = f"{req_mem_mi}Mi"
-            print(f"  [AutoSage] Phase-P.1: LLM picked cpu={llm_cpu} mem={llm_mem}, "
-                  f"multiplier={AUTOSAGE_VPA_REQUEST_MULTIPLIER} -> "
+            tag = "Q.4 burst" if rec.get("_q4_burst_multiplier") else "P.1"
+            print(f"  [AutoSage] {tag}: LLM picked cpu={llm_cpu} mem={llm_mem}, "
+                  f"multiplier={effective_mult} -> "
                   f"actuating cpu={new_cpu} mem={new_mem}")
         else:
             new_cpu, new_mem = llm_cpu, llm_mem
@@ -931,20 +981,54 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
     cpu_pct_raw = current_metrics.get("cpu_usage", 0.0)
     mem_pct_raw = current_metrics.get("memory_usage", 0.0)
 
-    # Phase-L Fix 2: append raw sample to the rolling buffer; replace the
-    # values we pass to the advisor with the smoothed p75 over the last
-    # METRICS_SMOOTHING_WINDOW_S seconds.
+    # Phase-L Fix 2 / Phase-Q.1: append raw sample to the rolling buffer.
+    # Phase L used p75; Phase Q.1 uses METRICS_SMOOTHING_PERCENTILE
+    # (default p75 to preserve v3-v28 behaviour). When METRICS_EXPOSE_HISTOGRAM
+    # is on, also surface cpu_p50/p95/p99 to the advisor's prompt so it
+    # sees the distribution shape instead of one smoothed value.
     cpu_pct = cpu_pct_raw
     smoothed_active = False
+    histogram_features = None
     if metric_buffer is not None:
         metric_buffer.append((time.time(), cpu_pct_raw, mem_pct_raw))
         if METRICS_SMOOTHING_ENABLED:
-            smoothed = _metric_smoothed(metric_buffer, METRICS_SMOOTHING_WINDOW_S)
+            smoothed = _metric_smoothed(metric_buffer, METRICS_SMOOTHING_WINDOW_S,
+                                        percentile=METRICS_SMOOTHING_PERCENTILE)
             current_metrics = dict(current_metrics)
             current_metrics["cpu_usage"] = smoothed["cpu_usage"]
             current_metrics["memory_usage"] = smoothed["memory_usage"]
             cpu_pct = smoothed["cpu_usage"]
             smoothed_active = True
+        if METRICS_EXPOSE_HISTOGRAM:
+            histogram_features = _metric_histogram(metric_buffer, METRICS_SMOOTHING_WINDOW_S)
+            current_metrics = dict(current_metrics)
+            current_metrics.update(histogram_features)
+
+    # Phase-Q.4: shift anticipation. Compute the inter-tick CPU delta
+    # over the last ~30s. If CPU is rising faster than AUTOSAGE_SHIFT_TREND_PP
+    # percentage points per ~30s, the AWARE shift just hit (or a burst
+    # is starting). Set a per-tick burst multiplier so the next actuation
+    # uses AUTOSAGE_SHIFT_BURST_MULTIPLIER instead of the steady
+    # AUTOSAGE_VPA_REQUEST_MULTIPLIER, right-sizing the pod for the peak
+    # immediately rather than one tick after.
+    q4_burst_multiplier = None
+    if (AUTOSAGE_SHIFT_ANTICIPATION_ENABLED
+            and metric_buffer is not None
+            and len(metric_buffer) >= 2):
+        # Compare current CPU to a sample ~30s ago.
+        target_t = metric_buffer[-1][0] - 30.0
+        ref = None
+        for (t, c, _) in reversed(list(metric_buffer)[:-1]):
+            if t <= target_t:
+                ref = c
+                break
+        if ref is None and len(metric_buffer) >= 2:
+            ref = metric_buffer[0][1]
+        delta_pp = (cpu_pct_raw - (ref or 0.0))
+        if delta_pp >= AUTOSAGE_SHIFT_TREND_PP:
+            q4_burst_multiplier = AUTOSAGE_SHIFT_BURST_MULTIPLIER
+            print(f"  [AutoSage] Q.4 shift detected: CPU rose {delta_pp:.1f}pp "
+                  f"in last 30s -> burst multiplier={q4_burst_multiplier}")
 
     decision_source = "llm"
     current_resources_dict = {
@@ -1053,6 +1137,11 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
           f"{' [smoothed]' if smoothed_active else ''}"
           f"{f' [{decision_source}]' if decision_source != 'llm' else ''}")
 
+    # Phase-Q.4: thread the burst multiplier into the rec so
+    # _autosage_actuate uses it for THIS tick only (rec is per-tick).
+    if q4_burst_multiplier is not None:
+        rec["_q4_burst_multiplier"] = q4_burst_multiplier
+
     t_actuate = time.time()
     actuated = _autosage_actuate(rec, initial_replicas)
     actuation_s = round(time.time() - t_actuate, 3)
@@ -1081,6 +1170,9 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
         "decision_source": decision_source,
         "grace_undid_override": grace_undid_override,
         "smoothed": smoothed_active,
+        # Phase-Q.1 / Q.4 provenance for tick-history analysis.
+        "histogram": histogram_features,
+        "q4_burst_multiplier": q4_burst_multiplier,
         # Phase-P: wall_time stamp so the continuous-daemon path can
         # subset tick history by per-trial probe window.
         "wall_time": time.time(),
