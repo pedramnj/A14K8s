@@ -131,6 +131,13 @@ MANIFEST_DIR     = _cfg["manifest_dir"]
 WRK_SHIFT_ENABLED = os.environ.get(
     "WRK_SHIFT_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
 WRK_SHIFT_AT_S    = int(os.environ.get("WRK_SHIFT_AT_S", "60"))
+# Phase-Q.5 (v34): AWARE/FIRM-style oscillating shift. Comma-separated list
+# of "path:duration_s" pairs that wrk plays back-to-back. When set, overrides
+# the single-step base→shift behaviour and gives VPA/HPA multiple recommend
+# triggers within one trial window. Example:
+#   WRK_SHIFT_PHASES="/compute?size=50:30,/compute?size=150:20,/compute?size=50:20,/compute?size=150:20,/compute?size=50:30"
+# The probe at PROBE_AT_S still measures WRK_SHIFT_PATH (the heavy regime).
+WRK_SHIFT_PHASES  = os.environ.get("WRK_SHIFT_PHASES", "").strip()
 HPA_MIN          = 2
 HPA_MAX          = 4
 HPA_CPU_TARGET   = 70              # %
@@ -329,6 +336,30 @@ def start_wrk(target_ip: str):
     self-terminates on its own -d, so the wrapper exits without explicit
     cleanup, matching the single-phase contract (callers use .pid/.wait()).
     """
+    if WRK_SHIFT_PHASES:
+        phases = []
+        for spec in WRK_SHIFT_PHASES.split(","):
+            spec = spec.strip()
+            if not spec:
+                continue
+            path, _, dur = spec.rpartition(":")
+            try:
+                phases.append((path, max(1, int(dur))))
+            except ValueError:
+                continue
+        cmds = [
+            f"/usr/bin/wrk -t {WRK_THREADS} -c {WRK_CONNECTIONS} "
+            f"-d {dur}s http://{target_ip}:8080{path}"
+            for path, dur in phases
+        ]
+        proc = subprocess.Popen(
+            ["sh", "-c", "; ".join(cmds)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        timeline = " → ".join(f"{p}({d}s)" for p, d in phases)
+        print(f"  [wrk] Phase-Q.5 oscillating: {timeline}")
+        return proc, time.time()
+
     if WRK_SHIFT_ENABLED:
         base_path  = os.environ.get("WRK_BASE_PATH", WRK_PATH)
         shift_path = os.environ.get("WRK_SHIFT_PATH", WRK_PATH)
