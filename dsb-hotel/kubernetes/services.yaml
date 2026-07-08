@@ -1,0 +1,204 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DeathStarBench Hotel Reservation — Services (Phase R substrate)
+#
+# Adapted from upstream (see dsb-hotel/UPSTREAM.md). One ClusterIP Service
+# per Deployment. Names must match config.json's DNS references exactly
+# (consul:8500, mongodb-geo:27017, memcached-rate:11211, etc.).
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: consul
+  namespace: default
+  labels:
+    io.kompose.service: consul
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: consul
+  ports:
+  - name: "8300"
+    port: 8300
+    targetPort: 8300
+  - name: "8400"
+    port: 8400
+    targetPort: 8400
+  - name: "8500"
+    port: 8500
+    targetPort: 8500
+  - name: "8600"
+    port: 8600
+    protocol: UDP
+    targetPort: 53
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-geo
+  namespace: default
+  labels:
+    io.kompose.service: mongodb-geo
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: mongodb-geo
+  ports:
+  - name: mongodb-geo
+    port: 27017
+    targetPort: 27017
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-rate
+  namespace: default
+  labels:
+    io.kompose.service: mongodb-rate
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: mongodb-rate
+  ports:
+  - name: mongodb-rate
+    port: 27017
+    targetPort: 27017
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-profile
+  namespace: default
+  labels:
+    io.kompose.service: mongodb-profile
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: mongodb-profile
+  ports:
+  - name: mongodb-profile
+    port: 27017
+    targetPort: 27017
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached-rate
+  namespace: default
+  labels:
+    io.kompose.service: memcached-rate
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: memcached-rate
+  ports:
+  - name: memcached-rate
+    port: 11211
+    targetPort: 11211
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached-profile
+  namespace: default
+  labels:
+    io.kompose.service: memcached-profile
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: memcached-profile
+  ports:
+  - name: memcached-profile
+    port: 11211
+    targetPort: 11211
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: default
+  labels:
+    io.kompose.service: frontend
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: frontend
+  ports:
+  - name: "5000"
+    port: 5000
+    targetPort: 5000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: search
+  namespace: default
+  labels:
+    io.kompose.service: search
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: search
+  ports:
+  - name: "8082"
+    port: 8082
+    targetPort: 8082
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: geo
+  namespace: default
+  labels:
+    io.kompose.service: geo
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: geo
+  ports:
+  - name: "8083"
+    port: 8083
+    targetPort: 8083
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rate
+  namespace: default
+  labels:
+    io.kompose.service: rate
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: rate
+  ports:
+  - name: "8084"
+    port: 8084
+    targetPort: 8084
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: profile
+  namespace: default
+  labels:
+    io.kompose.service: profile
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  selector:
+    io.kompose.service: profile
+  ports:
+  - name: "8081"
+    port: 8081
+    targetPort: 8081

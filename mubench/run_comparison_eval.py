@@ -101,6 +101,51 @@ WORKLOAD_CFGS = {
         "svc_name":       "session-compute",
         "manifest_dir":   os.path.join(_ROOT, "mubench", "k8s-manifests-stateful-compute"),
     },
+    "dsb_hotel": {
+        # Phase R (v35+): DeathStarBench Hotel Reservation 5-service
+        # subset — the real DSB Go binaries + Consul + per-service Mongo/
+        # memcached, unchanged upstream except for resource trimming
+        # (see dsb-hotel/UPSTREAM.md). Multi-tier microservice chain that
+        # matches AWARE / FIRM's evaluation substrate:
+        #
+        #   frontend (HTTP :5000) → search (gRPC) → { geo, rate, profile }
+        #
+        # Load driven by wrk2 (not vanilla wrk) with an upstream lua
+        # script; workload SHIFT is achieved by swapping lua scripts
+        # mid-trial via DSB_SHIFT_PHASES rather than URL-mangling the
+        # single wrk invocation the other workloads use.
+        #
+        # `services` lists the 5 autoscaled application services (in
+        # fan-out order). Backing pods (mongodb-*, memcached-*, consul)
+        # are fixed infrastructure and not listed here.
+        "deployment":     "frontend",   # wrk2 entry point, and the
+                                        # legacy single-service field
+                                        # used by helpers that expect one
+                                        # target.
+        "services":       ["frontend", "search", "geo", "rate", "profile"],
+        "cpu_limits":     {"frontend": 500, "search": 400,
+                           "geo": 300, "rate": 300, "profile": 300},
+        # Steady-state DSB URL (matches upstream mixed-workload_type_1.lua's
+        # /hotels endpoint). The vanilla wrk single-URL path is used only
+        # as a fallback / probe target when the lua-script path is off.
+        "wrk_path":       "/hotels?inDate=2015-04-09&outDate=2015-04-10&lat=37.7&lon=-122.4",
+        "svc_name":       "frontend",
+        "manifest_dir":   os.path.join(_ROOT, "dsb-hotel", "kubernetes"),
+        # Multi-tier: harness needs to know which pods are infrastructure
+        # (fixed, replica=1, no autoscaler, not counted in cost_proxy).
+        "backing_pods":   ["mongodb-geo", "mongodb-rate", "mongodb-profile",
+                           "memcached-rate", "memcached-profile", "consul"],
+        # Load-generation profile: DSB Hotel Reservation uses wrk2 + a
+        # lua script rather than a fixed URL. When set, start_wrk() picks
+        # up the script path (relative to $_ROOT/dsb-hotel/wrk2/) instead
+        # of firing a single-URL wrk. Falls back to wrk_path when unset.
+        "wrk_lua":        "mixed-workload_type_1.lua",
+        # wrk2 binary is a superset of wrk with `-R rate` throttling. The
+        # harness auto-detects whether wrk2 is on $PATH; if not, it falls
+        # back to /usr/bin/wrk (which ignores -R) — safe but skips the
+        # rate-controlled experiments.
+        "wrk_binary":     "wrk2",
+    },
 }
 # Default is "cpu" for backward compatibility with every prior eval (v3-v8).
 # Argparse at the bottom of the file overrides this when --workload is passed.
@@ -138,6 +183,17 @@ WRK_SHIFT_AT_S    = int(os.environ.get("WRK_SHIFT_AT_S", "60"))
 #   WRK_SHIFT_PHASES="/compute?size=50:30,/compute?size=150:20,/compute?size=50:20,/compute?size=150:20,/compute?size=50:30"
 # The probe at PROBE_AT_S still measures WRK_SHIFT_PATH (the heavy regime).
 WRK_SHIFT_PHASES  = os.environ.get("WRK_SHIFT_PHASES", "").strip()
+# Phase-R (v37+): DSB Hotel Reservation lua-script oscillating shift. Same
+# idea as WRK_SHIFT_PHASES but the path field is a wrk2 lua script name
+# resolved against $_ROOT/dsb-hotel/wrk2/. Example:
+#   DSB_SHIFT_PHASES="mixed-workload_type_1.lua:30,heavy-search.lua:20,mixed-workload_type_1.lua:20,heavy-search.lua:20,mixed-workload_type_1.lua:30"
+# Ignored for non-DSB workloads. When set on WORKLOAD=dsb_hotel, overrides
+# the workload's `wrk_lua` field for that single trial invocation.
+DSB_SHIFT_PHASES  = os.environ.get("DSB_SHIFT_PHASES", "").strip()
+# wrk2 rate cap (requests/s). wrk2 enforces a closed-loop rate limit; a value
+# of 0 turns it off (unlimited, matches vanilla wrk behaviour). Only consumed
+# when the resolved wrk_binary is wrk2. Default 0 keeps v3-v34 reproducible.
+WRK_RATE          = int(os.environ.get("WRK_RATE", "0"))
 HPA_MIN          = 2
 HPA_MAX          = 4
 HPA_CPU_TARGET   = 70              # %
@@ -268,6 +324,19 @@ def get_replica_count(deployment: str) -> int:
     except (ValueError, TypeError):
         return 0
 
+
+def get_all_replica_counts(services: list) -> dict:
+    """Phase-R helper: batched replica counts for a list of deployments.
+
+    Returns `{svc_name: int_replicas}` with zeros for any deployment we
+    cannot query. Used by the multi-service DSB Hotel Reservation runners
+    where per-tick cost/peak-replica aggregation covers 5 app services at
+    once rather than one. For single-service workloads the callers keep
+    using `get_replica_count(deployment)` — this helper is additive and
+    does not disturb any v3-v34 code path.
+    """
+    return {svc: get_replica_count(svc) for svc in services}
+
 def get_cpu_millis(svc: str) -> float:
     """Return mean CPU usage in millicores across pods for a service."""
     out = kubectl("top", "pods", "-l", f"app={svc}", "--no-headers", silent=True)
@@ -323,6 +392,40 @@ def _probe_path() -> str:
     return WRK_PATH
 
 
+def _resolve_wrk_binary() -> tuple:
+    """Return `(binary_path, supports_rate_flag)` for the current workload.
+
+    For DSB Hotel Reservation (`wrk_binary: wrk2`) we prefer wrk2 when
+    installed on the VM, so wrk2's `-R` closed-loop rate flag becomes
+    available. When wrk2 is missing (older CrownLabs images) we fall back
+    to `/usr/bin/wrk` — it ignores `-R` and can still drive the workload,
+    the closed-loop-rate results just look like unrestricted wrk runs.
+    Any other workload keeps the historical `/usr/bin/wrk` invocation
+    byte-identical so v3-v34 reproduce.
+    """
+    want = _cfg.get("wrk_binary", "wrk")
+    if want == "wrk2":
+        # wrk2 may or may not be on $PATH depending on how the VM was
+        # provisioned. Probe once and cache the answer for the rest of
+        # the trial.
+        try:
+            r = subprocess.run(["which", "wrk2"], capture_output=True,
+                               text=True, timeout=2)
+            if r.returncode == 0 and r.stdout.strip():
+                return (r.stdout.strip(), True)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        # Fall back to vanilla wrk; user-visible warning happens once at
+        # the call site so we don't spam per-trial.
+        return ("/usr/bin/wrk", False)
+    return ("/usr/bin/wrk", False)
+
+
+def _dsb_lua_path(script: str) -> str:
+    """Absolute path to a DSB wrk2 lua script (dsb-hotel/wrk2/<script>)."""
+    return os.path.join(_ROOT, "dsb-hotel", "wrk2", script)
+
+
 def start_wrk(target_ip: str):
     """Launch wrk in background; return Popen handle and start timestamp.
 
@@ -335,7 +438,53 @@ def start_wrk(target_ip: str):
     then the heavy payload for the remainder of WRK_DURATION. Each inner wrk
     self-terminates on its own -d, so the wrapper exits without explicit
     cleanup, matching the single-phase contract (callers use .pid/.wait()).
+
+    Phase-R: when the workload has a `wrk_lua` config (currently only
+    `dsb_hotel`), we drive wrk2 with a lua script rather than a fixed URL,
+    and `DSB_SHIFT_PHASES` can swap between multiple lua scripts mid-trial
+    (parallel to WRK_SHIFT_PHASES for URL-swap workloads). The target port
+    for DSB is 5000 (frontend) instead of 8080.
     """
+    wrk_lua = _cfg.get("wrk_lua")
+    if wrk_lua:
+        wrk_bin, supports_rate = _resolve_wrk_binary()
+        rate_flag = f"-R {WRK_RATE} " if (supports_rate and WRK_RATE > 0) else ""
+        port = 5000  # DSB frontend HTTP port
+        if DSB_SHIFT_PHASES:
+            phases = []
+            for spec in DSB_SHIFT_PHASES.split(","):
+                spec = spec.strip()
+                if not spec:
+                    continue
+                script, _, dur = spec.rpartition(":")
+                try:
+                    phases.append((script, max(1, int(dur))))
+                except ValueError:
+                    continue
+            cmds = [
+                f"{wrk_bin} -t {WRK_THREADS} -c {WRK_CONNECTIONS} "
+                f"-d {dur}s {rate_flag}-L -s {_dsb_lua_path(script)} "
+                f"http://{target_ip}:{port}"
+                for script, dur in phases
+            ]
+            proc = subprocess.Popen(
+                ["sh", "-c", "; ".join(cmds)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            timeline = " → ".join(f"{s}({d}s)" for s, d in phases)
+            print(f"  [wrk2] Phase-R DSB oscillating: {timeline}")
+            return proc, time.time()
+        proc = subprocess.Popen(
+            ["sh", "-c",
+             f"{wrk_bin} -t {WRK_THREADS} -c {WRK_CONNECTIONS} "
+             f"-d {WRK_DURATION} {rate_flag}-L "
+             f"-s {_dsb_lua_path(wrk_lua)} http://{target_ip}:{port}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        print(f"  [wrk2] Phase-R DSB steady: {wrk_lua} "
+              f"({'-R ' + str(WRK_RATE) if supports_rate and WRK_RATE > 0 else 'no-rate'})")
+        return proc, time.time()
+
     if WRK_SHIFT_PHASES:
         phases = []
         for spec in WRK_SHIFT_PHASES.split(","):

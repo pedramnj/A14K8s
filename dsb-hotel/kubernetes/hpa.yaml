@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# DeathStarBench Hotel Reservation — HPAs for the 5 app services.
+#
+# Only frontend, search, geo, rate, profile are autoscaled. Backing stores
+# (Mongo / memcached / Consul) stay at replica=1 as fixed infrastructure.
+#
+# min=2 / max=4 / cpu target=70 % — same envelope as the mubench harness so
+# the HPA-vs-VPA-vs-AutoSage comparison uses identical baseline parameters
+# across substrates.
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: search
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: search
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: geo
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: geo
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rate
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rate
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: profile
+  namespace: default
+  labels:
+    app.kubernetes.io/part-of: dsb-hotel
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: profile
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
