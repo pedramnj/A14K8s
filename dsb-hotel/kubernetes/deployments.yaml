@@ -443,6 +443,135 @@ spec:
       restartPolicy: Always
 
 ---
+# ── mongodb-reservation ───────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-reservation
+  namespace: default
+  labels:
+    io.kompose.service: mongodb-reservation
+    app.kubernetes.io/part-of: dsb-hotel
+    managed-by: ai4k8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: mongodb-reservation
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        io.kompose.service: mongodb-reservation
+        app.kubernetes.io/part-of: dsb-hotel
+    spec:
+      containers:
+      - name: hotel-reserv-reservation-mongo
+        image: mongo:4.4.6
+        ports:
+        - containerPort: 27017
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+      volumes:
+      - name: data
+        emptyDir: {}
+      restartPolicy: Always
+
+---
+# ── memcached-reserve ─────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memcached-reserve
+  namespace: default
+  labels:
+    io.kompose.service: memcached-reserve
+    app.kubernetes.io/part-of: dsb-hotel
+    managed-by: ai4k8s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      io.kompose.service: memcached-reserve
+  template:
+    metadata:
+      labels:
+        io.kompose.service: memcached-reserve
+        app.kubernetes.io/part-of: dsb-hotel
+    spec:
+      containers:
+      - name: hotel-reserv-reserve-mmc
+        image: memcached:1.6-alpine
+        ports:
+        - containerPort: 11211
+        env:
+        - name: MEMCACHED_CACHE_SIZE
+          value: "128"
+        - name: MEMCACHED_THREADS
+          value: "2"
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "192Mi"
+      restartPolicy: Always
+
+---
+# ── reservation (autoscaled) ─────────────────────────────────────────────────
+# gRPC service on :8087, queries mongodb-reservation + memcached-reserve.
+# Called by /hotels → CheckAvailability; also by /reservation endpoint.
+# Workload class: STATELESS (cache-warmed leaf) — AutoSage typically picks HPA.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reservation
+  namespace: default
+  labels:
+    io.kompose.service: reservation
+    app: reservation
+    app.kubernetes.io/part-of: dsb-hotel
+    managed-by: ai4k8s
+  annotations:
+    autosage.ai4k8s/monitor: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      io.kompose.service: reservation
+  template:
+    metadata:
+      labels:
+        io.kompose.service: reservation
+        app: reservation
+        app.kubernetes.io/part-of: dsb-hotel
+    spec:
+      containers:
+      - name: hotel-reserv-reservation
+        image: deathstarbench/hotel-reservation:latest
+        command: ["/go/bin/reservation"]
+        ports:
+        - containerPort: 8087
+        resources:
+          requests:
+            cpu: "150m"
+            memory: "128Mi"
+          limits:
+            cpu: "300m"
+            memory: "256Mi"
+      restartPolicy: Always
+
+---
 # ── profile (autoscaled) ─────────────────────────────────────────────────────
 # gRPC service on :8081, queries mongodb-profile + memcached-profile.
 # Holds the largest in-memory hotel dictionary — memory-bound under load.

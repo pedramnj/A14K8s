@@ -122,9 +122,11 @@ WORKLOAD_CFGS = {
                                         # legacy single-service field
                                         # used by helpers that expect one
                                         # target.
-        "services":       ["frontend", "search", "geo", "rate", "profile"],
+        "services":       ["frontend", "search", "geo", "rate",
+                           "profile", "reservation"],
         "cpu_limits":     {"frontend": 500, "search": 400,
-                           "geo": 300, "rate": 300, "profile": 300},
+                           "geo": 300, "rate": 300, "profile": 300,
+                           "reservation": 300},
         # Steady-state DSB URL (matches upstream mixed-workload_type_1.lua's
         # /hotels endpoint). The vanilla wrk single-URL path is used only
         # as a fallback / probe target when the lua-script path is off.
@@ -134,7 +136,10 @@ WORKLOAD_CFGS = {
         # Multi-tier: harness needs to know which pods are infrastructure
         # (fixed, replica=1, no autoscaler, not counted in cost_proxy).
         "backing_pods":   ["mongodb-geo", "mongodb-rate", "mongodb-profile",
-                           "memcached-rate", "memcached-profile", "consul"],
+                           "mongodb-reservation",
+                           "memcached-rate", "memcached-profile",
+                           "memcached-reserve",
+                           "consul"],
         # Load-generation profile: DSB Hotel Reservation uses wrk2 + a
         # lua script rather than a fixed URL. When set, start_wrk() picks
         # up the script path (relative to $_ROOT/dsb-hotel/wrk2/) instead
