@@ -2097,6 +2097,360 @@ def print_results_table(all_results: dict):
                   f"gap={t.get('mcda_score_gap',0):.4f}  "
                   f"override={t.get('mcda_override',False)}")
 
+# ══════════════════════════════════════════════════════════════════════════════
+# MULTI-SERVICE VARIANTS — Phase R (DSB Hotel Reservation)
+# ══════════════════════════════════════════════════════════════════════════════
+# The single-service trial runners above bind DEPLOYMENT / SVC_NAME / CPU_LIMITS
+# to one deployment. For DSB Hotel Reservation we need to run one HPA / one VPA
+# per app service and one AutoSage tick per app service per daemon cycle, all
+# while a single wrk2 stream drives the frontend endpoint. The multi-service
+# variants below wrap the single-service runners so the existing code paths
+# stay byte-identical for v3-v34 workloads.
+
+import contextlib
+
+
+def _is_multi_service() -> bool:
+    """True when the current workload has more than one autoscaled service."""
+    return len(SERVICES) > 1
+
+
+@contextlib.contextmanager
+def _rebind_deployment(svc: str):
+    """Temporarily rebind module globals DEPLOYMENT + SVC_NAME to `svc`.
+
+    The single-service trial helpers use these globals throughout. The trial
+    loop is single-threaded (only wrk and the replica watchers run concurrently,
+    and neither touches DEPLOYMENT/SVC_NAME), so a stack-scoped rebind is safe.
+    Callers use `with _rebind_deployment(svc): run_hpa_trial(...)` to point
+    the harness at each app service in turn.
+    """
+    global DEPLOYMENT, SVC_NAME
+    old_d, old_s = DEPLOYMENT, SVC_NAME
+    DEPLOYMENT, SVC_NAME = svc, svc
+    try:
+        yield
+    finally:
+        DEPLOYMENT, SVC_NAME = old_d, old_s
+
+
+def _cpu_req_millis_for(svc: str) -> int:
+    """Best-effort per-service CPU request in millicores.
+
+    Falls back to the workload's cpu_limits map (with a 40 % headroom) if a
+    per-service `cpu_requests` field is not set on the WORKLOAD_CFG. Ultimately
+    falls back to CPU_REQUEST_M so single-service workloads never regress.
+    """
+    per_svc_req = _cfg.get("cpu_requests") or {}
+    if svc in per_svc_req:
+        return int(per_svc_req[svc])
+    lim = CPU_LIMITS.get(svc)
+    if lim:
+        return max(50, int(lim * 0.4))
+    return CPU_REQUEST_M
+
+
+# ── Multi-service HPA ─────────────────────────────────────────────────────────
+def run_hpa_trial_multi(ingest_ip: str, hpa_manager: HorizontalPodAutoscaler,
+                        run_idx: int) -> dict:
+    """HPA trial across every service in SERVICES.
+
+    One patched HPA per service; a single wrk stream drives the entry-point
+    service (SVC_NAME); one `watch_replicas` thread per service. Cost proxy
+    aggregates avg-replicas × per-service CPU request across all services;
+    peak_replicas is emitted both as a per-service dict (`per_service`) and
+    as the cross-service max (`peak_replicas`) for schema back-compat with
+    single-service trials.
+    """
+    print(f"\n  [HPA-multi run {run_idx+1}/{N_RUNS}] "
+          f"resetting {len(SERVICES)} services → {HPA_MIN} …")
+    for svc in SERVICES:
+        kubectl("patch", "hpa", svc, "-n", NAMESPACE, "--type=merge",
+                f'--patch={{"spec":{{"maxReplicas":{HPA_MAX}}}}}', silent=True)
+        reset_replicas(svc)
+
+    t_create = time.time()
+    for svc in SERVICES:
+        kubectl(
+            "patch", "hpa", svc, "-n", NAMESPACE, "--type=merge",
+            "--patch="
+            f'{{"spec":{{"minReplicas":{HPA_MIN},"maxReplicas":{HPA_MAX},'
+            f'"targetCPUUtilizationPercentage":{HPA_CPU_TARGET}}}}}',
+            silent=True,
+        )
+    provisioning_latency = time.time() - t_create
+    print(f"  [HPA-multi] patched {len(SERVICES)} HPAs in "
+          f"{provisioning_latency*1000:.1f} ms  — warmup {WARMUP_S}s …")
+    time.sleep(WARMUP_S)
+
+    initial = get_all_replica_counts(SERVICES)
+    wrk, t_load = start_wrk(ingest_ip)
+    print(f"  [HPA-multi] wrk PID={wrk.pid}  — monitoring "
+          f"{WINDOW_S}s across {len(SERVICES)} services …")
+
+    scale_events = {svc: threading.Event() for svc in SERVICES}
+    per_svc_watch: dict = {svc: [] for svc in SERVICES}
+    threads = []
+    for svc in SERVICES:
+        t = threading.Thread(
+            target=watch_replicas,
+            args=(svc, initial[svc], WINDOW_S, scale_events[svc], per_svc_watch[svc]),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    time.sleep(PROBE_AT_S)
+    print(f"  [HPA-multi] T+{PROBE_AT_S}s — running latency probe …")
+    probe = probe_latency()
+
+    for t in threads:
+        t.join(timeout=WINDOW_S - PROBE_AT_S + 10)
+    wrk.wait(timeout=30)
+
+    per_service = {}
+    total_cost = 0.0
+    peak_max = 0
+    fs_earliest = None
+    for svc in SERVICES:
+        w = per_svc_watch[svc][0] if per_svc_watch[svc] else {}
+        avg = w.get("avg_replicas") or HPA_MIN
+        fs = w.get("first_scale_latency_s")
+        if fs is not None:
+            fs = round(fs + WARMUP_S, 1)
+            if fs_earliest is None or fs < fs_earliest:
+                fs_earliest = fs
+        peak = w.get("peak_replicas") or 0
+        peak_max = max(peak_max, peak)
+        per_service[svc] = {
+            "peak_replicas": peak,
+            "avg_replicas": avg,
+            "first_scale_latency_s": fs,
+        }
+        total_cost += avg * _cpu_req_millis_for(svc) / 1000.0
+
+    return {
+        "provisioning_latency_s": round(provisioning_latency, 3),
+        "first_scale_latency_s": fs_earliest,
+        "peak_replicas": peak_max,
+        "per_service": per_service,
+        "p95_latency_s": probe.get("p95_s"),
+        "sla_violation_rate": probe.get("sla_violation_rate"),
+        "cost_proxy": round(total_cost, 4),
+        "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
+    }
+
+
+# ── Multi-service VPA ─────────────────────────────────────────────────────────
+def run_vpa_trial_multi(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
+                        run_idx: int) -> dict:
+    """VPA trial across every service in SERVICES.
+
+    One VPA object per service, all created up front; polling for first
+    recommendation returns as soon as any of them lands; the latency probe
+    still measures the full frontend → chain path so p95 reflects the
+    slowest service.
+    """
+    print(f"\n  [VPA-multi run {run_idx+1}/{N_RUNS}] "
+          f"checking VPA controller availability …")
+    avail = vpa_manager.check_vpa_available()
+    if not avail.get("available"):
+        print("  [VPA-multi] controller not available — marking N/A")
+        return {"na": True, "reason": avail.get("error", "VPA CRD/controller absent")}
+
+    for svc in SERVICES:
+        delete_vpa_if_exists(f"{svc}-vpa")
+        reset_replicas(svc)
+    time.sleep(WARMUP_S)
+
+    t_create = time.time()
+    for svc in SERVICES:
+        result = vpa_manager.create_vpa(
+            deployment_name=svc, namespace=NAMESPACE,
+            min_cpu="100m", max_cpu="1000m",
+            min_memory="128Mi", max_memory="512Mi",
+            update_mode="Auto",
+        )
+        if not result.get("success"):
+            print(f"  [VPA-multi] create failed for {svc}: {result.get('error')}")
+            for s in SERVICES:
+                delete_vpa_if_exists(f"{s}-vpa")
+            return {"na": True, "reason": f"{svc}: {result.get('error')}"}
+    provisioning_latency = time.time() - t_create
+    print(f"  [VPA-multi] {len(SERVICES)} VPAs created in "
+          f"{provisioning_latency:.2f}s  — waiting for first recommendation …")
+
+    wrk, t_load = start_wrk(ingest_ip)
+    print(f"  [VPA-multi] wrk PID={wrk.pid}")
+
+    first_rec_latency = None
+    first_rec_svc = None
+    for elapsed in range(0, VPA_POLL_WINDOW, 5):
+        time.sleep(5)
+        for svc in SERVICES:
+            vpa_info = vpa_manager.get_vpa(f"{svc}-vpa", NAMESPACE)
+            if vpa_info.get("success"):
+                status = vpa_info.get("result", {})
+                if isinstance(status, dict):
+                    recs = status.get("status", {}).get("recommendation", {})
+                    if recs:
+                        first_rec_latency = elapsed + 5
+                        first_rec_svc = svc
+                        print(f"  [VPA-multi] first recommendation on {svc} at "
+                              f"T+{first_rec_latency}s")
+                        break
+        if first_rec_latency is not None:
+            break
+
+    time.sleep(max(0, PROBE_AT_S - (first_rec_latency or 0)))
+    probe = probe_latency()
+
+    wrk.wait(timeout=30)
+    for svc in SERVICES:
+        delete_vpa_if_exists(f"{svc}-vpa")
+
+    return {
+        "provisioning_latency_s": round(provisioning_latency, 3),
+        "first_recommendation_latency_s": first_rec_latency,
+        "first_recommendation_service": first_rec_svc,
+        "p95_latency_s": probe.get("p95_s"),
+        "sla_violation_rate": probe.get("sla_violation_rate"),
+        "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
+    }
+
+
+# ── Multi-service AutoSage ────────────────────────────────────────────────────
+def run_autosage_trial_multi(ingest_ip: str,
+                             advisor: LLMAutoscalingAdvisor,
+                             hpa_manager: HorizontalPodAutoscaler,
+                             run_idx: int) -> dict:
+    """AutoSage trial across every service in SERVICES.
+
+    Sequentially ticks each service via _autosage_tick using _rebind_deployment
+    so we reuse the LLM+MCDA pipeline unchanged. One wrk stream drives the
+    frontend; one probe measures the full chain; per-service decisions and
+    peak replicas are recorded in `per_service`.
+    """
+    print(f"\n  [AutoSage-multi run {run_idx+1}/{N_RUNS}] "
+          f"resetting {len(SERVICES)} services → {HPA_MIN} …")
+    for svc in SERVICES:
+        with _rebind_deployment(svc):
+            reset_replicas(svc)
+            _reset_args = [f"--requests=cpu={_cpu_req_millis_for(svc)}m,memory=128Mi"]
+            if AUTOSAGE_VPA_SET_LIMITS:
+                _base_lim = CPU_LIMITS.get(svc, 300)
+                _reset_args.append(f"--limits=cpu={_base_lim}m,memory=256Mi")
+            kubectl("set", "resources", f"deployment/{svc}",
+                    *_reset_args, "-n", NAMESPACE, silent=True)
+            delete_hpa_if_exists(svc)
+    print(f"  [AutoSage-multi] HPAs deleted for the trial window "
+          f"— warmup {WARMUP_S}s …")
+    time.sleep(WARMUP_S)
+
+    initial = get_all_replica_counts(SERVICES)
+    wrk, t_load = start_wrk(ingest_ip)
+    t_load_start = time.time()
+    print(f"  [AutoSage-multi] wrk PID={wrk.pid}  — collecting metrics …")
+
+    scale_events = {svc: threading.Event() for svc in SERVICES}
+    per_svc_watch: dict = {svc: [] for svc in SERVICES}
+    threads = []
+    for svc in SERVICES:
+        t = threading.Thread(
+            target=watch_replicas,
+            args=(svc, initial[svc], WINDOW_S, scale_events[svc], per_svc_watch[svc]),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+
+    time.sleep(30)  # ensure real CPU signal before advisor
+    print(f"  [AutoSage-multi] T+30s — firing advisor once per service …")
+
+    per_svc_decisions = {}
+    per_svc_rec_latency = {}
+    for svc in SERVICES:
+        with _rebind_deployment(svc):
+            t0 = time.time()
+            tick = _autosage_tick(
+                advisor, hpa_manager,
+                initial_replicas=initial[svc],
+                cached_rec=None,
+                tick_idx=1,
+                metric_buffer=[],
+                t_load_start=t_load_start,
+                precomputed_rec=None,
+                precomputed_rec_latency=None,
+                precomputed_llm_model=None,
+                force_heuristic=False,
+            )
+            tick_latency = round(time.time() - t0, 2)
+        per_svc_decisions[svc] = {
+            "action": tick.get("action"),
+            "scaling_type": tick.get("scaling_type"),
+            "target_replicas": tick.get("target_replicas"),
+            "target_cpu": tick.get("target_cpu"),
+            "target_memory": tick.get("target_memory"),
+            "confidence": tick.get("confidence"),
+            "mcda_agreement": tick.get("mcda_agreement"),
+            "mcda_score_gap": tick.get("mcda_score_gap"),
+            "cpu_pct": tick.get("cpu_pct"),
+            "llm_model": tick.get("llm_model"),
+        }
+        per_svc_rec_latency[svc] = tick_latency
+
+    time.sleep(max(0, PROBE_AT_S - 30))
+    print(f"  [AutoSage-multi] T+{PROBE_AT_S}s — running latency probe …")
+    probe = probe_latency()
+
+    for t in threads:
+        t.join(timeout=WINDOW_S - PROBE_AT_S + 10)
+    wrk.wait(timeout=30)
+
+    per_service = {}
+    total_cost = 0.0
+    peak_max = 0
+    fs_earliest = None
+    for svc in SERVICES:
+        w = per_svc_watch[svc][0] if per_svc_watch[svc] else {}
+        avg = w.get("avg_replicas") or HPA_MIN
+        fs = w.get("first_scale_latency_s")
+        if fs is not None:
+            fs = round(fs + WARMUP_S, 1)
+            if fs_earliest is None or fs < fs_earliest:
+                fs_earliest = fs
+        peak = w.get("peak_replicas") or 0
+        peak_max = max(peak_max, peak)
+        per_service[svc] = {
+            "peak_replicas": peak,
+            "avg_replicas": avg,
+            "first_scale_latency_s": fs,
+            "decision": per_svc_decisions.get(svc, {}),
+            "recommendation_latency_s": per_svc_rec_latency.get(svc),
+        }
+        total_cost += avg * _cpu_req_millis_for(svc) / 1000.0
+
+    rec_latency_agg = round(sum(per_svc_rec_latency.values()), 2)
+
+    # Re-apply HPAs from manifest so the next method block sees them.
+    kubectl("apply", "-f",
+            os.path.join(MANIFEST_DIR, "hpa.yaml"), silent=True)
+
+    return {
+        "recommendation_latency_s": rec_latency_agg,
+        "first_scale_latency_s": fs_earliest,
+        "peak_replicas": peak_max,
+        "per_service": per_service,
+        "p95_latency_s": probe.get("p95_s"),
+        "sla_violation_rate": probe.get("sla_violation_rate"),
+        "cost_proxy": round(total_cost, 4),
+        "n_probes": probe.get("n_probes"),
+        "latencies": probe.get("latencies"),
+    }
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     print_section("muBench HPA / VPA / AutoSage / AutoScaleAI Comparison Evaluation")
@@ -2126,8 +2480,12 @@ def main():
     # ── Method 1: HPA ────────────────────────────────────────────────────────
     print_section("METHOD 1 — Native HPA")
     hpa_trials = []
+    _hpa_runner = run_hpa_trial_multi if _is_multi_service() else run_hpa_trial
+    if _is_multi_service():
+        print(f"  [multi-service] running HPA across {len(SERVICES)} services: "
+              f"{', '.join(SERVICES)}")
     for i in range(N_RUNS):
-        trial = run_hpa_trial(ingest_ip, hpa_manager, i)
+        trial = _hpa_runner(ingest_ip, hpa_manager, i)
         hpa_trials.append(trial)
         if i < N_RUNS - 1:
             print(f"  cooldown {COOLDOWN_S}s …")
@@ -2143,8 +2501,9 @@ def main():
     # ── Method 2: VPA ────────────────────────────────────────────────────────
     print_section("METHOD 2 — Native VPA")
     vpa_trials = []
+    _vpa_runner = run_vpa_trial_multi if _is_multi_service() else run_vpa_trial
     for i in range(N_RUNS):
-        trial = run_vpa_trial(ingest_ip, vpa_manager, i)
+        trial = _vpa_runner(ingest_ip, vpa_manager, i)
         vpa_trials.append(trial)
         if trial.get("na"):
             # No point retrying if controller is absent
@@ -2179,22 +2538,42 @@ def main():
         # Phase P: long-running controller. Start the daemon once before
         # trial 1 and stop it after trial N. Each trial becomes a probe-
         # only window over the daemon-driven cluster state.
-        print_section("  PHASE P — continuous-loop AutoSage daemon")
-        daemon = _AutoSageDaemon(advisor, hpa_manager)
-        daemon.start()
-        try:
+        # NOTE: continuous daemon is single-service only for now; a
+        # multi-service daemon variant lands in a follow-up commit
+        # (Phase R next-cycle). Multi-service DSB runs use the per-trial
+        # runner below.
+        if _is_multi_service():
+            print("  [warn] Phase P continuous daemon does not yet support "
+                  "multi-service workloads. Falling back to per-trial "
+                  "AutoSage-multi runner. Follow-up commit will add "
+                  "multi-service daemon support.")
             for i in range(N_RUNS):
-                trial = run_autosage_trial_continuous(ingest_ip, daemon, i)
+                trial = run_autosage_trial_multi(ingest_ip, advisor, hpa_manager, i)
                 autosage_trials.append(trial)
-                # No inter-trial cooldown by default in continuous mode --
-                # the daemon keeps deciding through trial boundaries, so
-                # back-to-back trials are by design. AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S
-                # opt-in for tests that want explicit gaps.
-        finally:
-            daemon.stop()
+                if i < N_RUNS - 1:
+                    print(f"  cooldown {COOLDOWN_S}s …")
+                    time.sleep(COOLDOWN_S)
+        else:
+            print_section("  PHASE P — continuous-loop AutoSage daemon")
+            daemon = _AutoSageDaemon(advisor, hpa_manager)
+            daemon.start()
+            try:
+                for i in range(N_RUNS):
+                    trial = run_autosage_trial_continuous(ingest_ip, daemon, i)
+                    autosage_trials.append(trial)
+                    # No inter-trial cooldown by default in continuous mode --
+                    # the daemon keeps deciding through trial boundaries, so
+                    # back-to-back trials are by design.
+                    # AUTOSAGE_DAEMON_INTER_TRIAL_COOLDOWN_S opt-in for tests
+                    # that want explicit gaps.
+            finally:
+                daemon.stop()
     else:
+        _autosage_runner = (run_autosage_trial_multi
+                            if _is_multi_service()
+                            else run_autosage_trial)
         for i in range(N_RUNS):
-            trial = run_autosage_trial(ingest_ip, advisor, hpa_manager, i)
+            trial = _autosage_runner(ingest_ip, advisor, hpa_manager, i)
             autosage_trials.append(trial)
             if i < N_RUNS - 1:
                 print(f"  cooldown {COOLDOWN_S}s …")
@@ -2213,14 +2592,25 @@ def main():
     # ── Method 4: AutoScaleAI (PPO RL baseline) ──────────────────────────────
     print_section("METHOD 4 — AutoScaleAI (PPO RL baseline)")
     autoscaleai_trials = []
-    for i in range(N_RUNS):
-        trial = run_autoscaleai_trial(ingest_ip, i)
-        autoscaleai_trials.append(trial)
-        if trial.get("error"):
-            print(f"  [AutoScaleAI] trial {i+1} errored: {trial['error']}")
-        if i < N_RUNS - 1:
-            print(f"  cooldown {COOLDOWN_S}s …")
-            time.sleep(COOLDOWN_S)
+    if _is_multi_service():
+        # AutoScaleAI was trained on single-pod CPU envelopes; running it
+        # against a 5-service DSB chain would be measuring the wrong thing.
+        # Skip for multi-service workloads and mark N/A in the JSON.
+        print("  [AutoScaleAI] N/A on multi-service workload — the PPO model "
+              "was trained on a single-pod CPU envelope. Skipping.")
+        autoscaleai_trials = [
+            {"na": True, "reason": "AutoScaleAI is single-service; skipped on "
+                                   "multi-tier DSB workload."}
+        ]
+    else:
+        for i in range(N_RUNS):
+            trial = run_autoscaleai_trial(ingest_ip, i)
+            autoscaleai_trials.append(trial)
+            if trial.get("error"):
+                print(f"  [AutoScaleAI] trial {i+1} errored: {trial['error']}")
+            if i < N_RUNS - 1:
+                print(f"  cooldown {COOLDOWN_S}s …")
+                time.sleep(COOLDOWN_S)
 
     autoscaleai_agg = aggregate(
         [t for t in autoscaleai_trials if not t.get("error")],
