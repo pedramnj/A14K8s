@@ -1,64 +1,114 @@
-# Backup files - exclude all backup variations
-*_backup*.py
-*_BACKUP*.py
-*_final*.py
-*_working*.py
-*_clean*.py
-*_fixed*.py
-*_original*.py
-*_simple*.py
-*_broken*.py
-*_mcp*.py
-*_stdio*.py
+# ---------------------------------------------------------------------------
+# Python / build junk
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv_*/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Temporary and fix files
-*.tmp
-*.temp
-*_fix.py
-*_test.py
-
-# Database and sensitive config files
+# ---------------------------------------------------------------------------
+# Runtime + local data
+# ---------------------------------------------------------------------------
 instance/
+*.db
+*.sqlite
+*.sqlite3
 kube/
-.env
-.env.backup
 admin.conf
 *.conf
 
-# Backup directories
-backups/
-*_BACKUP_*/
+# Secrets / env
+.env
+.env.local
+.env.backup
+!.env.example
 
-# PKI and certificates
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log
+logs/
+
+# ---------------------------------------------------------------------------
+# IDE / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Certificates / PKI
+# ---------------------------------------------------------------------------
 pki/
 *.pem
 *.key
 *.crt
 
-# Logs
-*.log
-logs/
-
-# IDE files
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Docker
-.dockerignore
-__pycache__/
-*.backup
+# ---------------------------------------------------------------------------
+# Backup / temp files
+# ---------------------------------------------------------------------------
+backup/
+backups/
+*_BACKUP_*/
+*.tmp
+*.temp
+*.bak
 *.bak_*
-*_backup.html
+*.backup
 *.backup_*
+*_backup.html
+*.orig
+.\$*.bkp
 
-# Documentation folder (contains migration guides, setup docs, etc.)
+# ---------------------------------------------------------------------------
+# Documentation, thesis and reports (kept locally, not published)
+# ---------------------------------------------------------------------------
 docs/
-
-# Thesis reports folder (contains thesis documentation, LaTeX files, figures)
 thesis_reports/
+Pedram_Nikjooy___Master_Thesis/
+Pedram_Nikjooy___Master_Thesis_Summary/
+Agentic_AI_for_Automatic_Kubernetes_Operations_and_Autoscaling___CAIS2026/
+
+# Top-level report / presentation files
+ARCHITECTURE_FLOWS.md
+FINAL_WORKSPACE_CLEANUP_REPORT.tex
+OVERLEAF_REPORT.tex
+PHASE2_MCDA_UQ_REPORT.tex
+PRESENTATION_RECENT_CHANGES.md
+PROJECT_COMPLETE_REPORT.md
+
+# Architecture diagrams (kept locally)
+*.drawio
+*.drawio.bkp
+AutoSage High-Level Interaction with kubernetes.png
+llm-predictive-autoscale.png
+llm-predictive-autoscaler-component.png
+
+# LaTeX compile artifacts
+*.aux
+*.bcf
+*.bbl
+*.blg
+*.run.xml
+*.toc
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+
+# ---------------------------------------------------------------------------
+# Claude / editor scratch
+# ---------------------------------------------------------------------------
+.claude/
