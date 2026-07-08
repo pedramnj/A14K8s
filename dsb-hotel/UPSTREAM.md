@@ -124,8 +124,14 @@ HTTP port (8500). Nothing dropped.
 - Container ports match upstream (5000 / 8082 / 8083 / 8084 / 8081
   for app services; 27017 for Mongo; 11211 for memcached; 8300 /
   8400 / 8500 / 8600 for Consul).
-- Container entrypoints match upstream (`./frontend`, `./search`,
-  `./geo`, `./rate`, `./profile`).
+- Container entrypoints are absolute paths (`/go/bin/frontend`,
+  `/go/bin/search`, `/go/bin/geo`, `/go/bin/rate`, `/go/bin/profile`)
+  instead of upstream's `./frontend` etc. Upstream assumes WORKDIR is
+  set to where the binaries live; the current
+  `deathstarbench/hotel-reservation:latest` image (built 2024-06-27)
+  keeps WORKDIR at `/workspace` (which contains the Go source, not the
+  binaries) and installs the binaries into `/go/bin/`. Using the
+  absolute path removes the WORKDIR dependency.
 - The DSB `config.json` referenced by each Go binary is baked into
   the upstream image at build time and is not overridden.
 - The upstream wrk2 workload script is used unchanged for the

@@ -301,7 +301,7 @@ spec:
       containers:
       - name: hotel-reserv-frontend
         image: deathstarbench/hotel-reservation:latest
-        command: ["./frontend"]
+        command: ["/go/bin/frontend"]
         ports:
         - containerPort: 5000
         resources:
@@ -344,7 +344,7 @@ spec:
       containers:
       - name: hotel-reserv-search
         image: deathstarbench/hotel-reservation:latest
-        command: ["./search"]
+        command: ["/go/bin/search"]
         ports:
         - containerPort: 8082
         resources:
@@ -387,7 +387,7 @@ spec:
       containers:
       - name: hotel-reserv-geo
         image: deathstarbench/hotel-reservation:latest
-        command: ["./geo"]
+        command: ["/go/bin/geo"]
         ports:
         - containerPort: 8083
         resources:
@@ -430,7 +430,7 @@ spec:
       containers:
       - name: hotel-reserv-rate
         image: deathstarbench/hotel-reservation:latest
-        command: ["./rate"]
+        command: ["/go/bin/rate"]
         ports:
         - containerPort: 8084
         resources:
@@ -474,7 +474,7 @@ spec:
       containers:
       - name: hotel-reserv-profile
         image: deathstarbench/hotel-reservation:latest
-        command: ["./profile"]
+        command: ["/go/bin/profile"]
         ports:
         - containerPort: 8081
         resources:
