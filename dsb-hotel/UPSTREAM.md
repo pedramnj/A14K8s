@@ -27,8 +27,18 @@ gRPC service mesh come from the upstream container image
   (upstream ships no HPAs).
 
 ### `wrk2/`
-- `mixed-workload_type_1.lua` — copied unchanged from upstream
-  `wrk2/scripts/hotel-reservation/mixed-workload_type_1.lua`.
+- `mixed-workload_type_1.lua` — copied from upstream
+  `wrk2/scripts/hotel-reservation/mixed-workload_type_1.lua` with one
+  minimal patch: the top-level `local url = "http://localhost:5000"`
+  is set to `""` (empty string). Rationale documented inline in the
+  file; short version: upstream prepends `http://localhost:5000` to
+  every path passed to `wrk.format(method, path)`, producing HTTP
+  absolute-form request URIs. That's fine when wrk2 runs on the same
+  host as the frontend; on our k8s cluster the frontend is a
+  ClusterIP service, so an absolute URI with `localhost:5000` in the
+  Host header misroutes. Empty prefix means `wrk.format` composes the
+  request relative to the target URL passed on the wrk2 command line
+  (`http://frontend:5000`), which is what we want.
 - `heavy-search.lua` — new file (not upstream). Skews the request mix
   to 100 % `/hotels` searches with widened lat/lon windows so the
   fan-out through search → geo/rate/profile saturates. Used by the

@@ -2,7 +2,14 @@ local socket = require("socket")
 math.randomseed(socket.gettime()*1000)
 math.random(); math.random(); math.random()
 
-local url = "http://localhost:5000"
+-- Phase R modification (2026-07-08, documented in dsb-hotel/UPSTREAM.md):
+-- upstream hard-codes `local url = "http://localhost:5000"` and prepends it
+-- to every wrk.format path, producing HTTP absolute-form request URIs like
+-- `GET http://localhost:5000/hotels?...` which Go's http server accepts but
+-- misroutes when the actual target host is different (frontend runs in the
+-- k8s cluster, not on localhost). Empty prefix → wrk2 uses the target URL
+-- passed on the command line (http://frontend:5000) as base.
+local url = ""
 
 local function get_user()
   local id = math.random(0, 500)

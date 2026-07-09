@@ -18,7 +18,10 @@ local socket = require("socket")
 math.randomseed(socket.gettime()*1000)
 math.random(); math.random(); math.random()
 
-local url = "http://localhost:5000"
+-- Empty prefix → wrk.format uses the target URL passed on the wrk2 command
+-- line (http://frontend:5000) as request base. See mixed-workload_type_1.lua
+-- for the full rationale.
+local url = ""
 
 local function search_hotel_heavy()
   local in_date  = math.random(9, 23)

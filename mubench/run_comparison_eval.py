@@ -150,6 +150,23 @@ WORKLOAD_CFGS = {
         # back to /usr/bin/wrk (which ignores -R) — safe but skips the
         # rate-controlled experiments.
         "wrk_binary":     "wrk2",
+        # DSB frontend listens on 5000 (not the muBench default of 8080).
+        # Used by both probe_latency() and start_wrk() so metrics land on
+        # the correct port. v3-v34 workloads default to 8080 via SVC_PORT
+        # below.
+        "port":           5000,
+        # Per-service workload class map for Phase R's LLM-batching path.
+        # `stateless` and `stateful` services are grouped in
+        # run_autosage_trial_multi so only one LLM call per class per trial
+        # fires (2/trial, well under Groq's free-tier ~30 RPM limit).
+        # Profile holds the largest in-memory hotel dictionary; every other
+        # app service is CPU-bound and cache-warmed.
+        "service_class":  {"frontend":    "stateless",
+                           "search":      "stateless",
+                           "geo":         "stateless",
+                           "rate":        "stateless",
+                           "reservation": "stateless",
+                           "profile":     "stateful"},
     },
 }
 # Default is "cpu" for backward compatibility with every prior eval (v3-v8).
@@ -169,6 +186,9 @@ CPU_LIMITS       = dict(_cfg["cpu_limits"])
 WRK_PATH         = os.environ.get("WRK_PATH", _cfg["wrk_path"])
 SVC_NAME         = _cfg["svc_name"]
 MANIFEST_DIR     = _cfg["manifest_dir"]
+# Phase-R: DSB frontend serves HTTP on 5000; muBench workloads on 8080.
+# Read from workload cfg with a fallback to 8080 so v3-v34 don't regress.
+SVC_PORT         = int(_cfg.get("port", 8080))
 # Phase-O: env-gated mid-trial AWARE payload shift. When enabled, wrk runs
 # the baseline small payload (WRK_BASE_PATH, defaults to WRK_PATH) for
 # WRK_SHIFT_AT_S seconds, then switches to the heavy payload (WRK_SHIFT_PATH)
@@ -549,7 +569,7 @@ def probe_latency() -> dict:
     curl_loop = (
         f"for i in $(seq 1 {PROBE_REQUESTS}); do "
         f"curl -s -o /dev/null -w '%{{time_total}} %{{http_code}}\\n' "
-        f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:8080{_probe_path()} "
+        f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:{SVC_PORT}{_probe_path()} "
         f"|| echo '5.0000 0'; done"
     )
     cmd = [
@@ -2372,39 +2392,68 @@ def run_autosage_trial_multi(ingest_ip: str,
         threads.append(t)
 
     time.sleep(30)  # ensure real CPU signal before advisor
-    print(f"  [AutoSage-multi] T+30s — firing advisor once per service …")
+    # Phase-R.2: batch LLM calls by workload class to stay under Groq
+    # free-tier ~30 RPM. Services in the same class share one LLM call
+    # (representative = first service in the class); the other services
+    # in the class get the same LLM recommendation but re-run MCDA
+    # against their own fresh metrics via _autosage_tick's cached_rec
+    # path. Falls back to per-service LLM calls when the workload has
+    # no `service_class` map (v3-v34 workloads reproduce unchanged).
+    service_class_map: dict = _cfg.get("service_class") or {}
+    if service_class_map:
+        class_groups: dict = {}
+        for svc in SERVICES:
+            cls = service_class_map.get(svc, "stateless")
+            class_groups.setdefault(cls, []).append(svc)
+        print(f"  [AutoSage-multi] T+30s — batching across {len(class_groups)} "
+              f"workload classes: "
+              f"{ {cls: len(svcs) for cls, svcs in class_groups.items()} } …")
+    else:
+        class_groups = {"_all": list(SERVICES)}
+        print(f"  [AutoSage-multi] T+30s — firing advisor once per service …")
 
     per_svc_decisions = {}
     per_svc_rec_latency = {}
-    for svc in SERVICES:
-        with _rebind_deployment(svc):
-            t0 = time.time()
-            tick = _autosage_tick(
-                advisor, hpa_manager,
-                initial_replicas=initial[svc],
-                cached_rec=None,
-                tick_idx=1,
-                metric_buffer=[],
-                t_load_start=t_load_start,
-                precomputed_rec=None,
-                precomputed_rec_latency=None,
-                precomputed_llm_model=None,
-                force_heuristic=False,
-            )
-            tick_latency = round(time.time() - t0, 2)
-        per_svc_decisions[svc] = {
-            "action": tick.get("action"),
-            "scaling_type": tick.get("scaling_type"),
-            "target_replicas": tick.get("target_replicas"),
-            "target_cpu": tick.get("target_cpu"),
-            "target_memory": tick.get("target_memory"),
-            "confidence": tick.get("confidence"),
-            "mcda_agreement": tick.get("mcda_agreement"),
-            "mcda_score_gap": tick.get("mcda_score_gap"),
-            "cpu_pct": tick.get("cpu_pct"),
-            "llm_model": tick.get("llm_model"),
-        }
-        per_svc_rec_latency[svc] = tick_latency
+    for cls, class_services in class_groups.items():
+        cached_raw_rec: dict | None = None
+        for i, svc in enumerate(class_services):
+            with _rebind_deployment(svc):
+                t0 = time.time()
+                # First service in each class: fresh LLM + MCDA call.
+                # Subsequent services in the same class: reuse the LLM
+                # recommendation via cached_rec, re-run MCDA against
+                # this service's fresh metrics.
+                tick = _autosage_tick(
+                    advisor, hpa_manager,
+                    initial_replicas=initial[svc],
+                    cached_rec=cached_raw_rec,
+                    tick_idx=1,
+                    metric_buffer=[],
+                    t_load_start=t_load_start,
+                    precomputed_rec=None,
+                    precomputed_rec_latency=None,
+                    precomputed_llm_model=None,
+                    force_heuristic=False,
+                )
+                tick_latency = round(time.time() - t0, 2)
+            if i == 0 and tick.get("_raw_rec"):
+                cached_raw_rec = tick["_raw_rec"]
+            per_svc_decisions[svc] = {
+                "action": tick.get("action"),
+                "scaling_type": tick.get("scaling_type"),
+                "target_replicas": tick.get("target_replicas"),
+                "target_cpu": tick.get("target_cpu"),
+                "target_memory": tick.get("target_memory"),
+                "confidence": tick.get("confidence"),
+                "mcda_agreement": tick.get("mcda_agreement"),
+                "mcda_score_gap": tick.get("mcda_score_gap"),
+                "mcda_override": tick.get("mcda_override"),
+                "cpu_pct": tick.get("cpu_pct"),
+                "llm_model": tick.get("llm_model"),
+                "decision_source": tick.get("decision_source"),
+                "workload_class": cls if cls != "_all" else None,
+            }
+            per_svc_rec_latency[svc] = tick_latency
 
     time.sleep(max(0, PROBE_AT_S - 30))
     print(f"  [AutoSage-multi] T+{PROBE_AT_S}s — running latency probe …")
