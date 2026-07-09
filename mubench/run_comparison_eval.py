@@ -156,6 +156,12 @@ WORKLOAD_CFGS = {
         # back to /usr/bin/wrk (which ignores -R) — safe but skips the
         # rate-controlled experiments.
         "wrk_binary":     "wrk2",
+        # wrk2 REQUIRES -R rate as a mandatory flag; when it's absent wrk2
+        # prints its usage and exits without generating any load (silent
+        # failure in v36/v37). This default is used when WRK_RATE=0 (the
+        # historical default). 2000 rps drives search+geo+rate hot enough
+        # to trip HPA's 70 % target on 200m-limited leaves.
+        "default_wrk_rate": 2000,
         # DSB frontend listens on 5000 (not the muBench default of 8080).
         # Used by both probe_latency() and start_wrk() so metrics land on
         # the correct port. v3-v34 workloads default to 8080 via SVC_PORT
@@ -452,6 +458,26 @@ def _resolve_wrk_binary() -> tuple:
     return ("/usr/bin/wrk", False)
 
 
+def _effective_wrk_rate(supports_rate: bool) -> int:
+    """Return the effective wrk2 -R rate to use for the current trial.
+
+    wrk2 REQUIRES the -R flag; if it's absent wrk2 prints its usage and
+    exits without generating any load. In v36/v37 this hit us silently
+    (no error visible in the harness log because wrk2's stderr is piped
+    to /dev/null in start_wrk), so trials completed with 0 actual load
+    and cluster CPU stayed at 1-2 millicores baseline. This helper
+    guarantees a non-zero rate whenever wrk2 is the resolved binary:
+    if WRK_RATE > 0, use it; otherwise fall back to _cfg["default_wrk_rate"]
+    (dsb_hotel: 2000 rps) or 1000 as a last resort. Vanilla wrk (which
+    ignores -R) returns 0 so v3-v34 reproduce byte-identically.
+    """
+    if not supports_rate:
+        return 0
+    if WRK_RATE > 0:
+        return WRK_RATE
+    return int(_cfg.get("default_wrk_rate", 1000))
+
+
 def _dsb_lua_path(script: str) -> str:
     """Absolute path to a DSB wrk2 lua script (dsb-hotel/wrk2/<script>)."""
     return os.path.join(_ROOT, "dsb-hotel", "wrk2", script)
@@ -479,7 +505,12 @@ def start_wrk(target_ip: str):
     wrk_lua = _cfg.get("wrk_lua")
     if wrk_lua:
         wrk_bin, supports_rate = _resolve_wrk_binary()
-        rate_flag = f"-R {WRK_RATE} " if (supports_rate and WRK_RATE > 0) else ""
+        effective_rate = _effective_wrk_rate(supports_rate)
+        rate_flag = f"-R {effective_rate} " if effective_rate > 0 else ""
+        if supports_rate and effective_rate == 0:
+            print(f"  [wrk2 warn] wrk2 requires -R but no rate is set and no "
+                  f"default_wrk_rate is configured for workload '{WORKLOAD}'. "
+                  f"wrk2 will exit immediately and generate zero load.")
         port = 5000  # DSB frontend HTTP port
         if DSB_SHIFT_PHASES:
             phases = []
@@ -503,7 +534,8 @@ def start_wrk(target_ip: str):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             timeline = " → ".join(f"{s}({d}s)" for s, d in phases)
-            print(f"  [wrk2] Phase-R DSB oscillating: {timeline}")
+            rate_desc = f"-R {effective_rate}" if effective_rate > 0 else "no-rate"
+            print(f"  [wrk2] Phase-R DSB oscillating: {timeline} ({rate_desc})")
             return proc, time.time()
         proc = subprocess.Popen(
             ["sh", "-c",
@@ -512,8 +544,8 @@ def start_wrk(target_ip: str):
              f"-s {_dsb_lua_path(wrk_lua)} http://{target_ip}:{port}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        print(f"  [wrk2] Phase-R DSB steady: {wrk_lua} "
-              f"({'-R ' + str(WRK_RATE) if supports_rate and WRK_RATE > 0 else 'no-rate'})")
+        rate_desc = f"-R {effective_rate}" if effective_rate > 0 else "no-rate"
+        print(f"  [wrk2] Phase-R DSB steady: {wrk_lua} ({rate_desc})")
         return proc, time.time()
 
     if WRK_SHIFT_PHASES:
