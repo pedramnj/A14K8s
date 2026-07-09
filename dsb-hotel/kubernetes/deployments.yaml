@@ -349,10 +349,14 @@ spec:
         - containerPort: 8082
         resources:
           requests:
-            cpu: "150m"
+            cpu: "100m"
             memory: "192Mi"
           limits:
-            cpu: "400m"
+            # Phase R.3: tightened from 400m → 200m so 2 pods cannot absorb
+            # heavy-search.lua fan-out under 96 wrk2 connections. Forces the
+            # autoscaler's hand and gives VPA a ceiling to hit (VPA cannot
+            # request more CPU than the manifest limit).
+            cpu: "200m"
             memory: "384Mi"
       restartPolicy: Always
 
@@ -392,10 +396,12 @@ spec:
         - containerPort: 8083
         resources:
           requests:
-            cpu: "150m"
+            cpu: "100m"
             memory: "128Mi"
           limits:
-            cpu: "300m"
+            # Phase R.3: tightened 300m → 200m to force saturation on the
+            # widened lat/lon lookups from heavy-search.lua.
+            cpu: "200m"
             memory: "256Mi"
       restartPolicy: Always
 
@@ -435,10 +441,12 @@ spec:
         - containerPort: 8084
         resources:
           requests:
-            cpu: "150m"
+            cpu: "100m"
             memory: "128Mi"
           limits:
-            cpu: "300m"
+            # Phase R.3: tightened 300m → 200m so rate is a co-bottleneck
+            # with search + geo under heavy fan-out.
+            cpu: "200m"
             memory: "256Mi"
       restartPolicy: Always
 

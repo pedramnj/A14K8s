@@ -124,8 +124,14 @@ WORKLOAD_CFGS = {
                                         # target.
         "services":       ["frontend", "search", "geo", "rate",
                            "profile", "reservation"],
-        "cpu_limits":     {"frontend": 500, "search": 400,
-                           "geo": 300, "rate": 300, "profile": 300,
+        # Phase R.3: tightened search/geo/rate limits from 400/300/300 →
+        # 200/200/200 to force multi-tier saturation under heavy-search.lua.
+        # See dsb-hotel/kubernetes/deployments.yaml for the matching pod
+        # limits. VPA cannot request more CPU than the pod limit, so this
+        # gives VPA a hard ceiling to hit while HPA (and AutoSage picking
+        # HPA on the stateless class) can still add replicas.
+        "cpu_limits":     {"frontend": 500, "search": 200,
+                           "geo": 200, "rate": 200, "profile": 300,
                            "reservation": 300},
         # Steady-state DSB URL (matches upstream mixed-workload_type_1.lua's
         # /hotels endpoint). The vanilla wrk single-URL path is used only
