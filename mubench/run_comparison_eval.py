@@ -133,6 +133,24 @@ WORKLOAD_CFGS = {
         "cpu_limits":     {"frontend": 500, "search": 200,
                            "geo": 200, "rate": 200, "profile": 300,
                            "reservation": 300},
+        # Phase R.5: match the pod-manifest CPU requests, so
+        # `metrics_denominator=request` (below) gives AutoSage a CPU %
+        # numerically comparable to what HPA sees. Kubernetes HPA computes
+        # CPU % as cpu_used / cpu_request, so if AutoSage's LLM applies a
+        # 70 % threshold to cpu_used / cpu_limit (5× denominator), it
+        # under-triggers by ~5× on frontend where request=100m and
+        # limit=500m. v40 tick history confirmed AutoSage's LLM saw
+        # frontend at ~35 % (limit-normalised) while HPA saw it at ~170 %
+        # (request-normalised) and reacted to scale.
+        "cpu_requests":   {"frontend": 100, "search": 100, "geo": 100,
+                           "rate": 100, "profile": 150, "reservation": 150},
+        # When set to "request", collect_live_metrics computes cpu_pct
+        # against the per-service cpu_requests entry (falling back to
+        # _cpu_req_millis_for's derivation if absent). Any other value —
+        # including the default when the key is missing — keeps the
+        # historical cpu_pct = cpu_used / cpu_limit behaviour so v3-v34
+        # workloads reproduce byte-identically.
+        "metrics_denominator": "request",
         # Steady-state DSB URL (matches upstream mixed-workload_type_1.lua's
         # /hotels endpoint). The vanilla wrk single-URL path is used only
         # as a fallback / probe target when the lua-script path is off.
@@ -726,6 +744,22 @@ def mean_ci(values: list) -> tuple:
     return round(m, 4), round(half_ci, 4)
 
 # ── Build live metrics context ────────────────────────────────────────────────
+def _metric_denom_millis_for(svc: str) -> int:
+    """Phase-R.5: CPU denominator selection for cpu_pct calculation.
+
+    When the workload's `metrics_denominator` config is "request", returns
+    the per-service CPU request (matching Kubernetes HPA's math). Otherwise
+    returns the per-service CPU limit (historical v3-v34 behaviour). This
+    is what fixes the 5× under-reporting that AutoSage's LLM saw on DSB
+    Hotel Reservation in v40, where limit=500m and request=100m on the
+    frontend gateway that dominated CPU work.
+    """
+    denom = (_cfg.get("metrics_denominator") or "limit").lower()
+    if denom == "request":
+        return _cpu_req_millis_for(svc)
+    return int(CPU_LIMITS.get(svc, 300))
+
+
 def collect_live_metrics(svc: str, cpu_limit_m: int, force_rising: bool = False) -> tuple:
     """Return (current_metrics dict, forecast dict) built from live kubectl top.
 
@@ -1257,7 +1291,7 @@ def _autosage_tick(advisor: 'LLMAutoscalingAdvisor', hpa_manager,
     """
     t_metrics = time.time()
     current_metrics, forecast = collect_live_metrics(
-        DEPLOYMENT, CPU_LIMITS[DEPLOYMENT], force_rising=True)
+        DEPLOYMENT, _metric_denom_millis_for(DEPLOYMENT), force_rising=True)
     metrics_s = round(time.time() - t_metrics, 3)
     cpu_pct_raw = current_metrics.get("cpu_usage", 0.0)
     mem_pct_raw = current_metrics.get("memory_usage", 0.0)
@@ -1523,7 +1557,7 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     async_thread = None
     if AUTOSAGE_ASYNC_WARM_START_ENABLED:
         async_metrics, async_forecast = collect_live_metrics(
-            DEPLOYMENT, CPU_LIMITS[DEPLOYMENT], force_rising=True)
+            DEPLOYMENT, _metric_denom_millis_for(DEPLOYMENT), force_rising=True)
         # Seed the smoothing buffer so tick 1's p75 has at least one sample.
         metric_buffer.append((time.time(),
                               async_metrics.get("cpu_usage", 0.0),
