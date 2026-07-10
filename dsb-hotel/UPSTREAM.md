@@ -44,6 +44,13 @@ gRPC service mesh come from the upstream container image
   fan-out through search → geo/rate/profile saturates. Used by the
   Phase Q.5-style shift oscillation to simulate an AWARE-style input
   shift without modifying DSB app code.
+- `light-search.lua` — new file (Phase R.5, not upstream). Companion
+  to heavy-search.lua with a narrow ±0.05° lat/lon window (~5 km
+  radius). memcached-geo caches every result after one iteration so
+  per-request cost drops to a memcached lookup. Used in oscillating
+  `DSB_SHIFT_PHASES=heavy-search.lua:60,light-search.lua:60,…`
+  schedules that break VPA's histogram-based recommender
+  (VPA averages the two regimes into a mid-value that fits neither).
 
 ## Modifications applied to the upstream manifests
 
