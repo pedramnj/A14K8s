@@ -237,10 +237,13 @@ HPA_CPU_TARGET   = 70              # %
 WRK_THREADS      = 4
 WRK_CONNECTIONS  = int(os.environ.get("WRK_CONNECTIONS", "48"))
 WRK_DURATION     = os.environ.get("WRK_DURATION", "120s")
-WARMUP_S         = 15
-WINDOW_S         = 120
+WARMUP_S         = int(os.environ.get("WARMUP_S", "15"))
+# Phase R.4: env-gated so DSB Hotel Reservation can extend the replica-
+# watcher / wrk-lifetime window to match longer wrk2 -R runs; the v3-v34
+# muBench workloads still default to 120s.
+WINDOW_S         = int(os.environ.get("WINDOW_S", "120"))
 PROBE_AT_S       = int(os.environ.get("PROBE_AT_S", "90"))  # seconds into load window to probe latency
-COOLDOWN_S       = 30
+COOLDOWN_S       = int(os.environ.get("COOLDOWN_S", "30"))
 # Phase K: env-gated so v13 can run with VPA_POLL_WINDOW=120 to match the
 # other methods' trial window. Default 300 preserves v3-v12 reproducibility.
 VPA_POLL_WINDOW  = int(os.environ.get("VPA_POLL_WINDOW", "300"))
@@ -427,6 +430,41 @@ def _probe_path() -> str:
     if WRK_SHIFT_ENABLED:
         return os.environ.get("WRK_SHIFT_PATH", WRK_PATH)
     return WRK_PATH
+
+
+def _wrk_wait_timeout() -> int:
+    """Bound (seconds) for wrk.wait() after the latency probe fires.
+
+    Must be at least the remaining time wrk still has to run beyond
+    PROBE_AT_S, plus a small safety margin. In v3-v34 workloads
+    WRK_DURATION defaults to 120s and PROBE_AT_S to 90s, so the historical
+    30-second wait was sufficient. Phase R's heavy runs use
+    DSB_SHIFT_PHASES totalling 200s+, so a fixed 30s wait crashes with
+    subprocess.TimeoutExpired the moment we get real load (v38 hit this).
+    """
+    total_wrk_s = None
+    if DSB_SHIFT_PHASES:
+        s = 0
+        for spec in DSB_SHIFT_PHASES.split(","):
+            _, _, d = spec.rpartition(":")
+            try:
+                s += int(d)
+            except ValueError:
+                pass
+        total_wrk_s = s
+    elif WRK_SHIFT_PHASES:
+        s = 0
+        for spec in WRK_SHIFT_PHASES.split(","):
+            _, _, d = spec.rpartition(":")
+            try:
+                s += int(d)
+            except ValueError:
+                pass
+        total_wrk_s = s
+    else:
+        total_wrk_s = _parse_duration_s(WRK_DURATION)
+    remaining = max(0, (total_wrk_s or 0) - PROBE_AT_S)
+    return max(30, remaining + 30)
 
 
 def _resolve_wrk_binary() -> tuple:
@@ -773,7 +811,7 @@ def run_hpa_trial(ingest_ip: str, hpa_manager: HorizontalPodAutoscaler,
     probe = probe_latency()
 
     watcher.join(timeout=WINDOW_S - PROBE_AT_S + 10)
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
 
     watch = watcher_results[0] if watcher_results else {}
     first_scale = watch.get("first_scale_latency_s")
@@ -850,7 +888,7 @@ def run_vpa_trial(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
     time.sleep(max(0, PROBE_AT_S - (first_rec_latency or 0)))
     probe = probe_latency()
 
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
     delete_vpa_if_exists(f"{DEPLOYMENT}-vpa")
 
     return {
@@ -1627,7 +1665,7 @@ def run_autosage_trial(ingest_ip: str, advisor: LLMAutoscalingAdvisor,
     probe = probe_latency()
 
     watcher.join(timeout=max(5, WINDOW_S - (time.time() - t_load) + 10))
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
 
     # Phase-J task 1: re-apply HPA manifest (was deleted at trial start).
     # Restores the workload's HPA cleanly for the next method's trial.
@@ -1856,7 +1894,7 @@ def run_autosage_trial_continuous(ingest_ip: str, daemon: '_AutoSageDaemon',
 
     watcher.join(timeout=max(5, WINDOW_S - (time.time() - t_load) + 10))
     try:
-        wrk.wait(timeout=30)
+        wrk.wait(timeout=_wrk_wait_timeout())
     except subprocess.TimeoutExpired:
         wrk.kill()
 
@@ -2041,7 +2079,7 @@ def run_autoscaleai_trial(ingest_ip: str, run_idx: int) -> dict:
 
     watcher.join(timeout=WINDOW_S - PROBE_AT_S + 10)
     try:
-        wrk.wait(timeout=30)
+        wrk.wait(timeout=_wrk_wait_timeout())
     except subprocess.TimeoutExpired:
         wrk.kill()
 
@@ -2269,7 +2307,7 @@ def run_hpa_trial_multi(ingest_ip: str, hpa_manager: HorizontalPodAutoscaler,
 
     for t in threads:
         t.join(timeout=WINDOW_S - PROBE_AT_S + 10)
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
 
     per_service = {}
     total_cost = 0.0
@@ -2369,7 +2407,7 @@ def run_vpa_trial_multi(ingest_ip: str, vpa_manager: VerticalPodAutoscaler,
     time.sleep(max(0, PROBE_AT_S - (first_rec_latency or 0)))
     probe = probe_latency()
 
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
     for svc in SERVICES:
         delete_vpa_if_exists(f"{svc}-vpa")
 
@@ -2499,7 +2537,7 @@ def run_autosage_trial_multi(ingest_ip: str,
 
     for t in threads:
         t.join(timeout=WINDOW_S - PROBE_AT_S + 10)
-    wrk.wait(timeout=30)
+    wrk.wait(timeout=_wrk_wait_timeout())
 
     per_service = {}
     total_cost = 0.0
