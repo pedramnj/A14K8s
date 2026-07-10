@@ -2488,50 +2488,84 @@ def run_autosage_trial_multi(ingest_ip: str,
         class_groups = {"_all": list(SERVICES)}
         print(f"  [AutoSage-multi] T+30s — firing advisor once per service …")
 
-    per_svc_decisions = {}
-    per_svc_rec_latency = {}
-    for cls, class_services in class_groups.items():
-        cached_raw_rec: dict | None = None
-        for i, svc in enumerate(class_services):
-            with _rebind_deployment(svc):
-                t0 = time.time()
-                # First service in each class: fresh LLM + MCDA call.
-                # Subsequent services in the same class: reuse the LLM
-                # recommendation via cached_rec, re-run MCDA against
-                # this service's fresh metrics.
-                tick = _autosage_tick(
-                    advisor, hpa_manager,
-                    initial_replicas=initial[svc],
-                    cached_rec=cached_raw_rec,
-                    tick_idx=1,
-                    metric_buffer=[],
-                    t_load_start=t_load_start,
-                    precomputed_rec=None,
-                    precomputed_rec_latency=None,
-                    precomputed_llm_model=None,
-                    force_heuristic=False,
-                )
-                tick_latency = round(time.time() - t0, 2)
-            if i == 0 and tick.get("_raw_rec"):
-                cached_raw_rec = tick["_raw_rec"]
-            per_svc_decisions[svc] = {
-                "action": tick.get("action"),
-                "scaling_type": tick.get("scaling_type"),
-                "target_replicas": tick.get("target_replicas"),
-                "target_cpu": tick.get("target_cpu"),
-                "target_memory": tick.get("target_memory"),
-                "confidence": tick.get("confidence"),
-                "mcda_agreement": tick.get("mcda_agreement"),
-                "mcda_score_gap": tick.get("mcda_score_gap"),
-                "mcda_override": tick.get("mcda_override"),
-                "cpu_pct": tick.get("cpu_pct"),
-                "llm_model": tick.get("llm_model"),
-                "decision_source": tick.get("decision_source"),
-                "workload_class": cls if cls != "_all" else None,
-            }
-            per_svc_rec_latency[svc] = tick_latency
+    per_svc_decisions: dict = {}
+    per_svc_tick_history: dict = {svc: [] for svc in SERVICES}
+    per_svc_rec_latency: dict = {svc: 0.0 for svc in SERVICES}
 
-    time.sleep(max(0, PROBE_AT_S - 30))
+    # Phase-R.4: multi-tick advisor. When AUTOSAGE_MULTI_TICK_ENABLED is
+    # set, iterate the (class → services) fan-out AUTOSAGE_MAX_TICKS times
+    # separated by AUTOSAGE_TICK_INTERVAL_S seconds, so the LLM can react
+    # to CPU rise mid-trial the way HPA's 15s reconciliation loop does.
+    # Each tick makes at most len(class_groups) fresh Groq calls (one per
+    # class representative). The other services in each class re-use the
+    # tick's LLM rec via cached_rec + fresh MCDA. Latest tick's decision
+    # is what's recorded in per_service.decision; the full sequence lives
+    # in tick_history. When the flag is off (default), behaviour reduces
+    # to the historical single-tick path exactly.
+    tick_count = AUTOSAGE_MAX_TICKS if AUTOSAGE_MULTI_TICK_ENABLED else 1
+    tick_interval_s = AUTOSAGE_TICK_INTERVAL_S if AUTOSAGE_MULTI_TICK_ENABLED else 0
+
+    for tick_idx in range(1, tick_count + 1):
+        elapsed_since_load = round(time.time() - t_load_start, 1)
+        print(f"  [AutoSage-multi] tick {tick_idx}/{tick_count} at "
+              f"T+{elapsed_since_load}s …")
+        # Guard: bail out early if we're already past the probe window
+        # (probing under load takes priority over another tick).
+        if elapsed_since_load >= PROBE_AT_S - 5:
+            print(f"  [AutoSage-multi] skipping tick {tick_idx}: "
+                  f"probe window in <5s")
+            break
+
+        for cls, class_services in class_groups.items():
+            cached_raw_rec: dict | None = None
+            for i, svc in enumerate(class_services):
+                with _rebind_deployment(svc):
+                    t0 = time.time()
+                    tick = _autosage_tick(
+                        advisor, hpa_manager,
+                        initial_replicas=initial[svc],
+                        cached_rec=cached_raw_rec,
+                        tick_idx=tick_idx,
+                        metric_buffer=[],
+                        t_load_start=t_load_start,
+                        precomputed_rec=None,
+                        precomputed_rec_latency=None,
+                        precomputed_llm_model=None,
+                        force_heuristic=False,
+                    )
+                    tick_latency = round(time.time() - t0, 2)
+                if i == 0 and tick.get("_raw_rec"):
+                    cached_raw_rec = tick["_raw_rec"]
+                decision_snapshot = {
+                    "tick_idx": tick_idx,
+                    "action": tick.get("action"),
+                    "scaling_type": tick.get("scaling_type"),
+                    "target_replicas": tick.get("target_replicas"),
+                    "target_cpu": tick.get("target_cpu"),
+                    "target_memory": tick.get("target_memory"),
+                    "confidence": tick.get("confidence"),
+                    "mcda_agreement": tick.get("mcda_agreement"),
+                    "mcda_score_gap": tick.get("mcda_score_gap"),
+                    "mcda_override": tick.get("mcda_override"),
+                    "cpu_pct": tick.get("cpu_pct"),
+                    "llm_model": tick.get("llm_model"),
+                    "decision_source": tick.get("decision_source"),
+                    "workload_class": cls if cls != "_all" else None,
+                    "recommendation_latency_s": tick_latency,
+                    "wall_time_s": round(time.time() - t_load_start, 1),
+                }
+                per_svc_decisions[svc] = decision_snapshot
+                per_svc_tick_history[svc].append(decision_snapshot)
+                per_svc_rec_latency[svc] += tick_latency
+
+        # Sleep before the next tick, but don't blow past PROBE_AT_S.
+        if tick_idx < tick_count and tick_interval_s > 0:
+            next_tick_at = tick_idx * tick_interval_s + 30  # T+30s baseline
+            slack = next_tick_at - (time.time() - t_load_start)
+            if slack > 0 and (time.time() - t_load_start) + slack < PROBE_AT_S - 5:
+                time.sleep(slack)
+
+    time.sleep(max(0, PROBE_AT_S - (time.time() - t_load_start)))
     print(f"  [AutoSage-multi] T+{PROBE_AT_S}s — running latency probe …")
     probe = probe_latency()
 
@@ -2559,6 +2593,9 @@ def run_autosage_trial_multi(ingest_ip: str,
             "first_scale_latency_s": fs,
             "decision": per_svc_decisions.get(svc, {}),
             "recommendation_latency_s": per_svc_rec_latency.get(svc),
+            # Phase-R.4: full multi-tick history for post-mortem analysis
+            # (empty list means single-tick mode was active).
+            "tick_history": per_svc_tick_history.get(svc, []),
         }
         total_cost += avg * _cpu_req_millis_for(svc) / 1000.0
 
