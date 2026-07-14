@@ -19,7 +19,7 @@ Metrics collected per method:
   - recommendation_latency_s (AutoSage only – wall-clock LLM+MCDA time)
 """
 
-import sys, os, time, subprocess, json, math, statistics, logging, tempfile, threading
+import sys, os, time, subprocess, json, math, statistics, logging, tempfile, threading, atexit
 
 # ── Path & .env setup ────────────────────────────────────────────────────────
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -654,27 +654,65 @@ def start_wrk(target_ip: str):
     return proc, time.time()
 
 # ── Latency probe ─────────────────────────────────────────────────────────────
+_PROBE_POD = "probe-persistent"
+
+
+def create_persistent_probe_pod() -> bool:
+    """Create a long-lived probe pod BEFORE the load ramps, while the node is
+    still idle, with a guaranteed CPU request so it is scheduled and never
+    starved. probe_latency() then `kubectl exec`s the curl loop into it.
+
+    Phase-R.5 fix (v42): the previous per-probe `kubectl run` of a best-effort
+    curl pod at T+PROBE_AT_S under a saturating 600s oscillating load could
+    not get CPU time to finish its 20 curls inside the subprocess timeout, so
+    every probe returned n_probes=0 (no p95/SLA). A persistent, CPU-reserved
+    pod created up front removes both the scheduling and the starvation risk.
+    """
+    kubectl("delete", "pod", _PROBE_POD, "--ignore-not-found",
+            "--force", "--grace-period=0", silent=True, timeout=30)
+    overrides = json.dumps({"spec": {"containers": [{
+        "name": _PROBE_POD, "image": PROBE_IMAGE,
+        "command": ["sleep", "infinity"],
+        "resources": {"requests": {"cpu": "200m", "memory": "32Mi"}},
+    }]}})
+    try:
+        subprocess.run(
+            ["kubectl", "run", _PROBE_POD, "--image", PROBE_IMAGE,
+             "--restart=Never", "--overrides", overrides],
+            capture_output=True, text=True, timeout=60)
+        w = subprocess.run(
+            ["kubectl", "wait", "--for=condition=Ready",
+             f"pod/{_PROBE_POD}", "--timeout=90s"],
+            capture_output=True, text=True, timeout=100)
+        ok = w.returncode == 0
+        print(f"  [probe pod] persistent probe pod "
+              f"{'ready' if ok else 'NOT ready: ' + w.stderr.strip()[:150]}")
+        return ok
+    except Exception as e:
+        print(f"  [probe pod] creation failed: {e}")
+        return False
+
+
+def delete_persistent_probe_pod():
+    kubectl("delete", "pod", _PROBE_POD, "--ignore-not-found",
+            "--force", "--grace-period=0", silent=True, timeout=30)
+
+
 def probe_latency() -> dict:
     """
-    Run PROBE_REQUESTS curl calls inside the cluster via a ephemeral kubectl pod.
-    Returns p95 latency (s) and SLA violation rate.
+    Run PROBE_REQUESTS curl calls from the persistent probe pod (created by
+    create_persistent_probe_pod() while the node was idle). Returns p95
+    latency (s) and SLA violation rate.
     """
-    probe_name = f"probe-{int(time.time())}"
     curl_loop = (
         f"for i in $(seq 1 {PROBE_REQUESTS}); do "
         f"curl -s -o /dev/null -w '%{{time_total}} %{{http_code}}\\n' "
         f"http://{SVC_NAME}.{NAMESPACE}.svc.cluster.local:{SVC_PORT}{_probe_path()} "
         f"|| echo '5.0000 0'; done"
     )
-    cmd = [
-        "kubectl", "run", probe_name,
-        "--rm", "-i", "--restart=Never",
-        f"--image={PROBE_IMAGE}",
-        "--command", "--",
-        "sh", "-c", curl_loop,
-    ]
+    cmd = ["kubectl", "exec", _PROBE_POD, "--", "sh", "-c", curl_loop]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         latencies = []
         for line in r.stdout.splitlines():
             parts = line.split()
@@ -684,6 +722,8 @@ def probe_latency() -> dict:
                 except ValueError:
                     pass
         if not latencies:
+            print(f"  [probe error] no samples (exec rc={r.returncode}): "
+                  f"{r.stderr.strip()[:200]}")
             return {"p95_s": None, "sla_violation_rate": None, "n_probes": 0}
         latencies.sort()
         p95_idx = int(math.ceil(0.95 * len(latencies))) - 1
@@ -698,8 +738,7 @@ def probe_latency() -> dict:
             "latencies": [round(l, 4) for l in latencies],
         }
     except subprocess.TimeoutExpired:
-        kubectl("delete", "pod", probe_name, "--ignore-not-found",
-                "--force", "--grace-period=0", silent=True, timeout=60)
+        print("  [probe error] exec timed out (180s)")
         return {"p95_s": None, "sla_violation_rate": None, "n_probes": 0}
     except Exception as e:
         print(f"  [probe error] {e}")
@@ -2675,6 +2714,12 @@ def main():
               f"Is the '{WORKLOAD}' workload deployed? Aborting.")
         sys.exit(1)
     print(f"\n  {SVC_NAME} ClusterIP: {ingest_ip}")
+
+    # Phase-R.5: create the persistent latency-probe pod now, while the node
+    # is idle, so it holds a reserved CPU slice for the whole eval and never
+    # has to schedule under load (see create_persistent_probe_pod).
+    create_persistent_probe_pod()
+    atexit.register(delete_persistent_probe_pod)
 
     all_results = {}
 
