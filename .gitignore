@@ -112,3 +112,15 @@ llm-predictive-autoscaler-component.png
 # Claude / editor scratch
 # ---------------------------------------------------------------------------
 .claude/
+
+# --- Internal docs / reports / thesis (untracked 2026-07; kept locally, not in the code repo) ---
+Pedram_Nikjooy___Master_Thesis/
+Pedram_Nikjooy___Master_Thesis_Summary/
+thesis_reports/
+Agentic_AI_for_Automatic_Kubernetes_Operations_and_Autoscaling___CAIS2026/
+presentation/
+PROJECT_COMPLETE_REPORT.md
+FINAL_WORKSPACE_CLEANUP_REPORT.tex
+OVERLEAF_REPORT.tex
+PHASE2_MCDA_UQ_REPORT.tex
+PRESENTATION_RECENT_CHANGES.md
