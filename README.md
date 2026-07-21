@@ -42,12 +42,19 @@ making the system's behaviour fully auditable.
   across a 99-decision evaluation --- matching Kubernetes convention
   without a single override from the TOPSIS validator.
 - **28–47% SLA-normalised cost reduction** versus native HPA across both
-  workload classes, robust to input amplitude, rollout strategy, and
-  workload oscillation.
-- **Local-first LLM cascade**: a 2.7 GB quantised `qwen3.5:2b` model runs
-  entirely on-premises via Ollama. A resilient fallback chain
+  single-service workload classes, robust to input amplitude and rollout
+  strategy; the saving reaches **73%** once the continuous daemon closes the
+  actuation gap to native VPA.
+- **41% lower p95 latency at matched cost** than native HPA on a real
+  multi-tier microservice chain (DeathStarBench Hotel Reservation, 14 pods) ---
+  reacting 2× faster, with a first-scale latency repeatable to ±0.2 s, and
+  issuing differentiated per-service decisions that scale the saturated
+  gateway while holding every idle leaf.
+- **Local-first LLM cascade**: a 2.7 GB quantised `qwen3.5:2b` runs entirely
+  on-premises via Ollama (`qwen3:0.6b`, 522 MB, is documented as a lighter
+  alternative for memory-constrained hosts). A resilient fallback chain
   (local → Groq cloud → deterministic regex) keeps end-to-end decision
-  latency under 2 s under CPU saturation.
+  latency under 2 s even under CPU saturation.
 - **Model Context Protocol server**: every `kubectl` operation flows
   through a localhost-only FastAPI MCP tool layer, so cluster access is
   isolated behind a structured API.
@@ -61,7 +68,7 @@ Browser ── Flask + SocketIO (:5003)
                │                         └── MCDAOptimizer  (TOPSIS)
                └── AIMonitoringIntegration
                        ├── K8sMetricsCollector
-                       ├── PredictiveMonitoring  (ARIMA + bootstrap UQ)
+                       ├── PredictiveMonitoring  (trend+seasonal / exp-smoothing + bootstrap UQ)
                        └── KubernetesRAG         (BM25 over K8s KB)
                                  │
                                  ▼
@@ -83,7 +90,7 @@ Browser ── Flask + SocketIO (:5003)
 ├── autoscaling_engine.py         # HPA scaling actions
 ├── vpa_engine.py                 # VPA sizing actions
 ├── scheduled_autoscaler.py       # Cron-style scheduled actions
-├── predictive_monitoring.py      # ARIMA + bootstrap prediction intervals
+├── predictive_monitoring.py      # trend+seasonal + exp-smoothing + bootstrap PIs
 ├── uncertainty_quantifier.py     # Platt-scaling + calibrated anomaly
 ├── k8s_metrics_collector.py      # Multi-source metrics pipeline
 ├── mcp_http_server.py            # FastAPI MCP tool server
@@ -97,14 +104,17 @@ Browser ── Flask + SocketIO (:5003)
 ├── simple_kubectl_executor.py    # Fallback kubectl wrapper
 ├── scaling_decision.py           # Decision dataclass + serialisation
 ├── requirements.txt
+├── Makefile                      # `make reproduce-*` evaluation targets
+├── ARTIFACT.md                   # Artifact-evaluation / reproduction guide
 │
 ├── templates/                    # Jinja2 templates
 ├── static/                       # Front-end assets
 ├── kb_kubernetes/                # BM25 knowledge base
 ├── client/                       # Standalone MCP client SDK
 ├── baselines/                    # RL baseline (AutoScaleAI) for comparison
-├── mubench/                      # Microservice benchmark harness
-└── research/                     # Offline analysis + evaluation scripts
+├── mubench/                      # Microservice benchmark harness + eval runner
+├── dsb-hotel/                    # DeathStarBench Hotel Reservation manifests + wrk2
+└── research/                     # Offline analysis + evaluation/plot scripts
 ```
 
 ## Quick start
@@ -143,8 +153,8 @@ The key ones:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `GPT_OSS_API_BASE` | Ollama endpoint. Point at `http://disabled:1/v1` to force the Groq fallback. | `http://localhost:11434/v1` |
-| `GPT_OSS_MODEL` | Local model tag pulled into Ollama | `qwen3.5:2b` |
+| `GPT_OSS_API_BASE` | OpenAI-compatible local LLM endpoint (Ollama's own port is `11434`). Point at `http://disabled:1/v1` to force the Groq fallback. | `http://localhost:8001/v1` |
+| `GPT_OSS_MODEL` | Local model tag served at that endpoint | `qwen3.5:2b` |
 | `GROQ_API_KEY` | Cloud-fallback API key | (required if local is unreachable) |
 | `AUTOSAGE_CONTINUOUS_DAEMON_ENABLED` | Enable the continuous daemon | `0` |
 | `AUTOSAGE_DAEMON_TICK_S` | Daemon tick period in seconds | `30` |
@@ -153,9 +163,20 @@ The key ones:
 
 ## Reproducibility
 
-The evaluation harness lives in `mubench/`; the RL baseline in `baselines/`;
-offline analysis and plotting scripts in `research/`. Each has its own
-README with a `python -m` invocation and expected outputs.
+[`ARTIFACT.md`](ARTIFACT.md) walks through reproducing the headline claims on
+a single 4 vCPU / 16 GiB machine (~1 h for the shipped targets). The `Makefile`
+exposes them directly:
+
+```bash
+make reproduce-phase-p   # continuous-daemon eval → single-service cost frontier
+make reproduce-phase-r   # DeathStarBench Hotel Reservation multi-tier eval
+make figures             # regenerate evaluation plots from the shipped JSON
+make stats               # bootstrap CIs + Wilcoxon + Cliff's delta over all runs
+```
+
+The evaluation harness lives in `mubench/` (with its own README), the RL
+baseline (AutoScaleAI) in `baselines/`, the multi-tier substrate in
+`dsb-hotel/`, and offline analysis and plotting scripts in `research/`.
 
 ## License
 
