@@ -109,7 +109,7 @@ llm-predictive-autoscaler-component.png
 *.fdb_latexmk
 
 # ---------------------------------------------------------------------------
-# Claude / editor scratch
+# editor / local tool scratch
 # ---------------------------------------------------------------------------
 .claude/
 

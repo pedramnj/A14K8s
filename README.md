@@ -153,7 +153,7 @@ The key ones:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `GPT_OSS_API_BASE` | OpenAI-compatible local LLM endpoint (Ollama's own port is `11434`). Point at `http://disabled:1/v1` to force the Groq fallback. | `http://localhost:8001/v1` |
+| `GPT_OSS_API_BASE` | Local LLM API endpoint serving the `/v1` chat schema (Ollama's own port is `11434`). Point at `http://disabled:1/v1` to force the Groq fallback. | `http://localhost:8001/v1` |
 | `GPT_OSS_MODEL` | Local model tag served at that endpoint | `qwen3.5:2b` |
 | `GROQ_API_KEY` | Cloud-fallback API key | (required if local is unreachable) |
 | `AUTOSAGE_CONTINUOUS_DAEMON_ENABLED` | Enable the continuous daemon | `0` |
