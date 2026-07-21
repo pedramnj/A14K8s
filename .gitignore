@@ -124,3 +124,7 @@ FINAL_WORKSPACE_CLEANUP_REPORT.tex
 OVERLEAF_REPORT.tex
 PHASE2_MCDA_UQ_REPORT.tex
 PRESENTATION_RECENT_CHANGES.md
+
+# stray reports + editor backup (2026-07-21 cleanup)
+mubench/*_REPORT.md
+*.drawio.bkp
